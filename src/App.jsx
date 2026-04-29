@@ -41,7 +41,7 @@ export default function App() {
 
   if (checkingConnection) return <LoadingScreen />
 
-  if (!hsConnected) return <ConnectHubSpot onConnected={() => setHsConnected(true)} />
+  if (!hsConnected) return <ConnectHubSpot onConnected={() => setHsConnected(true)} getToken={getToken} />
 
   return (
     <Dashboard
