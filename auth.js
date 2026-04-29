@@ -1,4 +1,4 @@
-// utils/auth.js
+// netlify/functions/utils//auth.js
 // Verifies Clerk JWT on every incoming request.
 // Returns { userId, email } on success, or throws with a 401-friendly message.
 //
