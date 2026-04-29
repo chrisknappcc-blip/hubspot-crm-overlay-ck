@@ -1,10 +1,11 @@
 // src/api.js
-// Wraps all backend calls with the Clerk session token.
-// Usage: import { apiFetch } from './api'
-//        const data = await apiFetch('/api/hubspot/signals?hours=48', getToken)
-
 export async function apiFetch(path, getToken, options = {}) {
-  const token = await getToken()
+  const token = await getToken({ template: null })
+  
+  if (!token) {
+    throw new Error('No session token available. Please sign in again.')
+  }
+
   const res = await fetch(path, {
     ...options,
     headers: {
