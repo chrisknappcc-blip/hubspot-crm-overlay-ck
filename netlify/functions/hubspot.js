@@ -511,6 +511,24 @@ export const handler = async (event, context) => {
     return handleOAuthCallback(event);
   }
 
+  // Temporary debug route -- shows raw marketing email events without auth
+  // Remove this after debugging is complete
+  if (event.httpMethod === "GET" && rawPath === "/debug/marketing") {
+    const since = Date.now() - 48 * 60 * 60 * 1000;
+    const qp = event.queryStringParameters || {};
+    const userId = qp.userId;
+    if (!userId) return error(400, "Pass ?userId=YOUR_CLERK_USER_ID");
+    try {
+      const data = await hsGet(userId, "/email/public/v1/events", {
+        startTimestamp: since,
+        limit: 10,
+      });
+      return ok({ count: (data.events||[]).length, sample: (data.events||[]).slice(0,3), raw: data });
+    } catch (err) {
+      return ok({ error: err.message });
+    }
+  }
+
   // Everything else requires a valid Clerk session
   return withAuth(async (event, context, user) => {
     const path   = rawPath;
