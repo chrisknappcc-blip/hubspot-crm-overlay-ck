@@ -29,7 +29,6 @@ const HS_SCOPES = [
   "crm.objects.marketing_events.read",
   "crm.objects.marketing_events.write",
   "content",
-  "marketing-email",
   "e-commerce",
   "oauth",
 ].join(" ");;
