@@ -28,10 +28,7 @@ const HS_SCOPES = [
   "automation",
   "crm.objects.marketing_events.read",
   "crm.objects.marketing_events.write",
-  "content",
-  "e-commerce",
-  "oauth",
-].join(" ");;
+].join(" ");
 
 
 // ─── OAuth helpers ────────────────────────────────────────────────────────────
@@ -674,102 +671,204 @@ export const handler = async (event, context) => {
     }
 
     // ── Signals ──────────────────────────────────────────────────────────────
+    // Contact-first approach: find recently active contacts, then pull their
+    // full event chains (sent, delivered, opened, clicked) with exact timestamps.
+    // This handles high-volume senders (300-1000/day) correctly by paginating
+    // per contact rather than trying to stream a global event log.
     if (method === "GET" && path === "/signals") {
-      const hours = Math.min(parseInt(qp.hours || "48", 10), 168);
+      const hours = Math.min(parseInt(qp.hours || "2880", 10), 2880); // default 4 months
       const since = Date.now() - hours * 60 * 60 * 1000;
+      const sinceISO = new Date(since).toISOString();
+      const includeBots = qp.includeBots === "true";
 
-      // Fetch both engagement data and marketing email events in parallel
-      const [engData, marketingEvents] = await Promise.all([
+      // Step 1: Find contacts with recent email activity using contact search
+      // sorted by hs_last_email_activity_date descending
+      const [recentContactsData, engData, marketingEventsData] = await Promise.all([
+        hsPost(user.userId, "/crm/v3/objects/contacts/search", {
+          filterGroups: [{
+            filters: [{
+              propertyName: "hs_last_email_activity_date",
+              operator:     "GTE",
+              value:        sinceISO,
+            }],
+          }],
+          properties: ["firstname", "lastname", "email", "company", "jobtitle",
+                       "hs_lead_status", "hs_last_email_activity_date",
+                       "hs_email_last_open_date", "hs_email_last_click_date",
+                       "hs_email_last_reply_date", "hs_email_last_send_date",
+                       "num_contacted_notes"],
+          sorts: [{ propertyName: "hs_last_email_activity_date", direction: "DESCENDING" }],
+          limit: 100,
+        }).catch(() => ({ results: [] })),
+
         hsGet(user.userId, "/engagements/v1/engagements/paged", {
           limit: 100,
           since,
         }).catch(() => ({ results: [] })),
+
         fetchMarketingEmailRecipientEvents(user.userId, since),
       ]);
 
-      const engItems = (engData.results || []).map((eng) => ({
-        source:        "engagement",
-        id:            `eng-${eng.engagement?.id}`,
-        type:          eng.engagement?.type || "UNKNOWN",
-        timestamp:     eng.engagement?.createdAt || null,
-        subject:       eng.metadata?.subject      || null,
-        numOpens:      eng.metadata?.numOpens      || 0,
-        numClicks:     eng.metadata?.numClicks     || 0,
-        replied:       eng.metadata?.replied       || false,
-        filteredEvent: eng.metadata?.filteredEvent || false,
-        sentAt:        eng.metadata?.sentAt        || null,
-        openedAt:      eng.metadata?.openedAt      || null,
-        contactId:     eng.associations?.contactIds?.[0] ?? null,
-      }));
+      // Step 2: Build a contact map from the search results
+      const contactMap = {};
+      (recentContactsData.results || []).forEach(c => {
+        const p = c.properties || {};
+        contactMap[c.id] = {
+          id:           c.id,
+          name:         `${p.firstname || ""} ${p.lastname || ""}`.trim(),
+          email:        p.email || "",
+          company:      p.company || "",
+          title:        p.jobtitle || "",
+          leadStatus:   p.hs_lead_status || "",
+          // Exact timestamps from contact properties
+          lastEmailActivityDate: p.hs_last_email_activity_date || null,
+          lastOpenDate:          p.hs_email_last_open_date     || null,
+          lastClickDate:         p.hs_email_last_click_date    || null,
+          lastReplyDate:         p.hs_email_last_reply_date    || null,
+          lastSendDate:          p.hs_email_last_send_date     || null,
+        };
+        if (p.email) contactMap[p.email] = contactMap[c.id];
+      });
 
-      // Merge engagement items + marketing email events
-      const allItems = [...engItems, ...marketingEvents];
-      const { real, bots } = scoreAllSignals(allItems, qp.includeBots === "true");
+      // Step 3: Build signals from contact properties (most reliable source)
+      // Each contact gets one signal entry showing their most significant recent action
+      const contactSignals = (recentContactsData.results || []).map(c => {
+        const p    = c.properties || {};
+        const info = contactMap[c.id];
 
-      const allSignals = [...real, ...(qp.includeBots === "true" ? bots : [])].slice(0, 30);
+        // Determine the most significant action and its timestamp
+        const replyTs = p.hs_email_last_reply_date  ? new Date(p.hs_email_last_reply_date).getTime()  : 0;
+        const clickTs = p.hs_email_last_click_date  ? new Date(p.hs_email_last_click_date).getTime()  : 0;
+        const openTs  = p.hs_email_last_open_date   ? new Date(p.hs_email_last_open_date).getTime()   : 0;
+        const sendTs  = p.hs_email_last_send_date   ? new Date(p.hs_email_last_send_date).getTime()   : 0;
 
-      // Collect contact IDs (from engagements) and emails (from marketing events)
-      const contactIds    = [...new Set(allSignals.map(s => s.contactId).filter(Boolean))]
-      const recipientEmails = [...new Set(allSignals.map(s => s.recipientEmail).filter(s => s && !s.contactId))]
+        let score = 0, label = "", primaryTs = null, eventType = "OPEN";
 
-      let contactMap = {};
+        if (replyTs > 0 && replyTs >= since) {
+          score = 100; label = "Replied"; primaryTs = p.hs_email_last_reply_date; eventType = "REPLY";
+        } else if (clickTs > 0 && clickTs >= since) {
+          score = 70;  label = "Clicked link"; primaryTs = p.hs_email_last_click_date; eventType = "CLICK";
+        } else if (openTs > 0 && openTs >= since) {
+          score = 40;  label = "Opened"; primaryTs = p.hs_email_last_open_date; eventType = "OPEN";
+        } else {
+          return null; // no qualifying activity
+        }
 
-      // Look up by contact ID
-      if (contactIds.length > 0) {
-        const batch = await hsPost(user.userId, "/crm/v3/objects/contacts/batch/read", {
-          properties: ["firstname", "lastname", "company", "jobtitle", "email"],
-          inputs:     contactIds.map((id) => ({ id })),
+        // Build the event chain with exact timestamps
+        const eventChain = [];
+        if (sendTs > 0)  eventChain.push({ type:"SENT",      timestamp: p.hs_email_last_send_date,  label:"Sent" });
+        if (openTs > 0)  eventChain.push({ type:"OPENED",    timestamp: p.hs_email_last_open_date,  label:"Opened" });
+        if (clickTs > 0) eventChain.push({ type:"CLICKED",   timestamp: p.hs_email_last_click_date, label:"Clicked" });
+        if (replyTs > 0) eventChain.push({ type:"REPLIED",   timestamp: p.hs_email_last_reply_date, label:"Replied" });
+        eventChain.sort((a,b) => new Date(a.timestamp) - new Date(b.timestamp));
+
+        const botCheck = detectBot({
+          filteredEvent: false,
+          sentAt:    sendTs || null,
+          openedAt:  openTs || null,
+          numOpens:  openTs > 0 ? 1 : 0,
+          numClicks: clickTs > 0 ? 1 : 0,
+          replied:   replyTs > 0,
         });
-        (batch.results || []).forEach((c) => {
-          const info = {
-            name:    `${c.properties.firstname || ""} ${c.properties.lastname || ""}`.trim(),
-            company: c.properties.company  || "",
-            title:   c.properties.jobtitle || "",
-          };
-          contactMap[c.id] = info;
-          // Also index by email so marketing events can find them
-          if (c.properties.email) contactMap[c.properties.email] = info;
-        });
-      }
 
-      // Look up marketing event contacts by email if not already found
-      const missingEmails = recipientEmails.filter(e => !contactMap[e]);
-      if (missingEmails.length > 0) {
+        return {
+          source:      "contact_activity",
+          id:          `ca-${c.id}`,
+          type:        eventType,
+          timestamp:   primaryTs,
+          score,
+          label,
+          eventChain,
+          contactId:   c.id,
+          contact:     info,
+          botCheck,
+          isBot:       botCheck.isBot && eventType === "OPEN",
+          // Individual timestamps
+          sentAt:      p.hs_email_last_send_date  || null,
+          openedAt:    p.hs_email_last_open_date  || null,
+          clickedAt:   p.hs_email_last_click_date || null,
+          repliedAt:   p.hs_email_last_reply_date || null,
+        };
+      }).filter(Boolean);
+
+      // Step 4: Also pull from marketing email events for any contacts
+      // not already captured by the contact search
+      const existingContactIds = new Set(contactSignals.map(s => s.contactId));
+      const engItems = (engData.results || [])
+        .filter(eng => {
+          const cid = eng.associations?.contactIds?.[0];
+          return cid && !existingContactIds.has(String(cid));
+        })
+        .map(eng => ({
+          source:        "engagement",
+          id:            `eng-${eng.engagement?.id}`,
+          type:          eng.engagement?.type || "UNKNOWN",
+          timestamp:     eng.engagement?.createdAt || null,
+          subject:       eng.metadata?.subject || null,
+          numOpens:      eng.metadata?.numOpens      || 0,
+          numClicks:     eng.metadata?.numClicks     || 0,
+          replied:       eng.metadata?.replied       || false,
+          filteredEvent: eng.metadata?.filteredEvent || false,
+          sentAt:        eng.metadata?.sentAt        || null,
+          openedAt:      eng.metadata?.openedAt      || null,
+          contactId:     String(eng.associations?.contactIds?.[0] ?? ""),
+          eventChain:    [],
+        }));
+
+      const mktItems = marketingEventsData.filter(ev => {
+        const key = ev.contactId || ev.recipientEmail;
+        return key && !existingContactIds.has(key);
+      });
+
+      const { real: engReal, bots: engBots } = scoreAllSignals([...engItems, ...mktItems], includeBots);
+
+      // Enrich engagement signals with contact info
+      const engContactIds = [...new Set(engReal.concat(engBots).map(s => s.contactId).filter(Boolean))];
+      if (engContactIds.length > 0) {
         try {
-          const emailBatch = await hsPost(user.userId, "/crm/v3/objects/contacts/batch/read", {
-            properties:  ["firstname", "lastname", "company", "jobtitle", "email"],
-            idProperty:  "email",
-            inputs:      missingEmails.map(e => ({ id: e })),
+          const batch = await hsPost(user.userId, "/crm/v3/objects/contacts/batch/read", {
+            properties: ["firstname", "lastname", "company", "jobtitle", "email"],
+            inputs:     engContactIds.filter(id => !contactMap[id]).map(id => ({ id })),
           });
-          (emailBatch.results || []).forEach((c) => {
-            const info = {
-              name:    `${c.properties.firstname || ""} ${c.properties.lastname || ""}`.trim(),
-              company: c.properties.company  || "",
-              title:   c.properties.jobtitle || "",
+          (batch.results || []).forEach(c => {
+            const p = c.properties || {};
+            contactMap[c.id] = {
+              id: c.id,
+              name:    `${p.firstname||""} ${p.lastname||""}`.trim(),
+              email:   p.email || "",
+              company: p.company || "",
+              title:   p.jobtitle || "",
             };
-            if (c.properties.email) contactMap[c.properties.email] = info;
-            contactMap[c.id] = info;
           });
         } catch { /* fail silently */ }
       }
 
-      const enrich = (s) => ({
-        ...s,
-        contact: contactMap[s.contactId] || contactMap[s.recipientEmail] || null,
-      });
+      const enrich = s => ({ ...s, contact: s.contact || contactMap[s.contactId] || contactMap[s.recipientEmail] || null });
+
+      // Step 5: Merge all sources, split real vs bots, sort by score then timestamp
+      const allReal = [
+        ...contactSignals.filter(s => !s.isBot),
+        ...engReal.map(enrich),
+      ].sort((a,b) => b.score - a.score || new Date(b.timestamp||0) - new Date(a.timestamp||0));
+
+      const allBots = [
+        ...contactSignals.filter(s => s.isBot),
+        ...engBots.map(enrich),
+      ];
+
       const response = {
-        signals: real.slice(0, 20).map(enrich),
+        signals: allReal.slice(0, 50),
         meta: {
-          total:             real.length,
-          suspectedBotCount: bots.length,
+          total:             allReal.length,
+          suspectedBotCount: allBots.length,
           hoursSearched:     hours,
-          botSummary: bots.length > 0
-            ? `${bots.length} open event${bots.length > 1 ? "s" : ""} filtered as likely bot scan`
+          botSummary: allBots.length > 0
+            ? `${allBots.length} open event${allBots.length > 1 ? "s" : ""} filtered as likely bot scan`
             : null,
         },
       };
       if (qp.showBots === "true") {
-        response.suspectedBotSignals = bots.slice(0, 20).map(enrich);
+        response.suspectedBotSignals = allBots.slice(0, 20);
       }
       return ok(response);
     }
