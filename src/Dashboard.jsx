@@ -42,6 +42,18 @@ function timeAgo(ts) {
   return new Date(ts).toLocaleDateString('en-US', { month:'short', day:'numeric' })
 }
 
+function exactTs(ts) {
+  if (!ts) return '—'
+  return new Date(ts).toLocaleString('en-US', {
+    month:  'short',
+    day:    'numeric',
+    year:   'numeric',
+    hour:   'numeric',
+    minute: '2-digit',
+    hour12: true,
+  })
+}
+
 function cleanSubject(subject) {
   if (!subject) return 'Marketing email'
   if (/^\d+$/.test(subject)) return 'Marketing email'
@@ -236,6 +248,11 @@ export default function Dashboard({ user, theme, toggleTheme, getToken }) {
     contactId: s.contactId,
     priority:  s.score >= 100 ? 'hot' : s.score >= 60 ? 'warm' : 'normal',
     badgeType: s.score >= 100 ? 'reply' : s.score >= 60 ? 'click' : 'hot',
+    eventChain: s.eventChain || [],
+    sentAt:     s.sentAt || null,
+    openedAt:   s.openedAt || null,
+    clickedAt:  s.clickedAt || null,
+    repliedAt:  s.repliedAt || null,
   }))
 
   const contentEngagement = signals.filter(s => s.label?.toLowerCase().includes('click')).map(s => ({
@@ -318,23 +335,32 @@ export default function Dashboard({ user, theme, toggleTheme, getToken }) {
                 {loading && <div style={{ color:'var(--text-tertiary)', fontSize:13 }}>Loading...</div>}
                 {!loading && tasks.length === 0 && <div style={{ color:'var(--text-tertiary)', fontSize:13 }}>No tasks in this time range.</div>}
                 {tasks.map((t, i) => (
-                  <div key={i} style={{ display:'flex', gap:10, padding:'10px 0', borderBottom: i < tasks.length-1 ? '1px solid var(--border)' : 'none' }}>
-                    <PriorityDot level={t.priority} />
-                    <div style={{ flex:1, minWidth:0 }}>
-                      <div style={{ display:'flex', alignItems:'center', gap:6 }}>
-                        <span style={{ fontWeight:500, fontSize:13, color:'var(--text)', whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{t.name}</span>
-                        {t.contactId && (
-                          <button onClick={e => openHubSpotContact(t.contactId, e)}
-                            title="Open in HubSpot"
-                            style={{ flexShrink:0, background:'none', border:'none', cursor:'pointer', padding:0, color:'var(--text-tertiary)', lineHeight:1 }}>
-                            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
-                          </button>
-                        )}
+                  <div key={i} style={{ padding:'12px 0', borderBottom: i < tasks.length-1 ? '1px solid var(--border)' : 'none' }}>
+                    <div style={{ display:'flex', gap:10 }}>
+                      <PriorityDot level={t.priority} />
+                      <div style={{ flex:1, minWidth:0 }}>
+                        <div style={{ display:'flex', alignItems:'center', gap:6, marginBottom:2 }}>
+                          <span style={{ fontWeight:500, fontSize:13, color:'var(--text)' }}>{t.name}</span>
+                          {t.contactId && (
+                            <button onClick={e => openHubSpotContact(t.contactId, e)} title="Open in HubSpot"
+                              style={{ flexShrink:0, background:'none', border:'none', cursor:'pointer', padding:0, color:'var(--text-tertiary)', lineHeight:1 }}>
+                              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+                            </button>
+                          )}
+                        </div>
+                        <div style={{ fontSize:12, color:'var(--text-secondary)', marginBottom:6 }}>{t.title}{t.company ? ` · ${t.company}` : ''}</div>
+                        <Badge label={t.label} type={t.badgeType} />
+                        <div style={{ marginTop:6, display:'flex', flexDirection:'column', gap:3 }}>
+                          {t.sentAt   && <div style={{ fontSize:11, color:'var(--text-tertiary)', display:'flex', gap:6 }}><span style={{ color:'var(--text-secondary)', fontWeight:500, minWidth:52 }}>Sent</span><span>{exactTs(t.sentAt)}</span></div>}
+                          {t.openedAt && <div style={{ fontSize:11, color:'var(--text-tertiary)', display:'flex', gap:6 }}><span style={{ color:'var(--text-secondary)', fontWeight:500, minWidth:52 }}>Opened</span><span>{exactTs(t.openedAt)}</span></div>}
+                          {t.clickedAt && <div style={{ fontSize:11, color:'var(--text-tertiary)', display:'flex', gap:6 }}><span style={{ color:'var(--text-secondary)', fontWeight:500, minWidth:52 }}>Clicked</span><span>{exactTs(t.clickedAt)}</span></div>}
+                          {t.repliedAt && <div style={{ fontSize:11, color:'var(--text-tertiary)', display:'flex', gap:6 }}><span style={{ color:'var(--text-secondary)', fontWeight:500, minWidth:52 }}>Replied</span><span>{exactTs(t.repliedAt)}</span></div>}
+                          {!t.sentAt && !t.openedAt && !t.clickedAt && !t.repliedAt && t.ts && (
+                            <div style={{ fontSize:11, color:'var(--text-tertiary)' }}>{exactTs(t.ts)}</div>
+                          )}
+                        </div>
                       </div>
-                      <div style={{ fontSize:12, color:'var(--text-secondary)', marginBottom:4 }}>{t.title}{t.company ? ` · ${t.company}` : ''}</div>
-                      <Badge label={t.label} type={t.badgeType} />
                     </div>
-                    <div style={{ fontSize:11, color:'var(--text-tertiary)', whiteSpace:'nowrap', flexShrink:0 }}>{timeAgo(t.ts)}</div>
                   </div>
                 ))}
               </Panel>
@@ -353,33 +379,40 @@ export default function Dashboard({ user, theme, toggleTheme, getToken }) {
                   const iconColor = isReply ? 'var(--accent)' : isClick ? 'var(--amber)' : 'var(--blue)'
                   const iconBg    = isReply ? 'var(--accent-light)' : isClick ? 'var(--amber-light)' : 'var(--blue-light)'
                   return (
-                    <div key={i} style={{ display:'flex', alignItems:'center', gap:10, padding:'9px 0', borderBottom: i < Math.min(sortedSignals.length,10)-1 ? '1px solid var(--border)' : 'none' }}>
-                      <div style={{ width:28, height:28, borderRadius:'var(--radius)', background:iconBg, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
-                        {isReply
-                          ? <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2" strokeLinecap="round"><path d="M9 17H5a2 2 0 01-2-2V5a2 2 0 012-2h14a2 2 0 012 2v5"/><polyline points="17 11 12 16 7 11"/></svg>
-                          : isClick
-                          ? <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>
-                          : <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2" strokeLinecap="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
-                        }
-                      </div>
-                      <div style={{ flex:1, minWidth:0 }}>
-                        <div style={{ display:'flex', alignItems:'center', gap:5 }}>
-                          <span style={{ fontSize:13, fontWeight:500, color:'var(--text)', whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>
-                            {s.contact?.name || s.recipientEmail || 'Unknown'} &mdash; {s.label}
-                          </span>
-                          {s.contactId && (
-                            <button onClick={e => openHubSpotContact(s.contactId, e)}
-                              title="Open in HubSpot"
-                              style={{ flexShrink:0, background:'none', border:'none', cursor:'pointer', padding:0, color:'var(--text-tertiary)', lineHeight:1 }}>
-                              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
-                            </button>
-                          )}
+                    <div key={i} style={{ padding:'10px 0', borderBottom: i < Math.min(sortedSignals.length,10)-1 ? '1px solid var(--border)' : 'none' }}>
+                      <div style={{ display:'flex', gap:10 }}>
+                        <div style={{ width:28, height:28, borderRadius:'var(--radius)', background:iconBg, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0, marginTop:2 }}>
+                          {isReply
+                            ? <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2" strokeLinecap="round"><path d="M9 17H5a2 2 0 01-2-2V5a2 2 0 012-2h14a2 2 0 012 2v5"/><polyline points="17 11 12 16 7 11"/></svg>
+                            : isClick
+                            ? <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>
+                            : <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2" strokeLinecap="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+                          }
                         </div>
-                        <div style={{ fontSize:11, color:'var(--text-tertiary)', whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>
-                          {cleanSubject(s.subject)}
+                        <div style={{ flex:1, minWidth:0 }}>
+                          <div style={{ display:'flex', alignItems:'center', gap:5, marginBottom:2 }}>
+                            <span style={{ fontSize:13, fontWeight:500, color:'var(--text)' }}>
+                              {s.contact?.name || s.recipientEmail || 'Unknown'} &mdash; {s.label}
+                            </span>
+                            {s.contactId && (
+                              <button onClick={e => openHubSpotContact(s.contactId, e)} title="Open in HubSpot"
+                                style={{ flexShrink:0, background:'none', border:'none', cursor:'pointer', padding:0, color:'var(--text-tertiary)', lineHeight:1 }}>
+                                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+                              </button>
+                            )}
+                          </div>
+                          <div style={{ fontSize:11, color:'var(--text-tertiary)', marginBottom:4 }}>{cleanSubject(s.subject)}</div>
+                          <div style={{ display:'flex', flexDirection:'column', gap:3 }}>
+                            {s.sentAt    && <div style={{ fontSize:11, color:'var(--text-tertiary)', display:'flex', gap:6 }}><span style={{ color:'var(--text-secondary)', fontWeight:500, minWidth:52 }}>Sent</span><span>{exactTs(s.sentAt)}</span></div>}
+                            {s.openedAt  && <div style={{ fontSize:11, color:'var(--text-tertiary)', display:'flex', gap:6 }}><span style={{ color:'var(--text-secondary)', fontWeight:500, minWidth:52 }}>Opened</span><span>{exactTs(s.openedAt)}</span></div>}
+                            {s.clickedAt && <div style={{ fontSize:11, color:'var(--text-tertiary)', display:'flex', gap:6 }}><span style={{ color:'var(--text-secondary)', fontWeight:500, minWidth:52 }}>Clicked</span><span>{exactTs(s.clickedAt)}</span></div>}
+                            {s.repliedAt && <div style={{ fontSize:11, color:'var(--text-tertiary)', display:'flex', gap:6 }}><span style={{ color:'var(--text-secondary)', fontWeight:500, minWidth:52 }}>Replied</span><span>{exactTs(s.repliedAt)}</span></div>}
+                            {!s.sentAt && !s.openedAt && !s.clickedAt && !s.repliedAt && s.timestamp && (
+                              <div style={{ fontSize:11, color:'var(--text-tertiary)' }}>{exactTs(s.timestamp)}</div>
+                            )}
+                          </div>
                         </div>
                       </div>
-                      <div style={{ fontSize:11, color:'var(--text-tertiary)', whiteSpace:'nowrap', flexShrink:0 }}>{timeAgo(s.timestamp)}</div>
                     </div>
                   )
                 })}
