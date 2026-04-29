@@ -261,6 +261,59 @@ function mergeFeed(engagements, timelineEvents, sequences, lifecycle) {
 }
 
 
+// 5. Marketing email events: opens, clicks, deliveries from HubSpot Marketing Hub
+//    Uses /marketing/v3/emails/statistics/query to get recipient-level events
+async function fetchMarketingEmailEvents(userId, since) {
+  try {
+    const sinceISO = new Date(since).toISOString();
+    const data = await hsPost(userId, "/marketing/v3/emails/statistics/query", {
+      property: ["hs_email_sends_by_deliverability", "hs_email_open_rate", "hs_email_click_rate"],
+      filters: {
+        startTimestamp: sinceISO,
+      },
+      limit: 100,
+    });
+
+    // The statistics API returns aggregate data per email, not per recipient.
+    // We need the recipient-level events from the email events API instead.
+    return [];
+  } catch {
+    return [];
+  }
+}
+
+// Fetch per-recipient marketing email events using the Email Events API
+async function fetchMarketingEmailRecipientEvents(userId, since) {
+  try {
+    const data = await hsGet(userId, "/email/public/v1/events", {
+      startTimestamp: since,
+      limit: 100,
+    });
+
+    return (data.events || []).map((ev) => ({
+      source:    "marketing_email",
+      id:        `mev-${ev.id || ev.created}`,
+      type:      "MARKETING_EMAIL",
+      eventType: ev.type, // OPEN, CLICK, DELIVERED, BOUNCE, UNSUBSCRIBE
+      timestamp: ev.created || null,
+      subject:   ev.emailCampaignGroupName || ev.emailCampaignId || "Marketing email",
+      body:      null,
+      numOpens:  ev.type === "OPEN"  ? 1 : 0,
+      numClicks: ev.type === "CLICK" ? 1 : 0,
+      replied:   false,
+      filteredEvent: ev.type === "OPEN" && ev.browser?.name === "unknown",
+      sentAt:    null,
+      openedAt:  ev.type === "OPEN" ? ev.created : null,
+      contactId: ev.recipient ? String(ev.recipient) : null,
+      recipientEmail: ev.recipient || null,
+      url:       ev.url || null, // for clicks
+    }));
+  } catch (err) {
+    console.error("Marketing email events fetch failed:", err.message);
+    return [];
+  }
+}
+
 // ─── Bot detection ────────────────────────────────────────────────────────────
 
 function detectBot(item) {
@@ -316,10 +369,22 @@ function scoreAllSignals(feedItems, includeBots = false) {
     let score = 0;
     let label = "";
 
-    if (item.source === "engagement" && item.type === "EMAIL") {
+    if ((item.source === "engagement" && item.type === "EMAIL") ||
+         item.source === "marketing_email") {
       if (item.replied)            { score = 100; label = "Replied"; }
-      else if (item.numClicks > 0) { score = 60 + item.numClicks * 5; label = `Clicked link${item.numClicks > 1 ? ` ${item.numClicks}x` : ""}`; }
-      else if (item.numOpens > 0)  { score = 30 + item.numOpens * 10; label = `Opened${item.numOpens > 1 ? ` ${item.numOpens}x` : ""}`; }
+      else if (item.numClicks > 0) {
+        score = 60 + item.numClicks * 5;
+        label = item.url
+          ? `Clicked link${item.numClicks > 1 ? ` ${item.numClicks}x` : ""}: ${item.url.replace(/^https?:\/\//, "").slice(0, 40)}`
+          : `Clicked link${item.numClicks > 1 ? ` ${item.numClicks}x` : ""}`;
+      }
+      else if (item.numOpens > 0)  {
+        score = 30 + item.numOpens * 10;
+        label = `Opened${item.numOpens > 1 ? ` ${item.numOpens}x` : ""}`;
+      }
+      else if (item.eventType === "DELIVERED") continue; // skip pure delivery events
+      else if (item.eventType === "BOUNCE")    { score = 10; label = "Bounced"; }
+      else if (item.eventType === "UNSUBSCRIBE") { score = 5; label = "Unsubscribed"; }
 
       if (score === 0) continue;
 
@@ -592,12 +657,16 @@ export const handler = async (event, context) => {
       const hours = Math.min(parseInt(qp.hours || "48", 10), 168);
       const since = Date.now() - hours * 60 * 60 * 1000;
 
-      const data = await hsGet(user.userId, "/engagements/v1/engagements/paged", {
-        limit: 100,
-        since,
-      });
+      // Fetch both engagement data and marketing email events in parallel
+      const [engData, marketingEvents] = await Promise.all([
+        hsGet(user.userId, "/engagements/v1/engagements/paged", {
+          limit: 100,
+          since,
+        }).catch(() => ({ results: [] })),
+        fetchMarketingEmailRecipientEvents(user.userId, since),
+      ]);
 
-      const items = (data.results || []).map((eng) => ({
+      const engItems = (engData.results || []).map((eng) => ({
         source:        "engagement",
         id:            `eng-${eng.engagement?.id}`,
         type:          eng.engagement?.type || "UNKNOWN",
@@ -612,28 +681,61 @@ export const handler = async (event, context) => {
         contactId:     eng.associations?.contactIds?.[0] ?? null,
       }));
 
-      const { real, bots } = scoreAllSignals(items, qp.includeBots === "true");
+      // Merge engagement items + marketing email events
+      const allItems = [...engItems, ...marketingEvents];
+      const { real, bots } = scoreAllSignals(allItems, qp.includeBots === "true");
 
-      const contactIds = [...new Set(
-        [...real, ...(qp.includeBots === "true" ? bots : [])]
-          .slice(0, 30).map((s) => s.contactId).filter(Boolean)
-      )];
+      const allSignals = [...real, ...(qp.includeBots === "true" ? bots : [])].slice(0, 30);
+
+      // Collect contact IDs (from engagements) and emails (from marketing events)
+      const contactIds    = [...new Set(allSignals.map(s => s.contactId).filter(Boolean))]
+      const recipientEmails = [...new Set(allSignals.map(s => s.recipientEmail).filter(s => s && !s.contactId))]
+
       let contactMap = {};
+
+      // Look up by contact ID
       if (contactIds.length > 0) {
         const batch = await hsPost(user.userId, "/crm/v3/objects/contacts/batch/read", {
-          properties: ["firstname", "lastname", "company", "jobtitle"],
+          properties: ["firstname", "lastname", "company", "jobtitle", "email"],
           inputs:     contactIds.map((id) => ({ id })),
         });
         (batch.results || []).forEach((c) => {
-          contactMap[c.id] = {
+          const info = {
             name:    `${c.properties.firstname || ""} ${c.properties.lastname || ""}`.trim(),
             company: c.properties.company  || "",
             title:   c.properties.jobtitle || "",
           };
+          contactMap[c.id] = info;
+          // Also index by email so marketing events can find them
+          if (c.properties.email) contactMap[c.properties.email] = info;
         });
       }
 
-      const enrich   = (s) => ({ ...s, contact: contactMap[s.contactId] || null });
+      // Look up marketing event contacts by email if not already found
+      const missingEmails = recipientEmails.filter(e => !contactMap[e]);
+      if (missingEmails.length > 0) {
+        try {
+          const emailBatch = await hsPost(user.userId, "/crm/v3/objects/contacts/batch/read", {
+            properties:  ["firstname", "lastname", "company", "jobtitle", "email"],
+            idProperty:  "email",
+            inputs:      missingEmails.map(e => ({ id: e })),
+          });
+          (emailBatch.results || []).forEach((c) => {
+            const info = {
+              name:    `${c.properties.firstname || ""} ${c.properties.lastname || ""}`.trim(),
+              company: c.properties.company  || "",
+              title:   c.properties.jobtitle || "",
+            };
+            if (c.properties.email) contactMap[c.properties.email] = info;
+            contactMap[c.id] = info;
+          });
+        } catch { /* fail silently */ }
+      }
+
+      const enrich = (s) => ({
+        ...s,
+        contact: contactMap[s.contactId] || contactMap[s.recipientEmail] || null,
+      });
       const response = {
         signals: real.slice(0, 20).map(enrich),
         meta: {
