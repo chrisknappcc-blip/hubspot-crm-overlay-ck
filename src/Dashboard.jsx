@@ -171,10 +171,11 @@ export default function Dashboard({ user, theme, toggleTheme, getToken }) {
       <nav style={{ background:'var(--bg-panel)', borderBottom:'1px solid var(--border)', padding:'0 1.5rem', display:'flex', alignItems:'center', height:52, gap:24, position:'sticky', top:0, zIndex:50 }}>
         <div style={{ fontSize:13, fontWeight:500, letterSpacing:'.05em', textTransform:'uppercase', color:'var(--accent)', marginRight:8 }}>CarePathIQ</div>
 
-        {['dashboard','contacts'].map(tab => (
-         style={{ fontSize:13, fontWeight:activeTab===tab?500:400, color:activeTab===tab?'var(--text)':'var(--text-secondary)', padding:'0 2px', height:52, background:'none', border:'none', borderBottom:activeTab===tab?'2px solid var(--accent)':'2px solid transparent', cursor:'pointer', textTransform:'capitalize' }}
-            {tab}
-          </button>
+{['dashboard','contacts'].map(tab => (
+  <button key={tab} onClick={() => setActiveTab(tab)} style={{ fontSize:13, fontWeight:activeTab===tab?500:400, color:activeTab===tab?'var(--text)':'var(--text-secondary)', padding:'0 2px', height:52, background:'none', border:'none', borderBottom:activeTab===tab?'2px solid var(--accent)':'2px solid transparent', cursor:'pointer', textTransform:'capitalize' }}>
+    {tab}
+  </button>
+))}
         ))}
 
         <div style={{ marginLeft:'auto', display:'flex', alignItems:'center', gap:12 }}>
