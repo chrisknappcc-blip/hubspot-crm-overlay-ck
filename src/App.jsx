@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect } from 'react'
 import { useAuth, useUser, SignIn } from '@clerk/clerk-react'
 import { apiFetch } from './api'
 import Dashboard from './Dashboard'
@@ -41,7 +41,12 @@ export default function App() {
 
   if (checkingConnection) return <LoadingScreen />
 
-  if (!hsConnected) return <ConnectHubSpot onConnected={() => setHsConnected(true)} getToken={getToken} />
+  if (!hsConnected) return (
+    <ConnectHubSpot
+      getToken={getToken}
+      onConnected={() => setHsConnected(true)}
+    />
+  )
 
   return (
     <Dashboard
@@ -57,7 +62,7 @@ function LoadingScreen() {
   return (
     <div style={{ display:'flex', alignItems:'center', justifyContent:'center', minHeight:'100vh', background:'var(--bg)' }}>
       <div style={{ textAlign:'center' }}>
-        <div style={{ width:32, height:32, border:'2px solid var(--border-strong)', borderTopColor:'var(--accent)', borderRadius:'50%', animation:'spin 0.8s linear infinite', margin:'0 auto 12px' }} />
+        <div style={{ width:32, height:32, border:'2px solid rgba(0,0,0,0.1)', borderTopColor:'var(--accent)', borderRadius:'50%', animation:'spin 0.8s linear infinite', margin:'0 auto 12px' }} />
         <div style={{ fontSize:13, color:'var(--text-tertiary)' }}>Loading...</div>
       </div>
       <style>{`@keyframes spin { to { transform: rotate(360deg) } }`}</style>
@@ -65,21 +70,31 @@ function LoadingScreen() {
   )
 }
 
-function ConnectHubSpot({ onConnected, getToken }) {
+function ConnectHubSpot({ getToken, onConnected }) {
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState(null)
+
   const handleConnect = async () => {
-  const token = await getToken()
-  const res = await fetch('/api/hubspot/auth/connect', {
-    headers: { Authorization: `Bearer ${token}` }
-  })
-  const data = await res.json()
-  if (data.authUrl) {
-    window.location.href = data.authUrl
+    setLoading(true)
+    setError(null)
+    try {
+      const data = await apiFetch('/api/hubspot/auth/connect', getToken)
+      if (data.authUrl) {
+        window.location.href = data.authUrl
+      } else {
+        setError('Could not get HubSpot authorization URL. Please try again.')
+      }
+    } catch (err) {
+      console.error('HubSpot connect error:', err)
+      setError('Something went wrong. Please try again.')
+    } finally {
+      setLoading(false)
+    }
   }
-}
 
   return (
     <div style={{ display:'flex', alignItems:'center', justifyContent:'center', minHeight:'100vh', background:'var(--bg)' }}>
-      <div style={{ background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius-lg)', padding:'2.5rem', maxWidth:400, textAlign:'center' }}>
+      <div style={{ background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius-lg)', padding:'2.5rem', maxWidth:400, width:'100%', textAlign:'center' }}>
         <div style={{ width:48, height:48, background:'var(--accent-light)', borderRadius:'50%', display:'flex', alignItems:'center', justifyContent:'center', margin:'0 auto 1.5rem' }}>
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/>
@@ -90,8 +105,16 @@ function ConnectHubSpot({ onConnected, getToken }) {
         <p style={{ fontSize:13, color:'var(--text-secondary)', marginBottom:'1.5rem', lineHeight:1.6 }}>
           Authorize CarePathIQ to read your contacts, signals, and activity feed from HubSpot.
         </p>
-        <button onClick={handleConnect} style={{ background:'var(--accent)', color:'#fff', border:'none', borderRadius:'var(--radius)', padding:'10px 24px', fontSize:14, fontWeight:500, cursor:'pointer', width:'100%' }}>
-          Connect HubSpot
+        {error && (
+          <div style={{ fontSize:12, color:'var(--red)', background:'var(--red-light)', borderRadius:'var(--radius)', padding:'8px 12px', marginBottom:'1rem' }}>
+            {error}
+          </div>
+        )}
+        <button
+          onClick={handleConnect}
+          disabled={loading}
+          style={{ background:'var(--accent)', color:'#fff', border:'none', borderRadius:'var(--radius)', padding:'10px 24px', fontSize:14, fontWeight:500, cursor: loading ? 'not-allowed' : 'pointer', width:'100%', opacity: loading ? 0.7 : 1 }}>
+          {loading ? 'Connecting...' : 'Connect HubSpot'}
         </button>
       </div>
     </div>
