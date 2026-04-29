@@ -1,16 +1,14 @@
 // netlify/functions/hubspot.js
 // Routes:
-//   GET  /hubspot/auth/connect            → redirect to HubSpot OAuth
-//   GET  /hubspot/auth/callback           → exchange code, store tokens
-//   GET  /hubspot/status                  → check which services are connected
-//   GET  /hubspot/contacts                → list contacts
-//   GET  /hubspot/contacts/:id            → single contact detail + engagements
-//   GET  /hubspot/signals                 → ranked intent signals (bot-filtered)
-//   GET  /hubspot/feed/:contactId         → full merged activity feed for a contact
-//                                           (engagements + timeline events + sequences
-//                                            + lifecycle changes, merged and sorted)
-//   GET  /hubspot/feed/team               → activity feed across all contacts (team view)
-//   POST /hubspot/activity                → log a note/call/meeting to a contact
+//   GET  /hubspot/auth/connect            -> redirect to HubSpot OAuth
+//   GET  /hubspot/auth/callback           -> exchange code, store tokens (no auth required)
+//   GET  /hubspot/status                  -> check which services are connected
+//   GET  /hubspot/contacts                -> list contacts
+//   GET  /hubspot/contacts/:id            -> single contact detail + engagements
+//   GET  /hubspot/signals                 -> ranked intent signals (bot-filtered)
+//   GET  /hubspot/feed/:contactId         -> full merged activity feed for a contact
+//   GET  /hubspot/feed/team               -> activity feed across all contacts (team view)
+//   POST /hubspot/activity                -> log a note/call/meeting to a contact
 
 import { withAuth } from "./utils/auth.js";
 import { getTokens, setTokens, isTokenValid } from "./utils/tokenStore.js";
@@ -20,17 +18,16 @@ const HS_CLIENT_SECRET = process.env.HUBSPOT_CLIENT_SECRET;
 const HS_REDIRECT_URI  = process.env.HUBSPOT_REDIRECT_URI;
 const HS_API           = "https://api.hubapi.com";
 
-// Scopes needed for full activity feed + signals access.
-// NOTE: If you already authorized with the old scope list, each user must
-// re-authorize by visiting /hubspot/auth/connect again after deploying this.
 const HS_SCOPES = [
   "crm.objects.contacts.read",
   "crm.objects.contacts.write",
   "crm.objects.deals.read",
-  "timeline",           // read/write native + custom timeline events
-  "sales-email-read",   // 1:1 sales email open/click/reply metadata
-  "crm.lists.read",     // sequence enrollment lists
-  "automation",         // sequence enrollment status
+  "timeline",
+  "sales-email-read",
+  "crm.lists.read",
+  "automation",
+  "crm.objects.marketing_events.read",
+  "crm.objects.marketing_events.write",
 ].join(" ");
 
 
@@ -104,9 +101,7 @@ async function hsPost(userId, path, body) {
 
 
 // ─── Activity feed helpers ────────────────────────────────────────────────────
-// Pulls from four separate HubSpot APIs and normalizes into one unified shape.
 
-// 1. Classic engagements: emails, calls, meetings, notes logged by reps
 async function fetchEngagements(userId, contactId, limit = 50) {
   try {
     const data = await hsGet(
@@ -130,12 +125,10 @@ async function fetchEngagements(userId, contactId, limit = 50) {
       contactId:     eng.associations?.contactIds?.[0] ?? null,
     }));
   } catch {
-    return []; // fail gracefully — don't break the whole feed
+    return [];
   }
 }
 
-// 2. CRM Timeline Events: sequence steps, form fills, page views,
-//    workflow triggers, and custom events from integrations
 async function fetchTimelineEvents(userId, contactId, limit = 50) {
   try {
     const data = await hsGet(
@@ -153,15 +146,13 @@ async function fetchTimelineEvents(userId, contactId, limit = 50) {
       body:      ev.tokens?.body       || ev.extraData?.description || null,
       tokens:    ev.tokens    || {},
       extraData: ev.extraData || {},
-      contactId: null, // already scoped to this contact
+      contactId: null,
     }));
   } catch {
     return [];
   }
 }
 
-// 3. Sequence enrollments: which sequences the contact is/was in,
-//    current step, and enrollment state
 async function fetchSequenceEnrollments(userId, contactId) {
   try {
     const data = await hsGet(
@@ -208,15 +199,14 @@ async function fetchSequenceEnrollments(userId, contactId) {
   }
 }
 
-// 4. Lifecycle stage + lead status history from property change log
 async function fetchLifecycleHistory(userId, contactId) {
   try {
     const data = await hsGet(
       userId,
       `/crm/v3/objects/contacts/${contactId}`,
       {
-        properties:              "lifecyclestage,hs_lead_status",
-        propertiesWithHistory:   "lifecyclestage,hs_lead_status",
+        properties:            "lifecyclestage,hs_lead_status",
+        propertiesWithHistory: "lifecyclestage,hs_lead_status",
       }
     );
 
@@ -228,7 +218,7 @@ async function fetchLifecycleHistory(userId, contactId) {
         id:        `lc-${h.timestamp}-${h.value}`,
         type:      "LIFECYCLE_CHANGE",
         timestamp: h.timestamp,
-        subject:   `Lifecycle stage → ${h.value}`,
+        subject:   `Lifecycle stage: ${h.value}`,
         body:      null,
         value:     h.value,
         contactId: null,
@@ -241,7 +231,7 @@ async function fetchLifecycleHistory(userId, contactId) {
         id:        `ls-${h.timestamp}-${h.value}`,
         type:      "LEAD_STATUS_CHANGE",
         timestamp: h.timestamp,
-        subject:   `Lead status → ${h.value}`,
+        subject:   `Lead status: ${h.value}`,
         body:      null,
         value:     h.value,
         contactId: null,
@@ -254,7 +244,6 @@ async function fetchLifecycleHistory(userId, contactId) {
   }
 }
 
-// Merge all four sources, sort newest-first, deduplicate by id
 function mergeFeed(engagements, timelineEvents, sequences, lifecycle) {
   const all  = [...engagements, ...timelineEvents, ...sequences, ...lifecycle];
   const seen = new Set();
@@ -273,15 +262,6 @@ function mergeFeed(engagements, timelineEvents, sequences, lifecycle) {
 
 
 // ─── Bot detection ────────────────────────────────────────────────────────────
-// Identifies likely security-scanner opens using layered behavioral heuristics.
-// Returns { isBot, confidence, reasons[] }
-//
-// Five signals (none conclusive alone):
-//   1. HubSpot's filteredEvent flag  (known bot IP list)
-//   2. Time-to-open < 10s            (scanners fire on delivery)
-//   3. Opens with 0 clicks + no reply
-//   4. 4+ opens, 0 clicks            (burst/retry scanner pattern)
-//   5. Off-hours open, no follow-on  (low confidence)
 
 function detectBot(item) {
   const reasons = [];
@@ -302,7 +282,7 @@ function detectBot(item) {
   }
 
   if (item.numOpens >= 4 && item.numClicks === 0 && !item.replied) {
-    reasons.push(`${item.numOpens} opens, 0 clicks — burst pattern`);
+    reasons.push(`${item.numOpens} opens, 0 clicks - burst pattern`);
   }
 
   if (item.openedAt) {
@@ -318,8 +298,8 @@ function detectBot(item) {
   const softSignals = reasons.length - hardSignals;
 
   let confidence = "none";
-  if (hardSignals >= 1)      confidence = "high";
-  else if (softSignals >= 2) confidence = "medium";
+  if (hardSignals >= 1)       confidence = "high";
+  else if (softSignals >= 2)  confidence = "medium";
   else if (softSignals === 1) confidence = "low";
 
   return { isBot: confidence === "high" || confidence === "medium", confidence, reasons };
@@ -327,18 +307,6 @@ function detectBot(item) {
 
 
 // ─── Signal scoring ───────────────────────────────────────────────────────────
-// Unified scorer across all activity feed sources.
-//
-// Weights:
-//   Reply / sequence reply        = 100
-//   Click                         = 60 + 5/extra click
-//   Sequence completed            = 50
-//   Lifecycle / lead status move  = 45
-//   Open (human)                  = 30 + 10/open
-//   Sequence enrolled (active)    = 20
-//   Timeline event (form, page)   = 15
-//   Other engagement (call, note) = 25
-//   Open (suspected bot)          → bots[] unless includeBots=true
 
 function scoreAllSignals(feedItems, includeBots = false) {
   const real = [];
@@ -388,7 +356,6 @@ function scoreAllSignals(feedItems, includeBots = false) {
       continue;
     }
 
-    // CALL, MEETING, NOTE — always real, moderate score
     if (item.source === "engagement") {
       score = 25;
       label = item.type.charAt(0) + item.type.slice(1).toLowerCase();
@@ -403,324 +370,306 @@ function scoreAllSignals(feedItems, includeBots = false) {
 }
 
 
-// ─── Main router ──────────────────────────────────────────────────────────────
+// ─── OAuth callback (no auth required) ───────────────────────────────────────
+// HubSpot redirects the browser here after OAuth -- no Clerk token is present.
+// We extract the code and userId (from state), exchange for tokens, store them,
+// then redirect the user back to the app.
 
-// Callback handler runs outside auth -- HubSpot redirects here with no Clerk token
-async function handleCallback(event) {
-  const qp = event.queryStringParameters || {};
-  const code = qp.code;
+async function handleOAuthCallback(event) {
+  const qp     = event.queryStringParameters || {};
+  const code   = qp.code;
   const userId = qp.state;
+
   if (!code || !userId) return error(400, "Missing code or state");
 
   const res = await fetch("https://api.hubapi.com/oauth/v1/token", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
-      grant_type: "authorization_code",
-      client_id: HS_CLIENT_ID,
+      grant_type:    "authorization_code",
+      client_id:     HS_CLIENT_ID,
       client_secret: HS_CLIENT_SECRET,
-      redirect_uri: HS_REDIRECT_URI,
+      redirect_uri:  HS_REDIRECT_URI,
       code,
     }),
   });
-  if (!res.ok) return error(400, "Token exchange failed");
+
+  if (!res.ok) {
+    const errText = await res.text();
+    console.error("HubSpot token exchange failed:", errText);
+    return error(400, "Token exchange failed");
+  }
+
   const data = await res.json();
 
   await setTokens(userId, {
     hubspot: {
-      access_token: data.access_token,
+      access_token:  data.access_token,
       refresh_token: data.refresh_token,
-      expires_at: Date.now() + data.expires_in * 1000,
+      expires_at:    Date.now() + data.expires_in * 1000,
     },
   });
 
   return {
     statusCode: 302,
-    headers: { Location: process.env.APP_URL + "?connected=hubspot" },
+    headers: {
+      Location:                      process.env.APP_URL + "?connected=hubspot",
+      "Access-Control-Allow-Origin": "*",
+    },
     body: "",
   };
 }
 
+
+// ─── Main router ──────────────────────────────────────────────────────────────
+
 export const handler = async (event, context) => {
-  const rawPath = (event.path || "").replace("/.netlify/functions/hubspot", "").replace("/api/hubspot", "");
+  const rawPath = (event.path || "")
+    .replace("/.netlify/functions/hubspot", "")
+    .replace("/api/hubspot", "");
 
-  // Let the OAuth callback through without auth
-  if (event.httpMethod === "GET" && rawPath === "/auth/callback") {
-    return handleCallback(event);
-  }
-
-  // Everything else goes through auth
-  return withAuth(async (event, context, user) => {
-export const handler = withAuth(async (event, context, user) => {
-  const path = (event.path || "").replace("/.netlify/functions/hubspot", "").replace("/api/hubspot", "");
-  const method = event.httpMethod;
-  const qp     = event.queryStringParameters || {};
-
-  // ── OAuth: start connect ───────────────────────────────────────────────────
-  if (method === "GET" && path === "/auth/connect") {
-    const url = new URL("https://app.hubspot.com/oauth/authorize");
-    url.searchParams.set("client_id",    HS_CLIENT_ID);
-    url.searchParams.set("redirect_uri", HS_REDIRECT_URI);
-    url.searchParams.set("scope",        HS_SCOPES);
-    url.searchParams.set("state",        user.userId);
-    return ok({ authUrl: url.toString() });
-  }
-
-  // ── OAuth: callback ────────────────────────────────────────────────────────
-  if (method === "GET" && path === "/auth/callback") {
-    const code   = qp.code;
-    const userId = qp.state;
-    if (!code || !userId) return error(400, "Missing code or state");
-
-    const res = await fetch("https://api.hubapi.com/oauth/v1/token", {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        grant_type:    "authorization_code",
-        client_id:     HS_CLIENT_ID,
-        client_secret: HS_CLIENT_SECRET,
-        redirect_uri:  HS_REDIRECT_URI,
-        code,
-      }),
-    });
-    if (!res.ok) return error(400, "Token exchange failed");
-    const data = await res.json();
-
-    await setTokens(userId, {
-      hubspot: {
-        access_token:  data.access_token,
-        refresh_token: data.refresh_token,
-        expires_at:    Date.now() + data.expires_in * 1000,
-      },
-    });
-
+  // CORS preflight
+  if (event.httpMethod === "OPTIONS") {
     return {
-      statusCode: 302,
-      headers: { Location: process.env.APP_URL + "?connected=hubspot" },
+      statusCode: 200,
+      headers: {
+        "Access-Control-Allow-Origin":  "*",
+        "Access-Control-Allow-Headers": "Authorization, Content-Type",
+        "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+      },
       body: "",
     };
   }
 
-  // ── Connection status ──────────────────────────────────────────────────────
-  if (method === "GET" && path === "/status") {
-    const tokens = await getTokens(user.userId);
-    return ok({
-      hubspot:   !!tokens.hubspot?.access_token,
-      microsoft: !!tokens.microsoft?.access_token,
-    });
+  // OAuth callback runs without Clerk auth -- HubSpot redirects here
+  if (event.httpMethod === "GET" && rawPath === "/auth/callback") {
+    return handleOAuthCallback(event);
   }
 
-  // ── Contacts list ──────────────────────────────────────────────────────────
-  if (method === "GET" && path === "/contacts") {
-    const data = await hsGet(user.userId, "/crm/v3/objects/contacts", {
-      limit: 100,
-      properties: "firstname,lastname,email,company,jobtitle,phone,hs_lead_status,hubspot_owner_id,notes_last_contacted,num_contacted_notes,lifecyclestage",
-      associations: "deals",
-    });
-    return ok({ contacts: data.results, total: data.total });
-  }
+  // Everything else requires a valid Clerk session
+  return withAuth(async (event, context, user) => {
+    const path   = rawPath;
+    const method = event.httpMethod;
+    const qp     = event.queryStringParameters || {};
 
-  // ── Single contact ─────────────────────────────────────────────────────────
-  if (method === "GET" && path.startsWith("/contacts/")) {
-    const id = path.split("/contacts/")[1];
-    const [contact, engagements] = await Promise.all([
-      hsGet(user.userId, `/crm/v3/objects/contacts/${id}`, {
-        properties: "firstname,lastname,email,company,jobtitle,phone,hs_lead_status,notes_last_contacted,lifecyclestage",
-        associations: "deals,engagements",
-      }),
-      fetchEngagements(user.userId, id, 20),
-    ]);
-    return ok({ contact, engagements });
-  }
+    // ── OAuth: start connect ─────────────────────────────────────────────────
+    if (method === "GET" && path === "/auth/connect") {
+      const url = new URL("https://app.hubspot.com/oauth/authorize");
+      url.searchParams.set("client_id",    HS_CLIENT_ID);
+      url.searchParams.set("redirect_uri", HS_REDIRECT_URI);
+      url.searchParams.set("scope",        HS_SCOPES);
+      url.searchParams.set("state",        user.userId);
+      return ok({ authUrl: url.toString() });
+    }
 
-  // ── Full merged activity feed for a contact ────────────────────────────────
-  // GET /hubspot/feed/:contactId
-  // ?sources=engagements,timeline,sequences,lifecycle  (default: all)
-  // ?types=EMAIL,SEQUENCE_ENROLLMENT                   (optional type filter)
-  if (method === "GET" && path.startsWith("/feed/") && path !== "/feed/team") {
-    const contactId = path.split("/feed/")[1];
-    const sources   = (qp.sources || "engagements,timeline,sequences,lifecycle").split(",");
+    // ── Connection status ────────────────────────────────────────────────────
+    if (method === "GET" && path === "/status") {
+      const tokens = await getTokens(user.userId);
+      return ok({
+        hubspot:   !!tokens.hubspot?.access_token,
+        microsoft: !!tokens.microsoft?.access_token,
+      });
+    }
 
-    const [engagements, timelineEvents, sequences, lifecycle] = await Promise.all([
-      sources.includes("engagements") ? fetchEngagements(user.userId, contactId)         : Promise.resolve([]),
-      sources.includes("timeline")    ? fetchTimelineEvents(user.userId, contactId)      : Promise.resolve([]),
-      sources.includes("sequences")   ? fetchSequenceEnrollments(user.userId, contactId) : Promise.resolve([]),
-      sources.includes("lifecycle")   ? fetchLifecycleHistory(user.userId, contactId)    : Promise.resolve([]),
-    ]);
+    // ── Contacts list ────────────────────────────────────────────────────────
+    if (method === "GET" && path === "/contacts") {
+      const data = await hsGet(user.userId, "/crm/v3/objects/contacts", {
+        limit: 100,
+        properties: "firstname,lastname,email,company,jobtitle,phone,hs_lead_status,hubspot_owner_id,notes_last_contacted,num_contacted_notes,lifecyclestage",
+        associations: "deals",
+      });
+      return ok({ contacts: data.results, total: data.total });
+    }
 
-    const feed = mergeFeed(engagements, timelineEvents, sequences, lifecycle);
+    // ── Single contact ───────────────────────────────────────────────────────
+    if (method === "GET" && path.startsWith("/contacts/")) {
+      const id = path.split("/contacts/")[1];
+      const [contact, engagements] = await Promise.all([
+        hsGet(user.userId, `/crm/v3/objects/contacts/${id}`, {
+          properties: "firstname,lastname,email,company,jobtitle,phone,hs_lead_status,notes_last_contacted,lifecyclestage",
+          associations: "deals,engagements",
+        }),
+        fetchEngagements(user.userId, id, 20),
+      ]);
+      return ok({ contact, engagements });
+    }
 
-    const typeFilter = qp.types ? qp.types.split(",") : null;
-    const filtered   = typeFilter ? feed.filter((item) => typeFilter.includes(item.type)) : feed;
+    // ── Full merged activity feed for a contact ──────────────────────────────
+    if (method === "GET" && path.startsWith("/feed/") && path !== "/feed/team") {
+      const contactId = path.split("/feed/")[1];
+      const sources   = (qp.sources || "engagements,timeline,sequences,lifecycle").split(",");
 
-    return ok({
-      feed: filtered,
-      meta: {
-        total: filtered.length,
-        bySource: {
-          engagements:    engagements.length,
-          timelineEvents: timelineEvents.length,
-          sequences:      sequences.length,
-          lifecycle:      lifecycle.length,
+      const [engagements, timelineEvents, sequences, lifecycle] = await Promise.all([
+        sources.includes("engagements") ? fetchEngagements(user.userId, contactId)         : Promise.resolve([]),
+        sources.includes("timeline")    ? fetchTimelineEvents(user.userId, contactId)      : Promise.resolve([]),
+        sources.includes("sequences")   ? fetchSequenceEnrollments(user.userId, contactId) : Promise.resolve([]),
+        sources.includes("lifecycle")   ? fetchLifecycleHistory(user.userId, contactId)    : Promise.resolve([]),
+      ]);
+
+      const feed       = mergeFeed(engagements, timelineEvents, sequences, lifecycle);
+      const typeFilter = qp.types ? qp.types.split(",") : null;
+      const filtered   = typeFilter ? feed.filter((item) => typeFilter.includes(item.type)) : feed;
+
+      return ok({
+        feed: filtered,
+        meta: {
+          total: filtered.length,
+          bySource: {
+            engagements:    engagements.length,
+            timelineEvents: timelineEvents.length,
+            sequences:      sequences.length,
+            lifecycle:      lifecycle.length,
+          },
         },
-      },
-    });
-  }
-
-  // ── Team activity feed ─────────────────────────────────────────────────────
-  // GET /hubspot/feed/team
-  // ?hours=24   lookback window (default 24, max 168)
-  // ?limit=50   max items (default 50, max 200)
-  // ?showBots=true   include suspected bot signals in response
-  if (method === "GET" && path === "/feed/team") {
-    const hours = Math.min(parseInt(qp.hours || "24", 10), 168);
-    const limit = Math.min(parseInt(qp.limit || "50",  10), 200);
-    const since = Date.now() - hours * 60 * 60 * 1000;
-
-    const engData = await hsGet(user.userId, "/engagements/v1/engagements/paged", {
-      limit: 100,
-      since,
-    });
-
-    const items = (engData.results || []).map((eng) => ({
-      source:        "engagement",
-      id:            `eng-${eng.engagement?.id}`,
-      type:          eng.engagement?.type || "UNKNOWN",
-      timestamp:     eng.engagement?.createdAt || null,
-      subject:       eng.metadata?.subject || null,
-      body:          eng.metadata?.body    || null,
-      numOpens:      eng.metadata?.numOpens      || 0,
-      numClicks:     eng.metadata?.numClicks     || 0,
-      replied:       eng.metadata?.replied       || false,
-      filteredEvent: eng.metadata?.filteredEvent || false,
-      sentAt:        eng.metadata?.sentAt        || null,
-      openedAt:      eng.metadata?.openedAt      || null,
-      contactId:     eng.associations?.contactIds?.[0] ?? null,
-    }));
-
-    const { real, bots } = scoreAllSignals(items, qp.includeBots === "true");
-
-    const contactIds = [...new Set(real.slice(0, limit).map((s) => s.contactId).filter(Boolean))];
-    let contactMap   = {};
-    if (contactIds.length > 0) {
-      const batch = await hsPost(user.userId, "/crm/v3/objects/contacts/batch/read", {
-        properties: ["firstname", "lastname", "company", "jobtitle"],
-        inputs:     contactIds.map((id) => ({ id })),
-      });
-      (batch.results || []).forEach((c) => {
-        contactMap[c.id] = {
-          name:    `${c.properties.firstname || ""} ${c.properties.lastname || ""}`.trim(),
-          company: c.properties.company  || "",
-          title:   c.properties.jobtitle || "",
-        };
       });
     }
 
-    const enrich   = (s) => ({ ...s, contact: contactMap[s.contactId] || null });
-    const response = {
-      feed: real.slice(0, limit).map(enrich),
-      meta: {
-        total:             real.length,
-        suspectedBotCount: bots.length,
-        hoursSearched:     hours,
-        botSummary: bots.length > 0
-          ? `${bots.length} open event${bots.length > 1 ? "s" : ""} filtered as likely bot scan`
-          : null,
-      },
-    };
-    if (qp.showBots === "true") {
-      response.suspectedBotSignals = bots.slice(0, 20).map(enrich);
-    }
-    return ok(response);
-  }
+    // ── Team activity feed ───────────────────────────────────────────────────
+    if (method === "GET" && path === "/feed/team") {
+      const hours = Math.min(parseInt(qp.hours || "24", 10), 168);
+      const limit = Math.min(parseInt(qp.limit || "50",  10), 200);
+      const since = Date.now() - hours * 60 * 60 * 1000;
 
-  // ── Signals: ranked intent across all contacts ─────────────────────────────
-  // GET /hubspot/signals
-  // ?hours=48          lookback (default 48, max 168)
-  // ?includeBots=true  skip filtering (still tags each signal)
-  // ?showBots=true     include suspectedBotSignals[] in response
-  if (method === "GET" && path === "/signals") {
-    const hours = Math.min(parseInt(qp.hours || "48", 10), 168);
-    const since = Date.now() - hours * 60 * 60 * 1000;
-
-    const data = await hsGet(user.userId, "/engagements/v1/engagements/paged", {
-      limit: 100,
-      since,
-    });
-
-    const items = (data.results || []).map((eng) => ({
-      source:        "engagement",
-      id:            `eng-${eng.engagement?.id}`,
-      type:          eng.engagement?.type || "UNKNOWN",
-      timestamp:     eng.engagement?.createdAt || null,
-      subject:       eng.metadata?.subject      || null,
-      numOpens:      eng.metadata?.numOpens      || 0,
-      numClicks:     eng.metadata?.numClicks     || 0,
-      replied:       eng.metadata?.replied       || false,
-      filteredEvent: eng.metadata?.filteredEvent || false,
-      sentAt:        eng.metadata?.sentAt        || null,
-      openedAt:      eng.metadata?.openedAt      || null,
-      contactId:     eng.associations?.contactIds?.[0] ?? null,
-    }));
-
-    const { real, bots } = scoreAllSignals(items, qp.includeBots === "true");
-
-    const contactIds = [...new Set(
-      [...real, ...(qp.includeBots === "true" ? bots : [])]
-        .slice(0, 30).map((s) => s.contactId).filter(Boolean)
-    )];
-    let contactMap = {};
-    if (contactIds.length > 0) {
-      const batch = await hsPost(user.userId, "/crm/v3/objects/contacts/batch/read", {
-        properties: ["firstname", "lastname", "company", "jobtitle"],
-        inputs:     contactIds.map((id) => ({ id })),
+      const engData = await hsGet(user.userId, "/engagements/v1/engagements/paged", {
+        limit: 100,
+        since,
       });
-      (batch.results || []).forEach((c) => {
-        contactMap[c.id] = {
-          name:    `${c.properties.firstname || ""} ${c.properties.lastname || ""}`.trim(),
-          company: c.properties.company  || "",
-          title:   c.properties.jobtitle || "",
-        };
+
+      const items = (engData.results || []).map((eng) => ({
+        source:        "engagement",
+        id:            `eng-${eng.engagement?.id}`,
+        type:          eng.engagement?.type || "UNKNOWN",
+        timestamp:     eng.engagement?.createdAt || null,
+        subject:       eng.metadata?.subject || null,
+        body:          eng.metadata?.body    || null,
+        numOpens:      eng.metadata?.numOpens      || 0,
+        numClicks:     eng.metadata?.numClicks     || 0,
+        replied:       eng.metadata?.replied       || false,
+        filteredEvent: eng.metadata?.filteredEvent || false,
+        sentAt:        eng.metadata?.sentAt        || null,
+        openedAt:      eng.metadata?.openedAt      || null,
+        contactId:     eng.associations?.contactIds?.[0] ?? null,
+      }));
+
+      const { real, bots } = scoreAllSignals(items, qp.includeBots === "true");
+
+      const contactIds = [...new Set(real.slice(0, limit).map((s) => s.contactId).filter(Boolean))];
+      let contactMap   = {};
+      if (contactIds.length > 0) {
+        const batch = await hsPost(user.userId, "/crm/v3/objects/contacts/batch/read", {
+          properties: ["firstname", "lastname", "company", "jobtitle"],
+          inputs:     contactIds.map((id) => ({ id })),
+        });
+        (batch.results || []).forEach((c) => {
+          contactMap[c.id] = {
+            name:    `${c.properties.firstname || ""} ${c.properties.lastname || ""}`.trim(),
+            company: c.properties.company  || "",
+            title:   c.properties.jobtitle || "",
+          };
+        });
+      }
+
+      const enrich   = (s) => ({ ...s, contact: contactMap[s.contactId] || null });
+      const response = {
+        feed: real.slice(0, limit).map(enrich),
+        meta: {
+          total:             real.length,
+          suspectedBotCount: bots.length,
+          hoursSearched:     hours,
+          botSummary: bots.length > 0
+            ? `${bots.length} open event${bots.length > 1 ? "s" : ""} filtered as likely bot scan`
+            : null,
+        },
+      };
+      if (qp.showBots === "true") {
+        response.suspectedBotSignals = bots.slice(0, 20).map(enrich);
+      }
+      return ok(response);
+    }
+
+    // ── Signals ──────────────────────────────────────────────────────────────
+    if (method === "GET" && path === "/signals") {
+      const hours = Math.min(parseInt(qp.hours || "48", 10), 168);
+      const since = Date.now() - hours * 60 * 60 * 1000;
+
+      const data = await hsGet(user.userId, "/engagements/v1/engagements/paged", {
+        limit: 100,
+        since,
       });
+
+      const items = (data.results || []).map((eng) => ({
+        source:        "engagement",
+        id:            `eng-${eng.engagement?.id}`,
+        type:          eng.engagement?.type || "UNKNOWN",
+        timestamp:     eng.engagement?.createdAt || null,
+        subject:       eng.metadata?.subject      || null,
+        numOpens:      eng.metadata?.numOpens      || 0,
+        numClicks:     eng.metadata?.numClicks     || 0,
+        replied:       eng.metadata?.replied       || false,
+        filteredEvent: eng.metadata?.filteredEvent || false,
+        sentAt:        eng.metadata?.sentAt        || null,
+        openedAt:      eng.metadata?.openedAt      || null,
+        contactId:     eng.associations?.contactIds?.[0] ?? null,
+      }));
+
+      const { real, bots } = scoreAllSignals(items, qp.includeBots === "true");
+
+      const contactIds = [...new Set(
+        [...real, ...(qp.includeBots === "true" ? bots : [])]
+          .slice(0, 30).map((s) => s.contactId).filter(Boolean)
+      )];
+      let contactMap = {};
+      if (contactIds.length > 0) {
+        const batch = await hsPost(user.userId, "/crm/v3/objects/contacts/batch/read", {
+          properties: ["firstname", "lastname", "company", "jobtitle"],
+          inputs:     contactIds.map((id) => ({ id })),
+        });
+        (batch.results || []).forEach((c) => {
+          contactMap[c.id] = {
+            name:    `${c.properties.firstname || ""} ${c.properties.lastname || ""}`.trim(),
+            company: c.properties.company  || "",
+            title:   c.properties.jobtitle || "",
+          };
+        });
+      }
+
+      const enrich   = (s) => ({ ...s, contact: contactMap[s.contactId] || null });
+      const response = {
+        signals: real.slice(0, 20).map(enrich),
+        meta: {
+          total:             real.length,
+          suspectedBotCount: bots.length,
+          hoursSearched:     hours,
+          botSummary: bots.length > 0
+            ? `${bots.length} open event${bots.length > 1 ? "s" : ""} filtered as likely bot scan`
+            : null,
+        },
+      };
+      if (qp.showBots === "true") {
+        response.suspectedBotSignals = bots.slice(0, 20).map(enrich);
+      }
+      return ok(response);
     }
 
-    const enrich   = (s) => ({ ...s, contact: contactMap[s.contactId] || null });
-    const response = {
-      signals: real.slice(0, 20).map(enrich),
-      meta: {
-        total:             real.length,
-        suspectedBotCount: bots.length,
-        hoursSearched:     hours,
-        botSummary: bots.length > 0
-          ? `${bots.length} open event${bots.length > 1 ? "s" : ""} filtered as likely bot scan`
-          : null,
-      },
-    };
-    if (qp.showBots === "true") {
-      response.suspectedBotSignals = bots.slice(0, 20).map(enrich);
+    // ── Log activity ─────────────────────────────────────────────────────────
+    if (method === "POST" && path === "/activity") {
+      const body = JSON.parse(event.body || "{}");
+      const { contactId, note, type = "NOTE" } = body;
+      if (!contactId || !note) return error(400, "contactId and note are required");
+
+      const activity = await hsPost(user.userId, "/engagements/v1/engagements", {
+        engagement:   { active: true, type, timestamp: Date.now() },
+        associations: { contactIds: [contactId] },
+        metadata:     { body: note },
+      });
+
+      return ok({ success: true, engagementId: activity.engagement?.id });
     }
-    return ok(response);
-  }
 
-  // ── Log activity to a contact ──────────────────────────────────────────────
-  // POST /hubspot/activity
-  // Body: { contactId, note, type? }   type: NOTE (default) | CALL | MEETING | EMAIL
-  if (method === "POST" && path === "/activity") {
-    const body = JSON.parse(event.body || "{}");
-    const { contactId, note, type = "NOTE" } = body;
-    if (!contactId || !note) return error(400, "contactId and note are required");
+    return error(404, "Route not found");
 
-    const activity = await hsPost(user.userId, "/engagements/v1/engagements", {
-      engagement:   { active: true, type, timestamp: Date.now() },
-      associations: { contactIds: [contactId] },
-      metadata:     { body: note },
-    });
-
-    return ok({ success: true, engagementId: activity.engagement?.id });
-  }
-
-  return error(404, "Route not found");
-});
+  })(event, context);
+};
 
 
 // ─── Response helpers ─────────────────────────────────────────────────────────
