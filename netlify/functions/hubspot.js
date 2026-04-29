@@ -406,7 +406,7 @@ function scoreAllSignals(feedItems, includeBots = false) {
 // ─── Main router ──────────────────────────────────────────────────────────────
 
 export const handler = withAuth(async (event, context, user) => {
-  const path   = event.path.replace("/.netlify/functions/hubspot", "");
+  const path = (event.path || "").replace("/.netlify/functions/hubspot", "").replace("/api/hubspot", "");
   const method = event.httpMethod;
   const qp     = event.queryStringParameters || {};
 
