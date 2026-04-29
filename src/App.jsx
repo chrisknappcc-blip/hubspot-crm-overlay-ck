@@ -66,9 +66,16 @@ function LoadingScreen() {
 }
 
 function ConnectHubSpot({ onConnected }) {
-  const handleConnect = () => {
-    window.location.href = '/api/hubspot/auth/connect'
+  const handleConnect = async () => {
+  const token = await getToken()
+  const res = await fetch('/api/hubspot/auth/connect', {
+    headers: { Authorization: `Bearer ${token}` }
+  })
+  const data = await res.json()
+  if (data.authUrl) {
+    window.location.href = data.authUrl
   }
+}
 
   return (
     <div style={{ display:'flex', alignItems:'center', justifyContent:'center', minHeight:'100vh', background:'var(--bg)' }}>
