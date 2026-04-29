@@ -172,7 +172,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken }) {
         <div style={{ fontSize:13, fontWeight:500, letterSpacing:'.05em', textTransform:'uppercase', color:'var(--accent)', marginRight:8 }}>CarePathIQ</div>
 
         {['dashboard','contacts'].map(tab => (
-          <button key={tab} onClick={() => setActiveTab(tab)} style={{ fontSize:13, fontWeight:activeTab===tab?500:400, color:activeTab===tab?'var(--text)':'var(--text-secondary)', borderBottom:activeTab===tab?'2px solid var(--accent)':'2px solid transparent', padding:'0 2px', height:52, background:'none', border:'none', borderBottom:activeTab===tab?'2px solid var(--accent)':'2px solid transparent', cursor:'pointer', textTransform:'capitalize' }}>
+         style={{ fontSize:13, fontWeight:activeTab===tab?500:400, color:activeTab===tab?'var(--text)':'var(--text-secondary)', padding:'0 2px', height:52, background:'none', border:'none', borderBottom:activeTab===tab?'2px solid var(--accent)':'2px solid transparent', cursor:'pointer', textTransform:'capitalize' }}
             {tab}
           </button>
         ))}
