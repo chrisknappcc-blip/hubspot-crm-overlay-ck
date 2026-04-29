@@ -65,7 +65,7 @@ function LoadingScreen() {
   )
 }
 
-function ConnectHubSpot({ onConnected }) {
+function ConnectHubSpot({ onConnected, getToken }) {
   const handleConnect = async () => {
   const token = await getToken()
   const res = await fetch('/api/hubspot/auth/connect', {
