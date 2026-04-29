@@ -417,7 +417,7 @@ export const handler = withAuth(async (event, context, user) => {
     url.searchParams.set("redirect_uri", HS_REDIRECT_URI);
     url.searchParams.set("scope",        HS_SCOPES);
     url.searchParams.set("state",        user.userId);
-    return { statusCode: 302, headers: { Location: url.toString() }, body: "" };
+    return ok({ authUrl: url.toString() });
   }
 
   // ── OAuth: callback ────────────────────────────────────────────────────────
