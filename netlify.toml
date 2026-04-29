@@ -30,10 +30,6 @@
   status = 200
 
 # ── SPA fallback (for React router) ──────────────────────────────────────────
-[[redirects]]
-  from = "/*"
-  to = "/index.html"
-  status = 200
 
 # ── CORS preflight ────────────────────────────────────────────────────────────
 [[headers]]
