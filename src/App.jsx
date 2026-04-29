@@ -72,7 +72,7 @@ function ConnectHubSpot({ onConnected }) {
 
   return (
     <div style={{ display:'flex', alignItems:'center', justifyContent:'center', minHeight:'100vh', background:'var(--bg)' }}>
-      <div style={{ background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:var(--radius-lg), padding:'2.5rem', maxWidth:400, textAlign:'center' }}>
+      <div style={{ background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius-lg)', padding:'2.5rem', maxWidth:400, textAlign:'center' }}>
         <div style={{ width:48, height:48, background:'var(--accent-light)', borderRadius:'50%', display:'flex', alignItems:'center', justifyContent:'center', margin:'0 auto 1.5rem' }}>
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/>
