@@ -405,6 +405,52 @@ function scoreAllSignals(feedItems, includeBots = false) {
 
 // ─── Main router ──────────────────────────────────────────────────────────────
 
+// Callback handler runs outside auth -- HubSpot redirects here with no Clerk token
+async function handleCallback(event) {
+  const qp = event.queryStringParameters || {};
+  const code = qp.code;
+  const userId = qp.state;
+  if (!code || !userId) return error(400, "Missing code or state");
+
+  const res = await fetch("https://api.hubapi.com/oauth/v1/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      grant_type: "authorization_code",
+      client_id: HS_CLIENT_ID,
+      client_secret: HS_CLIENT_SECRET,
+      redirect_uri: HS_REDIRECT_URI,
+      code,
+    }),
+  });
+  if (!res.ok) return error(400, "Token exchange failed");
+  const data = await res.json();
+
+  await setTokens(userId, {
+    hubspot: {
+      access_token: data.access_token,
+      refresh_token: data.refresh_token,
+      expires_at: Date.now() + data.expires_in * 1000,
+    },
+  });
+
+  return {
+    statusCode: 302,
+    headers: { Location: process.env.APP_URL + "?connected=hubspot" },
+    body: "",
+  };
+}
+
+export const handler = async (event, context) => {
+  const rawPath = (event.path || "").replace("/.netlify/functions/hubspot", "").replace("/api/hubspot", "");
+
+  // Let the OAuth callback through without auth
+  if (event.httpMethod === "GET" && rawPath === "/auth/callback") {
+    return handleCallback(event);
+  }
+
+  // Everything else goes through auth
+  return withAuth(async (event, context, user) => {
 export const handler = withAuth(async (event, context, user) => {
   const path = (event.path || "").replace("/.netlify/functions/hubspot", "").replace("/api/hubspot", "");
   const method = event.httpMethod;
