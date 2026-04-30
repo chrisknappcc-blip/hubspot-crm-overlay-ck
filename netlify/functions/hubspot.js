@@ -147,11 +147,15 @@ function buildCustomFilters(qp, baseFilters = []) {
 
   Object.entries(FILTER_MAP).forEach(([param, prop]) => {
     if (qp[param]) {
-      filters.push({
-        propertyName: prop,
-        operator:     "EQ",
-        value:        qp[param],
-      });
+      // Decode URI encoding and trim whitespace to ensure clean filter values
+      const val = decodeURIComponent(qp[param]).trim();
+      if (val) {
+        filters.push({
+          propertyName: prop,
+          operator:     "EQ",
+          value:        val,
+        });
+      }
     }
   });
 
@@ -351,6 +355,12 @@ async function fetchMarketingEmailRecipientEvents(userId, since) {
       limit: 200,
     });
 
+    // Log first event to see all available fields for debugging
+    if (data.events && data.events.length > 0) {
+      console.log("[mkt-email] Sample event fields:", Object.keys(data.events[0]).join(", "));
+      console.log("[mkt-email] Sample event:", JSON.stringify(data.events[0]).slice(0, 500));
+    }
+
     return (data.events || [])
       .filter(ev => ["OPEN", "CLICK"].includes(ev.type))
       .map((ev) => ({
@@ -359,7 +369,9 @@ async function fetchMarketingEmailRecipientEvents(userId, since) {
         type:           "MARKETING_EMAIL",
         eventType:      ev.type,
         timestamp:      ev.created || null,
-        subject:        ev.emailCampaignGroupName || null,
+        // emailCampaignGroupName is the actual campaign name when HubSpot populates it
+        // emailCampaignId is the numeric send ID -- different from the email template ID
+        subject:        ev.emailCampaignGroupName || ev.appName || null,
         campaignId:     ev.emailCampaignId ? String(ev.emailCampaignId) : null,
         body:           null,
         numOpens:       ev.type === "OPEN"  ? 1 : 0,
