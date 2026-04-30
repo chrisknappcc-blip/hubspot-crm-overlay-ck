@@ -58,6 +58,9 @@ const BASE_CONTACT_PROPS = [
   "hs_email_last_click_date",
   "hs_email_last_reply_date",
   "hs_email_last_send_date",
+  "hs_email_last_email_name",   // name of the last email sent to this contact
+  "hs_sequences_actively_enrolled_count",
+  "hs_sequence_name",           // name of active sequence if enrolled
   ...CUSTOM_PROPS,
 ];
 
@@ -690,28 +693,6 @@ export const handler = async (event, context) => {
       });
     }
 
-    // ── Campaign names (lightweight, called after signals load) ──────────────
-    // POST body: { ids: ["416593686", "416593687"] }
-    // Returns: { names: { "416593686": "My Email Campaign Name" } }
-    if (method === "POST" && path === "/campaign-names") {
-      const body = JSON.parse(event.body || "{}");
-      const ids  = (body.ids || []).slice(0, 10); // max 10 at a time
-      const names = {};
-      await Promise.all(
-        ids.map(async id => {
-          try {
-            const res = await hsGet(user.userId, `/marketing/v3/emails/${id}`);
-            if (res.name) names[id] = res.name;
-          } catch {
-            try {
-              const res2 = await hsGet(user.userId, `/email/public/v1/campaigns/${id}/by-id`);
-              if (res2.name || res2.subject) names[id] = res2.name || res2.subject;
-            } catch { /* not found */ }
-          }
-        })
-      );
-      return ok({ names });
-    }
     if (method === "GET" && path === "/signals") {
       try {
       const hours      = Math.min(parseInt(qp.hours || "2880", 10), 2880);
@@ -776,14 +757,14 @@ export const handler = async (event, context) => {
 
       const recentContactsData = { results: allContactResults };
 
-      // Fetch engagement fallback + marketing events in parallel
-      const [engData, marketingEventsData] = await Promise.all([
-        hsGet(user.userId, "/engagements/v1/engagements/paged", {
-          limit: 100,
-          since,
-        }).catch(() => ({ results: [] })),
-        fetchMarketingEmailRecipientEvents(user.userId, since),
-      ]);
+      // Fetch engagement fallback only -- marketing email events API is too slow at volume
+      // Contact property timestamps already capture marketing email activity reliably
+      const engData = await hsGet(user.userId, "/engagements/v1/engagements/paged", {
+        limit: 100,
+        since,
+      }).catch(() => ({ results: [] }));
+
+      const marketingEventsData = []; // removed -- causes 504 at high volume
 
       // Build contact map with full normalized data including custom properties
       const contactMap = {};
@@ -844,6 +825,7 @@ export const handler = async (event, context) => {
           contact:   info,
           botCheck,
           isBot:     botCheck.isBot && eventType === "OPEN",
+          subject:   p.hs_email_last_email_name || p.hs_sequence_name || null,
           sentAt:    p.hs_email_last_send_date  || null,
           openedAt:  p.hs_email_last_open_date  || null,
           clickedAt: p.hs_email_last_click_date || null,
