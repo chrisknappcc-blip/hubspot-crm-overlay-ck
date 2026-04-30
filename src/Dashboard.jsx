@@ -418,7 +418,11 @@ export default function Dashboard({ user, theme, toggleTheme, getToken }) {
                       <PriorityDot level={t.priority} />
                       <div style={{ flex:1, minWidth:0 }}>
                         <div style={{ display:'flex', alignItems:'center', gap:6, marginBottom:2 }}>
-                          <span style={{ fontWeight:500, fontSize:13, color:'var(--text)' }}>{t.name}</span>
+                          <span
+                            onClick={t.contactId ? () => openHubSpotContact(t.contactId) : undefined}
+                            style={{ fontWeight:500, fontSize:13, color: t.contactId ? 'var(--accent)' : 'var(--text)', cursor: t.contactId ? 'pointer' : 'default', textDecoration: t.contactId ? 'underline' : 'none', textDecorationColor:'var(--border-strong)' }}>
+                            {t.name}
+                          </span>
                           {t.contactId && (
                             <button onClick={e => openHubSpotContact(t.contactId, e)} title="Open in HubSpot"
                               style={{ flexShrink:0, background:'none', border:'none', cursor:'pointer', padding:0, color:'var(--text-tertiary)', lineHeight:1 }}>
@@ -451,13 +455,13 @@ export default function Dashboard({ user, theme, toggleTheme, getToken }) {
                 </div>
                 {loading && <div style={{ color:'var(--text-tertiary)', fontSize:13 }}>Loading...</div>}
                 {!loading && signals.length === 0 && <div style={{ color:'var(--text-tertiary)', fontSize:13 }}>No signals in this time range.</div>}
-                {sortedSignals.slice(0,10).map((s, i) => {
+                {sortedSignals.slice(0,50).map((s, i) => {
                   const isReply = s.score >= 100
                   const isClick = s.score >= 60 && s.score < 100
                   const iconColor = isReply ? 'var(--accent)' : isClick ? 'var(--amber)' : 'var(--blue)'
                   const iconBg    = isReply ? 'var(--accent-light)' : isClick ? 'var(--amber-light)' : 'var(--blue-light)'
                   return (
-                    <div key={i} style={{ padding:'10px 0', borderBottom: i < Math.min(sortedSignals.length,10)-1 ? '1px solid var(--border)' : 'none' }}>
+                    <div key={i} style={{ padding:'10px 0', borderBottom: i < Math.min(sortedSignals.length,50)-1 ? '1px solid var(--border)' : 'none' }}>
                       <div style={{ display:'flex', gap:10 }}>
                         <div style={{ width:28, height:28, borderRadius:'var(--radius)', background:iconBg, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0, marginTop:2 }}>
                           {isReply
@@ -469,7 +473,9 @@ export default function Dashboard({ user, theme, toggleTheme, getToken }) {
                         </div>
                         <div style={{ flex:1, minWidth:0 }}>
                           <div style={{ display:'flex', alignItems:'center', gap:5, marginBottom:2 }}>
-                            <span style={{ fontSize:13, fontWeight:500, color:'var(--text)' }}>
+                            <span
+                              onClick={s.contactId ? () => openHubSpotContact(s.contactId) : undefined}
+                              style={{ fontSize:13, fontWeight:500, color: s.contactId ? 'var(--accent)' : 'var(--text)', cursor: s.contactId ? 'pointer' : 'default' }}>
                               {s.contact?.name || s.recipientEmail || 'Unknown'} &mdash; {s.label}
                             </span>
                             {s.contactId && (
@@ -584,72 +590,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken }) {
               </div>
             </Panel>
 
-            {/* Contact Pipeline */}
-            <Panel>
-              <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:12 }}>
-                <SectionTitle style={{ margin:0 }}>Contact pipeline</SectionTitle>
-                <Select value={contactSort} onChange={setContactSort} options={CONTACT_SORT_OPTIONS} />
-              </div>
-              {contacts.length === 0 && !loading && <div style={{ color:'var(--text-tertiary)', fontSize:13 }}>No contacts found.</div>}
-              <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
-                <thead>
-                  <tr>
-                    {['Contact','Title','Company','Last contacted','Status',''].map((h,i) => (
-                      <th key={i} style={{ textAlign:'left', fontSize:11, fontWeight:500, color:'var(--text-tertiary)', textTransform:'uppercase', letterSpacing:'.04em', padding:'0 8px 8px 0', borderBottom:'1px solid var(--border)' }}>{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {sortedContacts.slice(0,20).map((c, i) => {
-                    const p    = c.properties || {}
-                    const name = `${p.firstname||''} ${p.lastname||''}`.trim() || 'Unknown'
-                    const status = p.hs_lead_status || p.lifecyclestage || 'Active'
-                    const statusColors = {
-                      'NEW':                               { bg:'var(--blue-light)',   color:'var(--blue)' },
-                      'OPEN':                              { bg:'var(--accent-light)', color:'var(--accent-text)' },
-                      'IN_PROGRESS':                       { bg:'var(--amber-light)',  color:'var(--amber)' },
-                      'ATTEMPTED TO_CONTACT':              { bg:'var(--amber-light)',  color:'var(--amber)' },
-                      'UNQUALIFIED':                       { bg:'var(--bg-secondary)', color:'var(--text-tertiary)' },
-                      'Active Pipeline (LINC DO NOT CONTACT)': { bg:'var(--red-light)', color:'var(--red)' },
-                    }
-                    const sc = statusColors[status] || { bg:'var(--bg-secondary)', color:'var(--text-secondary)' }
-                    const lastContacted = p.notes_last_contacted ? parseInt(p.notes_last_contacted) : null
-                    const validDate = lastContacted && lastContacted > 0 && new Date(lastContacted).getFullYear() > 1970
 
-                    return (
-                      <tr key={i}
-                        style={{ borderBottom: i < Math.min(sortedContacts.length,20)-1 ? '1px solid var(--border)' : 'none', cursor:'pointer' }}
-                        onClick={() => { setSelectedContact(c); setActiveTab('contacts') }}>
-                        <td style={{ padding:'9px 8px 9px 0' }}>
-                          <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-                            <Avatar name={name} size={26} />
-                            <span style={{ fontWeight:500, color:'var(--text)' }}>{name}</span>
-                          </div>
-                        </td>
-                        <td style={{ padding:'9px 8px 9px 0', color:'var(--text-secondary)', maxWidth:160, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{p.jobtitle || '—'}</td>
-                        <td style={{ padding:'9px 8px 9px 0', color:'var(--text-secondary)' }}>{p.company || '—'}</td>
-                        <td style={{ padding:'9px 8px 9px 0', color:'var(--text-tertiary)', fontSize:12 }}>
-                          {validDate ? new Date(lastContacted).toLocaleDateString('en-US', { month:'short', day:'numeric', year:'numeric' }) : '—'}
-                        </td>
-                        <td style={{ padding:'9px 8px 9px 0' }}>
-                          <span style={{ fontSize:11, fontWeight:500, padding:'2px 8px', borderRadius:20, background:sc.bg, color:sc.color, whiteSpace:'nowrap' }}>
-                            {status.replace(/_/g,' ')}
-                          </span>
-                        </td>
-                        <td style={{ padding:'9px 0' }}>
-                          <button
-                            onClick={e => { e.stopPropagation(); openHubSpotContact(c.id) }}
-                            title="Open in HubSpot"
-                            style={{ background:'none', border:'none', cursor:'pointer', padding:'2px 4px', color:'var(--text-tertiary)', borderRadius:'var(--radius)' }}>
-                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
-                          </button>
-                        </td>
-                      </tr>
-                    )
-                  })}
-                </tbody>
-              </table>
-            </Panel>
           </>
         )}
 
