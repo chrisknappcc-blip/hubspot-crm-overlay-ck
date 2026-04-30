@@ -343,23 +343,69 @@ function mergeFeed(engagements, timelineEvents, sequences, lifecycle) {
     });
 }
 
+// Fetch campaign names from HubSpot marketing email campaigns API
+// Returns a map of campaignId -> campaignName
+async function fetchCampaignNames(userId, campaignIds) {
+  const nameMap = {};
+  if (!campaignIds || campaignIds.length === 0) return nameMap;
+
+  // Fetch each campaign -- HubSpot doesn't have a batch endpoint for this
+  const uniqueIds = [...new Set(campaignIds)].slice(0, 20); // cap at 20
+  await Promise.all(
+    uniqueIds.map(async id => {
+      try {
+        const data = await hsGet(userId, `/marketing-emails/v1/emails/${id}`);
+        if (data.name || data.subject) {
+          nameMap[id] = data.name || data.subject;
+        }
+      } catch {
+        // Try the campaigns endpoint as fallback
+        try {
+          const data = await hsGet(userId, `/email/public/v1/campaigns/${id}`);
+          if (data.name) nameMap[id] = data.name;
+        } catch { /* fail silently */ }
+      }
+    })
+  );
+  return nameMap;
+}
+
 // Fetch per-recipient marketing email events
 async function fetchMarketingEmailRecipientEvents(userId, since) {
   try {
     const data = await hsGet(userId, "/email/public/v1/events", {
       startTimestamp: since,
-      limit: 100,
+      limit: 200,
     });
 
-    return (data.events || [])
-      .filter(ev => ["OPEN", "CLICK"].includes(ev.type)) // only actionable events
-      .map((ev) => ({
+    const events = (data.events || [])
+      .filter(ev => ["OPEN", "CLICK"].includes(ev.type));
+
+    // Collect campaign IDs that don't have a name yet
+    const campaignIds = [...new Set(
+      events
+        .map(ev => ev.emailCampaignId)
+        .filter(id => id && !ev?.emailCampaignGroupName)
+    )];
+
+    // Look up campaign names in batch
+    const campaignNames = await fetchCampaignNames(userId, campaignIds);
+
+    return events.map((ev) => {
+      // Try multiple fields for the campaign/email name
+      const subject =
+        ev.emailCampaignGroupName ||
+        campaignNames[ev.emailCampaignId] ||
+        ev.emailCampaignId ? null : null; // if only numeric ID, leave null for cleanSubject
+
+      return {
         source:         "marketing_email",
         id:             `mev-${ev.id || ev.created}`,
         type:           "MARKETING_EMAIL",
         eventType:      ev.type,
         timestamp:      ev.created || null,
-        subject:        ev.emailCampaignGroupName || null, // null if just a numeric ID
+        subject,
+        campaignId:     ev.emailCampaignId || null,
         body:           null,
         numOpens:       ev.type === "OPEN"  ? 1 : 0,
         numClicks:      ev.type === "CLICK" ? 1 : 0,
@@ -371,7 +417,8 @@ async function fetchMarketingEmailRecipientEvents(userId, since) {
         contactId:      ev.contactId ? String(ev.contactId) : null,
         recipientEmail: ev.recipient || null,
         url:            ev.url || null,
-      }));
+      };
+    });
   } catch (err) {
     console.error("Marketing email events fetch failed:", err.message);
     return [];
@@ -917,38 +964,8 @@ export const handler = async (event, context) => {
         ...engBots.map(enrich),
       ];
 
-      // Enrich contact signals with campaign/sequence name from HubSpot
-      // by looking up the most recent engagement for each contact
-      // This runs async after building the response so we don't block
-      const enrichedReal = await Promise.all(
-        allReal.map(async s => {
-          // Already has a subject from engagement source
-          if (s.subject && !/^\d+$/.test(s.subject)) return s;
-
-          // For contact_activity signals, try to get campaign name from engagements
-          if (s.source === "contact_activity" && s.contactId) {
-            try {
-              const engData = await hsGet(user.userId,
-                `/engagements/v1/engagements/associated/CONTACT/${s.contactId}/paged`,
-                { limit: 5 }
-              );
-              const emailEngs = (engData.results || [])
-                .filter(e => e.engagement?.type === "EMAIL")
-                .sort((a,b) => (b.engagement?.createdAt||0) - (a.engagement?.createdAt||0));
-              if (emailEngs.length > 0) {
-                const meta = emailEngs[0].metadata || {};
-                if (meta.subject && !/^\d+$/.test(meta.subject)) {
-                  return { ...s, subject: meta.subject };
-                }
-              }
-            } catch { /* fail silently */ }
-          }
-          return s;
-        })
-      );
-
       const response = {
-        signals: enrichedReal, // no cap -- all signals returned, frontend handles paging
+        signals: allReal, // no cap -- all signals returned, frontend handles paging
         meta: {
           total:             enrichedReal.length,
           suspectedBotCount: allBots.length,
