@@ -659,27 +659,41 @@ export const handler = async (event, context) => {
       return ok({ owners });
     }
 
-    // ── Contacts list (with custom property filters) ──────────────────────────
+    // ── Contacts list (with custom property filters, paginated up to 500) ───────
     if (method === "GET" && path === "/contacts") {
       const baseFilters = buildCustomFilters(qp);
+      let contacts = [];
 
-      let contacts;
       if (baseFilters.length > 0) {
-        // Use search API when filters are active
-        const data = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
-          filterGroups: [{ filters: baseFilters }],
-          properties:   BASE_CONTACT_PROPS,
-          sorts:        [{ propertyName: "lastname", direction: "ASCENDING" }],
-          limit:        100,
-        });
-        contacts = data.results || [];
+        // Paginate through search API -- up to 500 contacts
+        let after = undefined;
+        while (contacts.length < 500) {
+          const body = {
+            filterGroups: [{ filters: baseFilters }],
+            properties:   BASE_CONTACT_PROPS,
+            sorts:        [{ propertyName: "lastname", direction: "ASCENDING" }],
+            limit:        100,
+          };
+          if (after) body.after = after;
+          const data = await hsPost(user.userId, "/crm/v3/objects/contacts/search", body);
+          contacts.push(...(data.results || []));
+          if (!data.paging?.next?.after || (data.results || []).length < 100) break;
+          after = data.paging.next.after;
+        }
       } else {
-        // Use list API when no filters (faster)
-        const data = await hsGet(user.userId, "/crm/v3/objects/contacts", {
-          limit:      100,
-          properties: BASE_CONTACT_PROPS.join(","),
-        });
-        contacts = data.results || [];
+        // Paginate through list API -- up to 500 contacts
+        let after = undefined;
+        while (contacts.length < 500) {
+          const params = {
+            limit:      100,
+            properties: BASE_CONTACT_PROPS.join(","),
+          };
+          if (after) params.after = after;
+          const data = await hsGet(user.userId, "/crm/v3/objects/contacts", params);
+          contacts.push(...(data.results || []));
+          if (!data.paging?.next?.after || (data.results || []).length < 100) break;
+          after = data.paging.next.after;
+        }
       }
 
       return ok({ contacts, total: contacts.length });
@@ -961,11 +975,75 @@ export const handler = async (event, context) => {
         ...engBots.map(enrich),
       ];
 
+      // ── Organizational bot detection ─────────────────────────────────────────
+      // If multiple contacts at the same company have nearly identical time-to-open
+      // (within 2 minutes of each other), it strongly suggests a corporate email
+      // security gateway is scanning all inbound mail.
+      // Example: 2 LifePoint Health contacts both opening exactly 37 minutes after send.
+      //
+      // Approach: group open signals by company, then check if 2+ contacts share
+      // a time-to-open within a 2-minute window. If so, flag all as org-bot.
+
+      const openSignals = allReal.filter(s =>
+        s.type === "OPEN" || (s.eventType === "OPEN" && !s.replied && !s.clickedAt)
+      );
+
+      // Build map: company -> array of { signalIndex, timeToOpenMs }
+      const companyOpenMap = {};
+      openSignals.forEach((s, idx) => {
+        const company = s.contact?.company?.trim().toLowerCase();
+        if (!company || company === "") return;
+        const sentMs   = s.sentAt   ? new Date(s.sentAt).getTime()   : null;
+        const openedMs = s.openedAt ? new Date(s.openedAt).getTime() : null;
+        if (!sentMs || !openedMs) return;
+        const tto = openedMs - sentMs;
+        if (tto < 0) return;
+        if (!companyOpenMap[company]) companyOpenMap[company] = [];
+        companyOpenMap[company].push({ s, tto });
+      });
+
+      // For each company with 2+ opens, check if any pair has tto within 2 minutes
+      const orgBotContactIds = new Set();
+      Object.entries(companyOpenMap).forEach(([company, entries]) => {
+        if (entries.length < 2) return;
+        for (let i = 0; i < entries.length; i++) {
+          for (let j = i + 1; j < entries.length; j++) {
+            const diff = Math.abs(entries[i].tto - entries[j].tto);
+            if (diff <= 2 * 60 * 1000) { // within 2 minutes
+              orgBotContactIds.add(entries[i].s.contactId);
+              orgBotContactIds.add(entries[j].s.contactId);
+            }
+          }
+        }
+      });
+
+      // Move org-bot signals to the bots array
+      const finalReal = [];
+      const orgBots   = [];
+      allReal.forEach(s => {
+        if (orgBotContactIds.has(s.contactId) &&
+            (s.type === "OPEN" || s.eventType === "OPEN") &&
+            !s.replied && !s.clickedAt) {
+          orgBots.push({
+            ...s,
+            botCheck: {
+              isBot:      true,
+              confidence: "high",
+              reasons:    [`Organizational scan: multiple contacts at ${s.contact?.company || "same company"} opened within 2 minutes of each other`],
+            },
+          });
+        } else {
+          finalReal.push(s);
+        }
+      });
+
+      const finalBots = [...allBots, ...orgBots];
+
       const response = {
-        signals: allReal,
+        signals: finalReal,
         meta: {
-          total:             allReal.length,
-          suspectedBotCount: allBots.length,
+          total:             finalReal.length,
+          suspectedBotCount: finalBots.length,
           hoursSearched:     hours,
           activeFilters: {
             assigned_bdr:                    qp.assigned_bdr || null,
@@ -973,13 +1051,13 @@ export const handler = async (event, context) => {
             priority_tier__bdr:              qp.priority_tier__bdr || null,
             target_account__bdr_led_outreach:qp.target_account__bdr_led_outreach || null,
           },
-          botSummary: allBots.length > 0
-            ? `${allBots.length} open event${allBots.length > 1 ? "s" : ""} filtered as likely bot scan`
+          botSummary: finalBots.length > 0
+            ? `${finalBots.length} open event${finalBots.length > 1 ? "s" : ""} filtered as likely bot scan`
             : null,
         },
       };
       if (qp.showBots === "true") {
-        response.suspectedBotSignals = allBots.slice(0, 50);
+        response.suspectedBotSignals = finalBots.slice(0, 50);
       }
       return ok(response);
       } catch (err) {
