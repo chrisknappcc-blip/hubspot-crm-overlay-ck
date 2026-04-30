@@ -351,28 +351,51 @@ async function fetchMarketingEmailRecipientEvents(userId, since) {
       limit: 200,
     });
 
-    return (data.events || [])
-      .filter(ev => ["OPEN", "CLICK"].includes(ev.type))
-      .map((ev) => ({
-        source:         "marketing_email",
-        id:             `mev-${ev.id || ev.created}`,
-        type:           "MARKETING_EMAIL",
-        eventType:      ev.type,
-        timestamp:      ev.created || null,
-        subject:        ev.emailCampaignGroupName || null,
-        campaignId:     ev.emailCampaignId ? String(ev.emailCampaignId) : null,
-        body:           null,
-        numOpens:       ev.type === "OPEN"  ? 1 : 0,
-        numClicks:      ev.type === "CLICK" ? 1 : 0,
-        replied:        false,
-        filteredEvent:  ev.type === "OPEN" && ev.browser?.name === "unknown",
-        sentAt:         null,
-        openedAt:       ev.type === "OPEN"  ? ev.created : null,
-        clickedAt:      ev.type === "CLICK" ? ev.created : null,
-        contactId:      ev.contactId ? String(ev.contactId) : null,
-        recipientEmail: ev.recipient || null,
-        url:            ev.url || null,
-      }));
+    const events = (data.events || [])
+      .filter(ev => ["OPEN", "CLICK"].includes(ev.type));
+
+    // Look up campaign names for IDs that don't already have a name
+    const unknownIds = [...new Set(
+      events
+        .filter(ev => ev.emailCampaignId && !ev.emailCampaignGroupName)
+        .map(ev => String(ev.emailCampaignId))
+    )].slice(0, 25); // cap to avoid too many requests
+
+    const campaignNames = {};
+    await Promise.all(
+      unknownIds.map(async id => {
+        try {
+          // v3 marketing emails endpoint -- returns name field
+          const res = await hsGet(userId, `/marketing/v3/emails/${id}`);
+          if (res.name) campaignNames[id] = res.name;
+        } catch {
+          // silently skip -- campaign name stays as ID
+        }
+      })
+    );
+
+    return events.map((ev) => ({
+      source:         "marketing_email",
+      id:             `mev-${ev.id || ev.created}`,
+      type:           "MARKETING_EMAIL",
+      eventType:      ev.type,
+      timestamp:      ev.created || null,
+      subject:        ev.emailCampaignGroupName ||
+                      campaignNames[String(ev.emailCampaignId)] ||
+                      null,
+      campaignId:     ev.emailCampaignId ? String(ev.emailCampaignId) : null,
+      body:           null,
+      numOpens:       ev.type === "OPEN"  ? 1 : 0,
+      numClicks:      ev.type === "CLICK" ? 1 : 0,
+      replied:        false,
+      filteredEvent:  ev.type === "OPEN" && ev.browser?.name === "unknown",
+      sentAt:         null,
+      openedAt:       ev.type === "OPEN"  ? ev.created : null,
+      clickedAt:      ev.type === "CLICK" ? ev.created : null,
+      contactId:      ev.contactId ? String(ev.contactId) : null,
+      recipientEmail: ev.recipient || null,
+      url:            ev.url || null,
+    }));
   } catch (err) {
     console.error("Marketing email events fetch failed:", err.message);
     return [];
