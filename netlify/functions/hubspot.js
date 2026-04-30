@@ -3,12 +3,18 @@
 //   GET  /hubspot/auth/connect            -> redirect to HubSpot OAuth
 //   GET  /hubspot/auth/callback           -> exchange code, store tokens (no auth required)
 //   GET  /hubspot/status                  -> check which services are connected
-//   GET  /hubspot/contacts                -> list contacts
+//   GET  /hubspot/owners                  -> list HubSpot owners (reps) for filter dropdown
+//   GET  /hubspot/contacts                -> list contacts with custom property filters
 //   GET  /hubspot/contacts/:id            -> single contact detail + engagements
-//   GET  /hubspot/signals                 -> ranked intent signals (bot-filtered)
+//   GET  /hubspot/signals                 -> ranked intent signals with custom property filters
 //   GET  /hubspot/feed/:contactId         -> full merged activity feed for a contact
-//   GET  /hubspot/feed/team               -> activity feed across all contacts (team view)
 //   POST /hubspot/activity                -> log a note/call/meeting to a contact
+//
+// Custom filter query params (all optional, stackable):
+//   assigned_bdr=Chris+Knapp
+//   territory=Northeast
+//   priority_tier__bdr=GOLD+1-10
+//   target_account__bdr_led_outreach=Chris+Knapp
 
 import { withAuth } from "./utils/auth.js";
 import { getTokens, setTokens, isTokenValid } from "./utils/tokenStore.js";
@@ -28,7 +34,31 @@ const HS_SCOPES = [
   "automation",
   "crm.objects.marketing_events.read",
   "crm.objects.marketing_events.write",
+  "content",
+  "e-commerce",
+  "oauth",
 ].join(" ");
+
+// All custom properties to include in every contact fetch
+const CUSTOM_PROPS = [
+  "assigned_bdr",
+  "target_account__bdr_led_outreach",
+  "territory",
+  "priority_tier__bdr",
+];
+
+// Standard contact properties always fetched
+const BASE_CONTACT_PROPS = [
+  "firstname", "lastname", "email", "company", "jobtitle", "phone",
+  "hs_lead_status", "lifecyclestage", "hubspot_owner_id",
+  "notes_last_contacted", "num_contacted_notes",
+  "hs_last_email_activity_date",
+  "hs_email_last_open_date",
+  "hs_email_last_click_date",
+  "hs_email_last_reply_date",
+  "hs_email_last_send_date",
+  ...CUSTOM_PROPS,
+];
 
 
 // ─── OAuth helpers ────────────────────────────────────────────────────────────
@@ -100,6 +130,62 @@ async function hsPost(userId, path, body) {
 }
 
 
+// ─── Filter helpers ───────────────────────────────────────────────────────────
+// Builds HubSpot search filter groups from query params.
+// Filters stack (AND logic) -- each active filter adds to the group.
+
+function buildCustomFilters(qp, baseFilters = []) {
+  const filters = [...baseFilters];
+
+  const FILTER_MAP = {
+    assigned_bdr:                    "assigned_bdr",
+    territory:                       "territory",
+    priority_tier__bdr:              "priority_tier__bdr",
+    target_account__bdr_led_outreach:"target_account__bdr_led_outreach",
+  };
+
+  Object.entries(FILTER_MAP).forEach(([param, prop]) => {
+    if (qp[param]) {
+      filters.push({
+        propertyName: prop,
+        operator:     "EQ",
+        value:        qp[param],
+      });
+    }
+  });
+
+  return filters;
+}
+
+// Normalize a contact record into a clean info object
+function normalizeContact(c) {
+  const p = c.properties || {};
+  return {
+    id:           c.id,
+    name:         `${p.firstname || ""} ${p.lastname || ""}`.trim(),
+    email:        p.email || "",
+    company:      p.company || "",
+    title:        p.jobtitle || "",
+    phone:        p.phone || "",
+    leadStatus:   p.hs_lead_status || "",
+    lifecycle:    p.lifecyclestage || "",
+    lastContacted:p.notes_last_contacted || null,
+    numContacted: p.num_contacted_notes || "0",
+    // Custom properties
+    assignedBdr:         p.assigned_bdr || "",
+    targetAccount:       p.target_account__bdr_led_outreach || "",
+    territory:           p.territory || "",
+    priorityTier:        p.priority_tier__bdr || "",
+    // Email activity timestamps
+    lastEmailActivityDate: p.hs_last_email_activity_date || null,
+    lastOpenDate:          p.hs_email_last_open_date     || null,
+    lastClickDate:         p.hs_email_last_click_date    || null,
+    lastReplyDate:         p.hs_email_last_reply_date    || null,
+    lastSendDate:          p.hs_email_last_send_date     || null,
+  };
+}
+
+
 // ─── Activity feed helpers ────────────────────────────────────────────────────
 
 async function fetchEngagements(userId, contactId, limit = 50) {
@@ -168,13 +254,8 @@ async function fetchSequenceEnrollments(userId, contactId) {
       "/crm/v3/objects/sequence_enrollments/batch/read",
       {
         properties: [
-          "hs_enrollment_state",
-          "hs_sequence_id",
-          "hs_sequence_name",
-          "hs_current_step_order",
-          "hs_enrolled_at",
-          "hs_ended_at",
-          "hs_finished_at",
+          "hs_enrollment_state", "hs_sequence_id", "hs_sequence_name",
+          "hs_current_step_order", "hs_enrolled_at", "hs_ended_at", "hs_finished_at",
         ],
         inputs: enrollmentIds.map((id) => ({ id })),
       }
@@ -260,29 +341,7 @@ function mergeFeed(engagements, timelineEvents, sequences, lifecycle) {
     });
 }
 
-
-// 5. Marketing email events: opens, clicks, deliveries from HubSpot Marketing Hub
-//    Uses /marketing/v3/emails/statistics/query to get recipient-level events
-async function fetchMarketingEmailEvents(userId, since) {
-  try {
-    const sinceISO = new Date(since).toISOString();
-    const data = await hsPost(userId, "/marketing/v3/emails/statistics/query", {
-      property: ["hs_email_sends_by_deliverability", "hs_email_open_rate", "hs_email_click_rate"],
-      filters: {
-        startTimestamp: sinceISO,
-      },
-      limit: 100,
-    });
-
-    // The statistics API returns aggregate data per email, not per recipient.
-    // We need the recipient-level events from the email events API instead.
-    return [];
-  } catch {
-    return [];
-  }
-}
-
-// Fetch per-recipient marketing email events using the Email Events API
+// Fetch per-recipient marketing email events
 async function fetchMarketingEmailRecipientEvents(userId, since) {
   try {
     const data = await hsGet(userId, "/email/public/v1/events", {
@@ -290,29 +349,33 @@ async function fetchMarketingEmailRecipientEvents(userId, since) {
       limit: 100,
     });
 
-    return (data.events || []).map((ev) => ({
-      source:    "marketing_email",
-      id:        `mev-${ev.id || ev.created}`,
-      type:      "MARKETING_EMAIL",
-      eventType: ev.type, // OPEN, CLICK, DELIVERED, BOUNCE, UNSUBSCRIBE
-      timestamp: ev.created || null,
-      subject:   ev.emailCampaignGroupName || ev.emailCampaignId || "Marketing email",
-      body:      null,
-      numOpens:  ev.type === "OPEN"  ? 1 : 0,
-      numClicks: ev.type === "CLICK" ? 1 : 0,
-      replied:   false,
-      filteredEvent: ev.type === "OPEN" && ev.browser?.name === "unknown",
-      sentAt:    null,
-      openedAt:  ev.type === "OPEN" ? ev.created : null,
-      contactId: ev.recipient ? String(ev.recipient) : null,
-      recipientEmail: ev.recipient || null,
-      url:       ev.url || null, // for clicks
-    }));
+    return (data.events || [])
+      .filter(ev => ["OPEN", "CLICK"].includes(ev.type)) // only actionable events
+      .map((ev) => ({
+        source:         "marketing_email",
+        id:             `mev-${ev.id || ev.created}`,
+        type:           "MARKETING_EMAIL",
+        eventType:      ev.type,
+        timestamp:      ev.created || null,
+        subject:        ev.emailCampaignGroupName || null, // null if just a numeric ID
+        body:           null,
+        numOpens:       ev.type === "OPEN"  ? 1 : 0,
+        numClicks:      ev.type === "CLICK" ? 1 : 0,
+        replied:        false,
+        filteredEvent:  ev.type === "OPEN" && ev.browser?.name === "unknown",
+        sentAt:         null,
+        openedAt:       ev.type === "OPEN"  ? ev.created : null,
+        clickedAt:      ev.type === "CLICK" ? ev.created : null,
+        contactId:      ev.contactId ? String(ev.contactId) : null,
+        recipientEmail: ev.recipient || null,
+        url:            ev.url || null,
+      }));
   } catch (err) {
     console.error("Marketing email events fetch failed:", err.message);
     return [];
   }
 }
+
 
 // ─── Bot detection ────────────────────────────────────────────────────────────
 
@@ -373,20 +436,14 @@ function scoreAllSignals(feedItems, includeBots = false) {
          item.source === "marketing_email") {
       if (item.replied)            { score = 100; label = "Replied"; }
       else if (item.numClicks > 0) {
-        score = 60 + item.numClicks * 5;
-        label = item.url
-          ? `Clicked link${item.numClicks > 1 ? ` ${item.numClicks}x` : ""}: ${item.url.replace(/^https?:\/\//, "").slice(0, 40)}`
-          : `Clicked link${item.numClicks > 1 ? ` ${item.numClicks}x` : ""}`;
+        score = 70 + item.numClicks * 5;
+        label = `Clicked link${item.numClicks > 1 ? ` ${item.numClicks}x` : ""}`;
       }
       else if (item.numOpens > 0)  {
-        score = 30 + item.numOpens * 10;
+        score = 40 + item.numOpens * 5;
         label = `Opened${item.numOpens > 1 ? ` ${item.numOpens}x` : ""}`;
       }
-      else if (item.eventType === "DELIVERED") continue; // skip pure delivery events
-      else if (item.eventType === "BOUNCE")    { score = 10; label = "Bounced"; }
-      else if (item.eventType === "UNSUBSCRIBE") { score = 5; label = "Unsubscribed"; }
-
-      if (score === 0) continue;
+      else continue;
 
       const botCheck = detectBot(item);
       const signal   = { ...item, score, label, botCheck };
@@ -408,23 +465,28 @@ function scoreAllSignals(feedItems, includeBots = false) {
     }
 
     if (item.source === "lifecycle") {
-      score = 45;
-      label = item.subject;
+      score = 45; label = item.subject;
       real.push({ ...item, score, label, botCheck: null });
       continue;
     }
 
     if (item.source === "timeline") {
-      score = 15;
-      label = item.subject || item.eventType || "Activity";
+      score = 15; label = item.subject || item.eventType || "Activity";
       real.push({ ...item, score, label, botCheck: null });
       continue;
     }
 
     if (item.source === "engagement") {
-      score = 25;
-      label = item.type.charAt(0) + item.type.slice(1).toLowerCase();
+      // Only score actual engagement types -- never show raw type strings as subject
+      const typeLabel = {
+        CALL:    "Call logged",
+        MEETING: "Meeting logged",
+        NOTE:    "Note logged",
+        TASK:    "Task",
+      };
+      label = typeLabel[item.type] || item.type;
       if (item.subject) label += `: ${item.subject}`;
+      score = 25;
       real.push({ ...item, score, label, botCheck: null });
     }
   }
@@ -436,9 +498,6 @@ function scoreAllSignals(feedItems, includeBots = false) {
 
 
 // ─── OAuth callback (no auth required) ───────────────────────────────────────
-// HubSpot redirects the browser here after OAuth -- no Clerk token is present.
-// We extract the code and userId (from state), exchange for tokens, store them,
-// then redirect the user back to the app.
 
 async function handleOAuthCallback(event) {
   const qp     = event.queryStringParameters || {};
@@ -493,7 +552,6 @@ export const handler = async (event, context) => {
     .replace("/.netlify/functions/hubspot", "")
     .replace("/api/hubspot", "");
 
-  // CORS preflight
   if (event.httpMethod === "OPTIONS") {
     return {
       statusCode: 200,
@@ -506,30 +564,10 @@ export const handler = async (event, context) => {
     };
   }
 
-  // OAuth callback runs without Clerk auth -- HubSpot redirects here
   if (event.httpMethod === "GET" && rawPath === "/auth/callback") {
     return handleOAuthCallback(event);
   }
 
-  // Temporary debug route -- shows raw marketing email events without auth
-  // Remove this after debugging is complete
-  if (event.httpMethod === "GET" && rawPath === "/debug/marketing") {
-    const since = Date.now() - 48 * 60 * 60 * 1000;
-    const qp = event.queryStringParameters || {};
-    const userId = qp.userId;
-    if (!userId) return error(400, "Pass ?userId=YOUR_CLERK_USER_ID");
-    try {
-      const data = await hsGet(userId, "/email/public/v1/events", {
-        startTimestamp: since,
-        limit: 10,
-      });
-      return ok({ count: (data.events||[]).length, sample: (data.events||[]).slice(0,3), raw: data });
-    } catch (err) {
-      return ok({ error: err.message });
-    }
-  }
-
-  // Everything else requires a valid Clerk session
   return withAuth(async (event, context, user) => {
     const path   = rawPath;
     const method = event.httpMethod;
@@ -554,14 +592,44 @@ export const handler = async (event, context) => {
       });
     }
 
-    // ── Contacts list ────────────────────────────────────────────────────────
+    // ── Owners (reps) list ───────────────────────────────────────────────────
+    // Returns all HubSpot users with their owner IDs for the filter dropdown
+    if (method === "GET" && path === "/owners") {
+      const data = await hsGet(user.userId, "/crm/v3/owners", { limit: 100 });
+      const owners = (data.results || []).map(o => ({
+        id:        o.id,
+        firstName: o.firstName || "",
+        lastName:  o.lastName  || "",
+        email:     o.email     || "",
+        name:      `${o.firstName || ""} ${o.lastName || ""}`.trim(),
+      }));
+      return ok({ owners });
+    }
+
+    // ── Contacts list (with custom property filters) ──────────────────────────
     if (method === "GET" && path === "/contacts") {
-      const data = await hsGet(user.userId, "/crm/v3/objects/contacts", {
-        limit: 100,
-        properties: "firstname,lastname,email,company,jobtitle,phone,hs_lead_status,hubspot_owner_id,notes_last_contacted,num_contacted_notes,lifecyclestage",
-        associations: "deals",
-      });
-      return ok({ contacts: data.results, total: data.total });
+      const baseFilters = buildCustomFilters(qp);
+
+      let contacts;
+      if (baseFilters.length > 0) {
+        // Use search API when filters are active
+        const data = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
+          filterGroups: [{ filters: baseFilters }],
+          properties:   BASE_CONTACT_PROPS,
+          sorts:        [{ propertyName: "lastname", direction: "ASCENDING" }],
+          limit:        100,
+        });
+        contacts = data.results || [];
+      } else {
+        // Use list API when no filters (faster)
+        const data = await hsGet(user.userId, "/crm/v3/objects/contacts", {
+          limit:      100,
+          properties: BASE_CONTACT_PROPS.join(","),
+        });
+        contacts = data.results || [];
+      }
+
+      return ok({ contacts, total: contacts.length });
     }
 
     // ── Single contact ───────────────────────────────────────────────────────
@@ -569,7 +637,7 @@ export const handler = async (event, context) => {
       const id = path.split("/contacts/")[1];
       const [contact, engagements] = await Promise.all([
         hsGet(user.userId, `/crm/v3/objects/contacts/${id}`, {
-          properties: "firstname,lastname,email,company,jobtitle,phone,hs_lead_status,notes_last_contacted,lifecyclestage",
+          properties:   BASE_CONTACT_PROPS.join(","),
           associations: "deals,engagements",
         }),
         fetchEngagements(user.userId, id, 20),
@@ -607,136 +675,61 @@ export const handler = async (event, context) => {
       });
     }
 
-    // ── Team activity feed ───────────────────────────────────────────────────
-    if (method === "GET" && path === "/feed/team") {
-      const hours = Math.min(parseInt(qp.hours || "24", 10), 168);
-      const limit = Math.min(parseInt(qp.limit || "50",  10), 200);
-      const since = Date.now() - hours * 60 * 60 * 1000;
-
-      const engData = await hsGet(user.userId, "/engagements/v1/engagements/paged", {
-        limit: 100,
-        since,
-      });
-
-      const items = (engData.results || []).map((eng) => ({
-        source:        "engagement",
-        id:            `eng-${eng.engagement?.id}`,
-        type:          eng.engagement?.type || "UNKNOWN",
-        timestamp:     eng.engagement?.createdAt || null,
-        subject:       eng.metadata?.subject || null,
-        body:          eng.metadata?.body    || null,
-        numOpens:      eng.metadata?.numOpens      || 0,
-        numClicks:     eng.metadata?.numClicks     || 0,
-        replied:       eng.metadata?.replied       || false,
-        filteredEvent: eng.metadata?.filteredEvent || false,
-        sentAt:        eng.metadata?.sentAt        || null,
-        openedAt:      eng.metadata?.openedAt      || null,
-        contactId:     eng.associations?.contactIds?.[0] ?? null,
-      }));
-
-      const { real, bots } = scoreAllSignals(items, qp.includeBots === "true");
-
-      const contactIds = [...new Set(real.slice(0, limit).map((s) => s.contactId).filter(Boolean))];
-      let contactMap   = {};
-      if (contactIds.length > 0) {
-        const batch = await hsPost(user.userId, "/crm/v3/objects/contacts/batch/read", {
-          properties: ["firstname", "lastname", "company", "jobtitle"],
-          inputs:     contactIds.map((id) => ({ id })),
-        });
-        (batch.results || []).forEach((c) => {
-          contactMap[c.id] = {
-            name:    `${c.properties.firstname || ""} ${c.properties.lastname || ""}`.trim(),
-            company: c.properties.company  || "",
-            title:   c.properties.jobtitle || "",
-          };
-        });
-      }
-
-      const enrich   = (s) => ({ ...s, contact: contactMap[s.contactId] || null });
-      const response = {
-        feed: real.slice(0, limit).map(enrich),
-        meta: {
-          total:             real.length,
-          suspectedBotCount: bots.length,
-          hoursSearched:     hours,
-          botSummary: bots.length > 0
-            ? `${bots.length} open event${bots.length > 1 ? "s" : ""} filtered as likely bot scan`
-            : null,
-        },
-      };
-      if (qp.showBots === "true") {
-        response.suspectedBotSignals = bots.slice(0, 20).map(enrich);
-      }
-      return ok(response);
-    }
-
-    // ── Signals ──────────────────────────────────────────────────────────────
-    // Contact-first approach: find recently active contacts, then pull their
-    // full event chains (sent, delivered, opened, clicked) with exact timestamps.
-    // This handles high-volume senders (300-1000/day) correctly by paginating
-    // per contact rather than trying to stream a global event log.
+    // ── Signals (contact-first, with custom property filters) ─────────────────
+    // Query params:
+    //   hours=168          lookback window in hours (default 2880 = 4 months, max 2880)
+    //   showBots=true      include suspected bot signals in response
+    //   includeBots=true   skip bot filtering entirely
+    //   assigned_bdr=X     filter by Assigned BDR
+    //   territory=X        filter by Territory
+    //   priority_tier__bdr=X  filter by Priority Tier
+    //   target_account__bdr_led_outreach=X  filter by Target Account
     if (method === "GET" && path === "/signals") {
-      const hours = Math.min(parseInt(qp.hours || "2880", 10), 2880); // default 4 months
-      const since = Date.now() - hours * 60 * 60 * 1000;
-      const sinceISO = new Date(since).toISOString();
+      const hours      = Math.min(parseInt(qp.hours || "2880", 10), 2880);
+      const since      = Date.now() - hours * 60 * 60 * 1000;
+      const sinceISO   = new Date(since).toISOString();
       const includeBots = qp.includeBots === "true";
 
-      // Step 1: Find contacts with recent email activity using contact search
-      // sorted by hs_last_email_activity_date descending
+      // Build filter array -- always includes date filter, optionally custom filters
+      const dateFilter = {
+        propertyName: "hs_last_email_activity_date",
+        operator:     "GTE",
+        value:        sinceISO,
+      };
+      const customFilters = buildCustomFilters(qp);
+      const allFilters    = [dateFilter, ...customFilters];
+
+      // Fetch recently active contacts + engagement fallback + marketing events
       const [recentContactsData, engData, marketingEventsData] = await Promise.all([
         hsPost(user.userId, "/crm/v3/objects/contacts/search", {
-          filterGroups: [{
-            filters: [{
-              propertyName: "hs_last_email_activity_date",
-              operator:     "GTE",
-              value:        sinceISO,
-            }],
-          }],
-          properties: ["firstname", "lastname", "email", "company", "jobtitle",
-                       "hs_lead_status", "hs_last_email_activity_date",
-                       "hs_email_last_open_date", "hs_email_last_click_date",
-                       "hs_email_last_reply_date", "hs_email_last_send_date",
-                       "num_contacted_notes"],
-          sorts: [{ propertyName: "hs_last_email_activity_date", direction: "DESCENDING" }],
-          limit: 100,
+          filterGroups: [{ filters: allFilters }],
+          properties:   BASE_CONTACT_PROPS,
+          sorts:        [{ propertyName: "hs_last_email_activity_date", direction: "DESCENDING" }],
+          limit:        100,
         }).catch(() => ({ results: [] })),
 
+        // Engagement fallback: only pull within the time window
         hsGet(user.userId, "/engagements/v1/engagements/paged", {
           limit: 100,
-          since,
+          since, // enforces the date range -- fixes September 2023 appearing in 7-day filter
         }).catch(() => ({ results: [] })),
 
         fetchMarketingEmailRecipientEvents(user.userId, since),
       ]);
 
-      // Step 2: Build a contact map from the search results
+      // Build contact map with full normalized data including custom properties
       const contactMap = {};
       (recentContactsData.results || []).forEach(c => {
-        const p = c.properties || {};
-        contactMap[c.id] = {
-          id:           c.id,
-          name:         `${p.firstname || ""} ${p.lastname || ""}`.trim(),
-          email:        p.email || "",
-          company:      p.company || "",
-          title:        p.jobtitle || "",
-          leadStatus:   p.hs_lead_status || "",
-          // Exact timestamps from contact properties
-          lastEmailActivityDate: p.hs_last_email_activity_date || null,
-          lastOpenDate:          p.hs_email_last_open_date     || null,
-          lastClickDate:         p.hs_email_last_click_date    || null,
-          lastReplyDate:         p.hs_email_last_reply_date    || null,
-          lastSendDate:          p.hs_email_last_send_date     || null,
-        };
-        if (p.email) contactMap[p.email] = contactMap[c.id];
+        const info = normalizeContact(c);
+        contactMap[c.id] = info;
+        if (info.email) contactMap[info.email] = info;
       });
 
-      // Step 3: Build signals from contact properties (most reliable source)
-      // Each contact gets one signal entry showing their most significant recent action
+      // Build signals from contact properties (covers all email types)
       const contactSignals = (recentContactsData.results || []).map(c => {
         const p    = c.properties || {};
         const info = contactMap[c.id];
 
-        // Determine the most significant action and its timestamp
         const replyTs = p.hs_email_last_reply_date  ? new Date(p.hs_email_last_reply_date).getTime()  : 0;
         const clickTs = p.hs_email_last_click_date  ? new Date(p.hs_email_last_click_date).getTime()  : 0;
         const openTs  = p.hs_email_last_open_date   ? new Date(p.hs_email_last_open_date).getTime()   : 0;
@@ -747,19 +740,19 @@ export const handler = async (event, context) => {
         if (replyTs > 0 && replyTs >= since) {
           score = 100; label = "Replied"; primaryTs = p.hs_email_last_reply_date; eventType = "REPLY";
         } else if (clickTs > 0 && clickTs >= since) {
-          score = 70;  label = "Clicked link"; primaryTs = p.hs_email_last_click_date; eventType = "CLICK";
+          score = 70; label = "Clicked link"; primaryTs = p.hs_email_last_click_date; eventType = "CLICK";
         } else if (openTs > 0 && openTs >= since) {
-          score = 40;  label = "Opened"; primaryTs = p.hs_email_last_open_date; eventType = "OPEN";
+          score = 40; label = "Opened"; primaryTs = p.hs_email_last_open_date; eventType = "OPEN";
         } else {
-          return null; // no qualifying activity
+          return null;
         }
 
-        // Build the event chain with exact timestamps
+        // Build event chain in chronological order
         const eventChain = [];
-        if (sendTs > 0)  eventChain.push({ type:"SENT",      timestamp: p.hs_email_last_send_date,  label:"Sent" });
-        if (openTs > 0)  eventChain.push({ type:"OPENED",    timestamp: p.hs_email_last_open_date,  label:"Opened" });
-        if (clickTs > 0) eventChain.push({ type:"CLICKED",   timestamp: p.hs_email_last_click_date, label:"Clicked" });
-        if (replyTs > 0) eventChain.push({ type:"REPLIED",   timestamp: p.hs_email_last_reply_date, label:"Replied" });
+        if (sendTs > 0)  eventChain.push({ type:"SENT",    timestamp: p.hs_email_last_send_date,  label:"Sent" });
+        if (openTs > 0)  eventChain.push({ type:"OPENED",  timestamp: p.hs_email_last_open_date,  label:"Opened" });
+        if (clickTs > 0) eventChain.push({ type:"CLICKED", timestamp: p.hs_email_last_click_date, label:"Clicked" });
+        if (replyTs > 0) eventChain.push({ type:"REPLIED", timestamp: p.hs_email_last_reply_date, label:"Replied" });
         eventChain.sort((a,b) => new Date(a.timestamp) - new Date(b.timestamp));
 
         const botCheck = detectBot({
@@ -772,80 +765,107 @@ export const handler = async (event, context) => {
         });
 
         return {
-          source:      "contact_activity",
-          id:          `ca-${c.id}`,
-          type:        eventType,
-          timestamp:   primaryTs,
+          source:    "contact_activity",
+          id:        `ca-${c.id}`,
+          type:      eventType,
+          timestamp: primaryTs,
           score,
           label,
           eventChain,
-          contactId:   c.id,
-          contact:     info,
+          contactId: c.id,
+          contact:   info,
           botCheck,
-          isBot:       botCheck.isBot && eventType === "OPEN",
-          // Individual timestamps
-          sentAt:      p.hs_email_last_send_date  || null,
-          openedAt:    p.hs_email_last_open_date  || null,
-          clickedAt:   p.hs_email_last_click_date || null,
-          repliedAt:   p.hs_email_last_reply_date || null,
+          isBot:     botCheck.isBot && eventType === "OPEN",
+          sentAt:    p.hs_email_last_send_date  || null,
+          openedAt:  p.hs_email_last_open_date  || null,
+          clickedAt: p.hs_email_last_click_date || null,
+          repliedAt: p.hs_email_last_reply_date || null,
         };
       }).filter(Boolean);
 
-      // Step 4: Also pull from marketing email events for any contacts
-      // not already captured by the contact search
-      const existingContactIds = new Set(contactSignals.map(s => s.contactId));
+      // Supplement with engagements not already covered by contact search
+      // (e.g. calls, meetings, notes which don't affect hs_last_email_activity_date)
+      const existingIds = new Set(contactSignals.map(s => s.contactId));
+
       const engItems = (engData.results || [])
         .filter(eng => {
-          const cid = eng.associations?.contactIds?.[0];
-          return cid && !existingContactIds.has(String(cid));
+          const cid  = String(eng.associations?.contactIds?.[0] ?? "");
+          const ts   = eng.engagement?.createdAt || 0;
+          // Strictly enforce date range on engagements
+          return cid && !existingIds.has(cid) && ts >= since;
         })
-        .map(eng => ({
-          source:        "engagement",
-          id:            `eng-${eng.engagement?.id}`,
-          type:          eng.engagement?.type || "UNKNOWN",
-          timestamp:     eng.engagement?.createdAt || null,
-          subject:       eng.metadata?.subject || null,
-          numOpens:      eng.metadata?.numOpens      || 0,
-          numClicks:     eng.metadata?.numClicks     || 0,
-          replied:       eng.metadata?.replied       || false,
-          filteredEvent: eng.metadata?.filteredEvent || false,
-          sentAt:        eng.metadata?.sentAt        || null,
-          openedAt:      eng.metadata?.openedAt      || null,
-          contactId:     String(eng.associations?.contactIds?.[0] ?? ""),
-          eventChain:    [],
-        }));
+        .map(eng => {
+          const typeLabel = { CALL:"Call logged", MEETING:"Meeting logged", NOTE:"Note logged", TASK:"Task" };
+          const engType   = eng.engagement?.type || "UNKNOWN";
+          return {
+            source:        "engagement",
+            id:            `eng-${eng.engagement?.id}`,
+            type:          engType,
+            timestamp:     eng.engagement?.createdAt || null,
+            // Fix: never show raw type as subject -- use clean labels
+            subject:       eng.metadata?.subject || typeLabel[engType] || engType,
+            numOpens:      eng.metadata?.numOpens  || 0,
+            numClicks:     eng.metadata?.numClicks || 0,
+            replied:       eng.metadata?.replied   || false,
+            filteredEvent: eng.metadata?.filteredEvent || false,
+            sentAt:        eng.metadata?.sentAt   || null,
+            openedAt:      eng.metadata?.openedAt || null,
+            contactId:     String(eng.associations?.contactIds?.[0] ?? ""),
+            eventChain:    [],
+          };
+        });
 
+      // Marketing events: only include if contact not already in results
       const mktItems = marketingEventsData.filter(ev => {
         const key = ev.contactId || ev.recipientEmail;
-        return key && !existingContactIds.has(key);
+        return key && !existingIds.has(key);
       });
 
       const { real: engReal, bots: engBots } = scoreAllSignals([...engItems, ...mktItems], includeBots);
 
-      // Enrich engagement signals with contact info
-      const engContactIds = [...new Set(engReal.concat(engBots).map(s => s.contactId).filter(Boolean))];
-      if (engContactIds.length > 0) {
+      // Enrich engagement/marketing signals with contact info
+      // including custom properties via batch read
+      const unknownIds = [...new Set(
+        [...engReal, ...engBots].map(s => s.contactId).filter(id => id && !contactMap[id])
+      )];
+      if (unknownIds.length > 0) {
         try {
           const batch = await hsPost(user.userId, "/crm/v3/objects/contacts/batch/read", {
-            properties: ["firstname", "lastname", "company", "jobtitle", "email"],
-            inputs:     engContactIds.filter(id => !contactMap[id]).map(id => ({ id })),
+            properties: BASE_CONTACT_PROPS,
+            inputs:     unknownIds.map(id => ({ id })),
           });
           (batch.results || []).forEach(c => {
-            const p = c.properties || {};
-            contactMap[c.id] = {
-              id: c.id,
-              name:    `${p.firstname||""} ${p.lastname||""}`.trim(),
-              email:   p.email || "",
-              company: p.company || "",
-              title:   p.jobtitle || "",
-            };
+            const info = normalizeContact(c);
+            contactMap[c.id] = info;
+            if (info.email) contactMap[info.email] = info;
           });
         } catch { /* fail silently */ }
       }
 
-      const enrich = s => ({ ...s, contact: s.contact || contactMap[s.contactId] || contactMap[s.recipientEmail] || null });
+      // Also look up marketing event contacts by email
+      const unknownEmails = [...new Set(
+        mktItems.map(s => s.recipientEmail).filter(e => e && !contactMap[e])
+      )];
+      if (unknownEmails.length > 0) {
+        try {
+          const batch = await hsPost(user.userId, "/crm/v3/objects/contacts/batch/read", {
+            properties: BASE_CONTACT_PROPS,
+            idProperty: "email",
+            inputs:     unknownEmails.map(e => ({ id: e })),
+          });
+          (batch.results || []).forEach(c => {
+            const info = normalizeContact(c);
+            contactMap[c.id] = info;
+            if (info.email) contactMap[info.email] = info;
+          });
+        } catch { /* fail silently */ }
+      }
 
-      // Step 5: Merge all sources, split real vs bots, sort by score then timestamp
+      const enrich = s => ({
+        ...s,
+        contact: s.contact || contactMap[s.contactId] || contactMap[s.recipientEmail] || null,
+      });
+
       const allReal = [
         ...contactSignals.filter(s => !s.isBot),
         ...engReal.map(enrich),
@@ -862,6 +882,12 @@ export const handler = async (event, context) => {
           total:             allReal.length,
           suspectedBotCount: allBots.length,
           hoursSearched:     hours,
+          activeFilters: {
+            assigned_bdr:                    qp.assigned_bdr || null,
+            territory:                       qp.territory    || null,
+            priority_tier__bdr:              qp.priority_tier__bdr || null,
+            target_account__bdr_led_outreach:qp.target_account__bdr_led_outreach || null,
+          },
           botSummary: allBots.length > 0
             ? `${allBots.length} open event${allBots.length > 1 ? "s" : ""} filtered as likely bot scan`
             : null,
