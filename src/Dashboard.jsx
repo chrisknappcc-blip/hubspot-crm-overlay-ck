@@ -66,12 +66,11 @@ function timeToOpen(sentTs, openedTs) {
   return `${Math.floor(hrs / 24)}d ${hrs % 24}h`
 }
 
-function cleanSubject(subject, campaignId) {
-  if (!subject && !campaignId) return 'Marketing email'
-  if (!subject || /^\d+$/.test(subject)) {
-    return campaignId ? `Campaign #${campaignId}` : 'Marketing email'
-  }
-  return subject
+function cleanSubject(subject, campaignId, campaignNames = {}) {
+  if (subject && !/^\d+$/.test(subject)) return subject
+  if (campaignId && campaignNames[campaignId]) return campaignNames[campaignId]
+  if (campaignId) return `Campaign #${campaignId}`
+  return 'Marketing email'
 }
 
 function hsContactUrl(contactId) {
@@ -277,6 +276,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken }) {
   const PAGE_SIZE = 25
   const [taskPage, setTaskPage]       = useState(0)
   const [signalPage, setSignalPage]   = useState(0)
+  const [campaignNames, setCampaignNames] = useState({})
 
   // Custom property filters
   const [filterBdr, setFilterBdr]           = useState('')
@@ -313,9 +313,23 @@ export default function Dashboard({ user, theme, toggleTheme, getToken }) {
         apiFetch(`/api/hubspot/signals?${params}`, getToken),
         apiFetch(`/api/hubspot/contacts${filterParams ? '?' + filterParams : ''}`, getToken),
       ])
-      setSignals(sigData.signals || [])
+      const sigs = sigData.signals || []
+      setSignals(sigs)
       setBotSignals(sigData.suspectedBotSignals || [])
       setContacts(contactData.contacts || [])
+
+      // Lazy-load campaign names for any signals with a numeric campaignId
+      const campaignIds = [...new Set(
+        sigs
+          .filter(s => s.campaignId && !s.subject)
+          .map(s => s.campaignId)
+      )].slice(0, 10)
+      if (campaignIds.length > 0) {
+        apiFetch('/api/hubspot/campaign-names', getToken, {
+          method: 'POST',
+          body: JSON.stringify({ ids: campaignIds }),
+        }).then(d => setCampaignNames(prev => ({ ...prev, ...d.names }))).catch(() => {})
+      }
     } catch (e) {
       console.error(e)
     } finally {
@@ -346,22 +360,30 @@ export default function Dashboard({ user, theme, toggleTheme, getToken }) {
   const warmCount          = signals.filter(s => s.score >= 30 && s.score < 100).length
   const botCount           = botSignals.length
 
-  const tasks = sortedSignals.map(s => ({
-    name:      s.contact?.name || 'Unknown',
-    company:   s.contact?.company || '',
-    title:     s.contact?.title || '',
-    label:     s.label,
-    score:     s.score,
-    ts:        s.timestamp,
-    contactId: s.contactId,
-    priority:  s.score >= 100 ? 'hot' : s.score >= 60 ? 'warm' : 'normal',
-    badgeType: s.score >= 100 ? 'reply' : s.score >= 60 ? 'click' : 'hot',
-    eventChain: s.eventChain || [],
-    sentAt:     s.sentAt || null,
-    openedAt:   s.openedAt || null,
-    clickedAt:  s.clickedAt || null,
-    repliedAt:  s.repliedAt || null,
-  }))
+  const tasks = sortedSignals.map(s => {
+    // For marketing email events, timestamps come from openedAt/clickedAt directly
+    // For contact_activity signals, they come from sentAt/openedAt/clickedAt/repliedAt
+    const chain = s.eventChain || []
+    const chainTs = (type) => chain.find(e => e.type === type)?.timestamp || null
+    return {
+      name:      s.contact?.name || 'Unknown',
+      company:   s.contact?.company || '',
+      title:     s.contact?.title || '',
+      label:     s.label,
+      score:     s.score,
+      ts:        s.timestamp,
+      contactId: s.contactId,
+      priority:  s.score >= 100 ? 'hot' : s.score >= 60 ? 'warm' : 'normal',
+      badgeType: s.score >= 100 ? 'reply' : s.score >= 60 ? 'click' : 'hot',
+      eventChain: chain,
+      sentAt:    s.sentAt    || chainTs('SENT')    || null,
+      openedAt:  s.openedAt  || chainTs('OPENED')  || (s.type === 'MARKETING_EMAIL' && s.eventType === 'OPEN'  ? s.timestamp : null),
+      clickedAt: s.clickedAt || chainTs('CLICKED') || (s.type === 'MARKETING_EMAIL' && s.eventType === 'CLICK' ? s.timestamp : null),
+      repliedAt: s.repliedAt || chainTs('REPLIED') || null,
+      subject:   s.subject   || null,
+      campaignId:s.campaignId|| null,
+    }
+  })
 
   const contentEngagement = signals.filter(s => s.label?.toLowerCase().includes('click')).map(s => ({
     name:      s.contact?.name || 'Unknown',
@@ -545,12 +567,22 @@ export default function Dashboard({ user, theme, toggleTheme, getToken }) {
                               </button>
                             )}
                           </div>
-                          <div style={{ fontSize:11, color:'var(--text-tertiary)', marginBottom:4 }}>{cleanSubject(s.subject, s.campaignId)}</div>
+                          <div style={{ fontSize:11, color:'var(--text-tertiary)', marginBottom:4 }}>{cleanSubject(s.subject, s.campaignId, campaignNames)}</div>
                           <div style={{ display:'flex', flexDirection:'column', gap:3 }}>
-                            {s.sentAt    && <div style={{ fontSize:11, color:'var(--text-tertiary)', display:'flex', gap:6 }}><span style={{ color:'var(--text-secondary)', fontWeight:500, minWidth:56 }}>Sent</span><span>{exactTs(s.sentAt)}</span></div>}
-                            {s.openedAt  && <div style={{ fontSize:11, color:'var(--text-tertiary)', display:'flex', gap:6, alignItems:'center' }}><span style={{ color:'var(--text-secondary)', fontWeight:500, minWidth:56 }}>Opened</span><span>{exactTs(s.openedAt)}</span>{timeToOpen(s.sentAt, s.openedAt) && <span style={{ marginLeft:4, fontSize:10, background:'var(--accent-light)', color:'var(--accent-text)', padding:'1px 6px', borderRadius:10 }}>{timeToOpen(s.sentAt, s.openedAt)} after send</span>}</div>}
-                            {s.clickedAt && <div style={{ fontSize:11, color:'var(--text-tertiary)', display:'flex', gap:6 }}><span style={{ color:'var(--text-secondary)', fontWeight:500, minWidth:56 }}>Clicked</span><span>{exactTs(s.clickedAt)}</span></div>}
-                            {s.repliedAt && <div style={{ fontSize:11, color:'var(--text-tertiary)', display:'flex', gap:6 }}><span style={{ color:'var(--text-secondary)', fontWeight:500, minWidth:56 }}>Replied</span><span>{exactTs(s.repliedAt)}</span></div>}
+                            {(() => {
+                              const chain = s.eventChain || []
+                              const chainTs = (type) => chain.find(e => e.type === type)?.timestamp || null
+                              const sentAt    = s.sentAt    || chainTs('SENT')    || null
+                              const openedAt  = s.openedAt  || chainTs('OPENED')  || (s.eventType === 'OPEN'  ? s.timestamp : null)
+                              const clickedAt = s.clickedAt || chainTs('CLICKED') || (s.eventType === 'CLICK' ? s.timestamp : null)
+                              const repliedAt = s.repliedAt || chainTs('REPLIED') || null
+                              return (<>
+                                {sentAt    && <div style={{ fontSize:11, color:'var(--text-tertiary)', display:'flex', gap:6 }}><span style={{ color:'var(--text-secondary)', fontWeight:500, minWidth:56 }}>Sent</span><span>{exactTs(sentAt)}</span></div>}
+                                {openedAt  && <div style={{ fontSize:11, color:'var(--text-tertiary)', display:'flex', gap:6, alignItems:'center' }}><span style={{ color:'var(--text-secondary)', fontWeight:500, minWidth:56 }}>Opened</span><span>{exactTs(openedAt)}</span>{timeToOpen(sentAt, openedAt) && <span style={{ marginLeft:4, fontSize:10, background:'var(--accent-light)', color:'var(--accent-text)', padding:'1px 6px', borderRadius:10 }}>{timeToOpen(sentAt, openedAt)} after send</span>}</div>}
+                                {clickedAt && <div style={{ fontSize:11, color:'var(--text-tertiary)', display:'flex', gap:6 }}><span style={{ color:'var(--text-secondary)', fontWeight:500, minWidth:56 }}>Clicked</span><span>{exactTs(clickedAt)}</span></div>}
+                                {repliedAt && <div style={{ fontSize:11, color:'var(--text-tertiary)', display:'flex', gap:6 }}><span style={{ color:'var(--text-secondary)', fontWeight:500, minWidth:56 }}>Replied</span><span>{exactTs(repliedAt)}</span></div>}
+                              </>)
+                            })()}
                             {!s.sentAt && !s.openedAt && !s.clickedAt && !s.repliedAt && s.timestamp && (
                               <div style={{ fontSize:11, color:'var(--text-tertiary)' }}>{exactTs(s.timestamp)}</div>
                             )}
