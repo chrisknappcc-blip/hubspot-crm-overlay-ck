@@ -54,6 +54,18 @@ function exactTs(ts) {
   })
 }
 
+function timeToOpen(sentTs, openedTs) {
+  if (!sentTs || !openedTs) return null
+  const diff = new Date(openedTs).getTime() - new Date(sentTs).getTime()
+  if (diff < 0) return null
+  const mins = Math.floor(diff / 60000)
+  if (mins < 1)   return '< 1 min'
+  if (mins < 60)  return `${mins} min`
+  const hrs = Math.floor(mins / 60)
+  if (hrs < 24)   return `${hrs}h ${mins % 60}m`
+  return `${Math.floor(hrs / 24)}d ${hrs % 24}h`
+}
+
 function cleanSubject(subject, campaignId) {
   if (!subject && !campaignId) return 'Marketing email'
   if (!subject || /^\d+$/.test(subject)) {
@@ -363,9 +375,10 @@ export default function Dashboard({ user, theme, toggleTheme, getToken }) {
 
   const openHubSpotContact = (contactId, e) => {
     if (e) e.stopPropagation()
+    console.log('[HS] Opening contact:', contactId)
     const url = hsContactUrl(contactId)
+    console.log('[HS] URL:', url)
     if (!url) return
-    // Use anchor click to bypass popup blockers reliably
     const a = document.createElement('a')
     a.href = url
     a.target = '_blank'
@@ -479,10 +492,10 @@ export default function Dashboard({ user, theme, toggleTheme, getToken }) {
                         <div style={{ fontSize:12, color:'var(--text-secondary)', marginBottom:6 }}>{t.title}{t.company ? ` · ${t.company}` : ''}</div>
                         <Badge label={t.label} type={t.badgeType} />
                         <div style={{ marginTop:6, display:'flex', flexDirection:'column', gap:3 }}>
-                          {t.sentAt   && <div style={{ fontSize:11, color:'var(--text-tertiary)', display:'flex', gap:6 }}><span style={{ color:'var(--text-secondary)', fontWeight:500, minWidth:52 }}>Sent</span><span>{exactTs(t.sentAt)}</span></div>}
-                          {t.openedAt && <div style={{ fontSize:11, color:'var(--text-tertiary)', display:'flex', gap:6 }}><span style={{ color:'var(--text-secondary)', fontWeight:500, minWidth:52 }}>Opened</span><span>{exactTs(t.openedAt)}</span></div>}
-                          {t.clickedAt && <div style={{ fontSize:11, color:'var(--text-tertiary)', display:'flex', gap:6 }}><span style={{ color:'var(--text-secondary)', fontWeight:500, minWidth:52 }}>Clicked</span><span>{exactTs(t.clickedAt)}</span></div>}
-                          {t.repliedAt && <div style={{ fontSize:11, color:'var(--text-tertiary)', display:'flex', gap:6 }}><span style={{ color:'var(--text-secondary)', fontWeight:500, minWidth:52 }}>Replied</span><span>{exactTs(t.repliedAt)}</span></div>}
+                          {t.sentAt    && <div style={{ fontSize:11, color:'var(--text-tertiary)', display:'flex', gap:6 }}><span style={{ color:'var(--text-secondary)', fontWeight:500, minWidth:56 }}>Sent</span><span>{exactTs(t.sentAt)}</span></div>}
+                          {t.openedAt  && <div style={{ fontSize:11, color:'var(--text-tertiary)', display:'flex', gap:6, alignItems:'center' }}><span style={{ color:'var(--text-secondary)', fontWeight:500, minWidth:56 }}>Opened</span><span>{exactTs(t.openedAt)}</span>{timeToOpen(t.sentAt, t.openedAt) && <span style={{ marginLeft:4, fontSize:10, background:'var(--accent-light)', color:'var(--accent-text)', padding:'1px 6px', borderRadius:10 }}>{timeToOpen(t.sentAt, t.openedAt)} after send</span>}</div>}
+                          {t.clickedAt && <div style={{ fontSize:11, color:'var(--text-tertiary)', display:'flex', gap:6 }}><span style={{ color:'var(--text-secondary)', fontWeight:500, minWidth:56 }}>Clicked</span><span>{exactTs(t.clickedAt)}</span></div>}
+                          {t.repliedAt && <div style={{ fontSize:11, color:'var(--text-tertiary)', display:'flex', gap:6 }}><span style={{ color:'var(--text-secondary)', fontWeight:500, minWidth:56 }}>Replied</span><span>{exactTs(t.repliedAt)}</span></div>}
                           {!t.sentAt && !t.openedAt && !t.clickedAt && !t.repliedAt && t.ts && (
                             <div style={{ fontSize:11, color:'var(--text-tertiary)' }}>{exactTs(t.ts)}</div>
                           )}
@@ -534,10 +547,10 @@ export default function Dashboard({ user, theme, toggleTheme, getToken }) {
                           </div>
                           <div style={{ fontSize:11, color:'var(--text-tertiary)', marginBottom:4 }}>{cleanSubject(s.subject, s.campaignId)}</div>
                           <div style={{ display:'flex', flexDirection:'column', gap:3 }}>
-                            {s.sentAt    && <div style={{ fontSize:11, color:'var(--text-tertiary)', display:'flex', gap:6 }}><span style={{ color:'var(--text-secondary)', fontWeight:500, minWidth:52 }}>Sent</span><span>{exactTs(s.sentAt)}</span></div>}
-                            {s.openedAt  && <div style={{ fontSize:11, color:'var(--text-tertiary)', display:'flex', gap:6 }}><span style={{ color:'var(--text-secondary)', fontWeight:500, minWidth:52 }}>Opened</span><span>{exactTs(s.openedAt)}</span></div>}
-                            {s.clickedAt && <div style={{ fontSize:11, color:'var(--text-tertiary)', display:'flex', gap:6 }}><span style={{ color:'var(--text-secondary)', fontWeight:500, minWidth:52 }}>Clicked</span><span>{exactTs(s.clickedAt)}</span></div>}
-                            {s.repliedAt && <div style={{ fontSize:11, color:'var(--text-tertiary)', display:'flex', gap:6 }}><span style={{ color:'var(--text-secondary)', fontWeight:500, minWidth:52 }}>Replied</span><span>{exactTs(s.repliedAt)}</span></div>}
+                            {s.sentAt    && <div style={{ fontSize:11, color:'var(--text-tertiary)', display:'flex', gap:6 }}><span style={{ color:'var(--text-secondary)', fontWeight:500, minWidth:56 }}>Sent</span><span>{exactTs(s.sentAt)}</span></div>}
+                            {s.openedAt  && <div style={{ fontSize:11, color:'var(--text-tertiary)', display:'flex', gap:6, alignItems:'center' }}><span style={{ color:'var(--text-secondary)', fontWeight:500, minWidth:56 }}>Opened</span><span>{exactTs(s.openedAt)}</span>{timeToOpen(s.sentAt, s.openedAt) && <span style={{ marginLeft:4, fontSize:10, background:'var(--accent-light)', color:'var(--accent-text)', padding:'1px 6px', borderRadius:10 }}>{timeToOpen(s.sentAt, s.openedAt)} after send</span>}</div>}
+                            {s.clickedAt && <div style={{ fontSize:11, color:'var(--text-tertiary)', display:'flex', gap:6 }}><span style={{ color:'var(--text-secondary)', fontWeight:500, minWidth:56 }}>Clicked</span><span>{exactTs(s.clickedAt)}</span></div>}
+                            {s.repliedAt && <div style={{ fontSize:11, color:'var(--text-tertiary)', display:'flex', gap:6 }}><span style={{ color:'var(--text-secondary)', fontWeight:500, minWidth:56 }}>Replied</span><span>{exactTs(s.repliedAt)}</span></div>}
                             {!s.sentAt && !s.openedAt && !s.clickedAt && !s.repliedAt && s.timestamp && (
                               <div style={{ fontSize:11, color:'var(--text-tertiary)' }}>{exactTs(s.timestamp)}</div>
                             )}
