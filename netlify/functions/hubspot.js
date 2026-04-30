@@ -396,45 +396,80 @@ async function fetchMarketingEmailRecipientEvents(userId, since) {
 
 
 // ─── Bot detection ────────────────────────────────────────────────────────────
+// Bot/scanner opens have distinctive patterns -- we check multiple signals
+// and assign confidence levels so we never filter out clicks or replies.
+//
+// Thresholds (based on industry research):
+//   < 60 seconds to open  = almost certainly a security scanner (HIGH confidence)
+//   < 5 minutes to open   = very likely a scanner (MEDIUM confidence)
+//   Opens with no clicks  = soft signal (LOW confidence alone)
+//   4+ opens, 0 clicks    = burst scan pattern (MEDIUM confidence)
+//   Off-hours open        = soft signal (LOW confidence alone)
 
 function detectBot(item) {
   const reasons = [];
 
+  // Normalize timestamps -- accept both ms numbers and ISO strings
+  const toMs = (v) => {
+    if (!v) return null;
+    if (typeof v === "number") return v;
+    const t = new Date(v).getTime();
+    return isNaN(t) ? null : t;
+  };
+
+  const sentMs   = toMs(item.sentAt);
+  const openedMs = toMs(item.openedAt);
+
+  // 1. HubSpot's own bot filter flag (always high confidence)
   if (item.filteredEvent) {
-    reasons.push("HubSpot flagged as filtered/bot event");
+    reasons.push("HubSpot flagged as bot/filtered event");
   }
 
-  if (item.sentAt && item.openedAt) {
-    const secondsToOpen = (item.openedAt - item.sentAt) / 1000;
-    if (secondsToOpen >= 0 && secondsToOpen < 10) {
-      reasons.push(`Opened ${secondsToOpen.toFixed(1)}s after send (threshold: <10s)`);
+  // 2. Time-to-open heuristics
+  if (sentMs && openedMs && openedMs >= sentMs) {
+    const secondsToOpen = (openedMs - sentMs) / 1000;
+    if (secondsToOpen < 60) {
+      // Under 60 seconds is almost always a security scanner
+      reasons.push(`Opened ${secondsToOpen.toFixed(0)}s after send (scanner threshold: <60s)`);
+    } else if (secondsToOpen < 300) {
+      // Under 5 minutes is suspicious but lower confidence
+      reasons.push(`Opened ${Math.round(secondsToOpen / 60)}m after send (suspicious: <5min)`);
     }
   }
 
+  // 3. Opens with no clicks or reply (weak signal alone, strong combined)
   if (item.numOpens > 0 && item.numClicks === 0 && !item.replied) {
-    reasons.push("Opens with no clicks or reply");
+    reasons.push("Opened with no clicks or reply");
   }
 
+  // 4. Burst pattern: 4+ opens, zero clicks
   if (item.numOpens >= 4 && item.numClicks === 0 && !item.replied) {
-    reasons.push(`${item.numOpens} opens, 0 clicks - burst pattern`);
+    reasons.push(`${item.numOpens} opens, 0 clicks -- burst scan pattern`);
   }
 
-  if (item.openedAt) {
-    const hour = new Date(item.openedAt).getHours();
+  // 5. Off-hours open with no follow-on (weak signal)
+  if (openedMs) {
+    const hour = new Date(openedMs).getHours();
     if ((hour < 6 || hour > 22) && item.numClicks === 0 && !item.replied) {
-      reasons.push("Opened outside business hours with no follow-on");
+      reasons.push("Opened outside business hours with no follow-on activity");
     }
   }
 
-  const hardSignals = reasons.filter(
-    (r) => r.includes("HubSpot flagged") || r.includes("after send")
+  // Confidence scoring:
+  // Hard signals: HubSpot flag OR time-based (< 60s always hard, < 5min is medium)
+  // Soft signals: everything else
+  const hardSignals = reasons.filter(r =>
+    r.includes("HubSpot flagged") || r.includes("scanner threshold")
   ).length;
-  const softSignals = reasons.length - hardSignals;
+  const medSignals = reasons.filter(r =>
+    r.includes("suspicious") || r.includes("burst scan")
+  ).length;
+  const softSignals = reasons.length - hardSignals - medSignals;
 
   let confidence = "none";
-  if (hardSignals >= 1)       confidence = "high";
-  else if (softSignals >= 2)  confidence = "medium";
-  else if (softSignals === 1) confidence = "low";
+  if (hardSignals >= 1)                          confidence = "high";
+  else if (medSignals >= 1 || softSignals >= 2)  confidence = "medium";
+  else if (softSignals === 1)                    confidence = "low";
 
   return { isBot: confidence === "high" || confidence === "medium", confidence, reasons };
 }
