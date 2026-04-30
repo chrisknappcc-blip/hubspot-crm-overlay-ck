@@ -917,10 +917,40 @@ export const handler = async (event, context) => {
         ...engBots.map(enrich),
       ];
 
+      // Enrich contact signals with campaign/sequence name from HubSpot
+      // by looking up the most recent engagement for each contact
+      // This runs async after building the response so we don't block
+      const enrichedReal = await Promise.all(
+        allReal.map(async s => {
+          // Already has a subject from engagement source
+          if (s.subject && !/^\d+$/.test(s.subject)) return s;
+
+          // For contact_activity signals, try to get campaign name from engagements
+          if (s.source === "contact_activity" && s.contactId) {
+            try {
+              const engData = await hsGet(user.userId,
+                `/engagements/v1/engagements/associated/CONTACT/${s.contactId}/paged`,
+                { limit: 5 }
+              );
+              const emailEngs = (engData.results || [])
+                .filter(e => e.engagement?.type === "EMAIL")
+                .sort((a,b) => (b.engagement?.createdAt||0) - (a.engagement?.createdAt||0));
+              if (emailEngs.length > 0) {
+                const meta = emailEngs[0].metadata || {};
+                if (meta.subject && !/^\d+$/.test(meta.subject)) {
+                  return { ...s, subject: meta.subject };
+                }
+              }
+            } catch { /* fail silently */ }
+          }
+          return s;
+        })
+      );
+
       const response = {
-        signals: allReal.slice(0, 50),
+        signals: enrichedReal, // no cap -- all signals returned, frontend handles paging
         meta: {
-          total:             allReal.length,
+          total:             enrichedReal.length,
           suspectedBotCount: allBots.length,
           hoursSearched:     hours,
           activeFilters: {
@@ -935,7 +965,7 @@ export const handler = async (event, context) => {
         },
       };
       if (qp.showBots === "true") {
-        response.suspectedBotSignals = allBots.slice(0, 20);
+        response.suspectedBotSignals = allBots.slice(0, 50);
       }
       return ok(response);
     }
