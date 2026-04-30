@@ -131,6 +131,31 @@ function Select({ value, onChange, options, style = {} }) {
   )
 }
 
+// ─── Pager component ─────────────────────────────────────────────────────────
+function Pager({ page, total, pageSize, onChange }) {
+  const totalPages = Math.ceil(total / pageSize)
+  if (totalPages <= 1) return null
+  const start = page * pageSize + 1
+  const end   = Math.min((page + 1) * pageSize, total)
+  return (
+    <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginTop:12, paddingTop:10, borderTop:'1px solid var(--border)' }}>
+      <div style={{ fontSize:12, color:'var(--text-tertiary)' }}>
+        {start}–{end} of {total}
+      </div>
+      <div style={{ display:'flex', gap:6 }}>
+        <button onClick={() => onChange(page - 1)} disabled={page === 0}
+          style={{ fontSize:12, padding:'4px 10px', background:'var(--bg-secondary)', border:'1px solid var(--border)', borderRadius:'var(--radius)', cursor: page === 0 ? 'not-allowed' : 'pointer', color: page === 0 ? 'var(--text-tertiary)' : 'var(--text)', opacity: page === 0 ? 0.5 : 1 }}>
+          ← Prev
+        </button>
+        <button onClick={() => onChange(page + 1)} disabled={page >= totalPages - 1}
+          style={{ fontSize:12, padding:'4px 10px', background:'var(--bg-secondary)', border:'1px solid var(--border)', borderRadius:'var(--radius)', cursor: page >= totalPages - 1 ? 'not-allowed' : 'pointer', color: page >= totalPages - 1 ? 'var(--text-tertiary)' : 'var(--text)', opacity: page >= totalPages - 1 ? 0.5 : 1 }}>
+          Next →
+        </button>
+      </div>
+    </div>
+  )
+}
+
 // ─── Date range options ───────────────────────────────────────────────────────
 const DATE_RANGE_OPTIONS = [
   { value:'24',    label:'Last 24 hours' },
@@ -232,6 +257,11 @@ export default function Dashboard({ user, theme, toggleTheme, getToken }) {
   const [signalSort, setSignalSort]   = useState('score_desc')
   const [contactSort, setContactSort] = useState('name_asc')
 
+  // Pagination -- 25 per page
+  const PAGE_SIZE = 25
+  const [taskPage, setTaskPage]       = useState(0)
+  const [signalPage, setSignalPage]   = useState(0)
+
   // Custom property filters
   const [filterBdr, setFilterBdr]           = useState('')
   const [filterTerritory, setFilterTerritory] = useState('')
@@ -278,6 +308,9 @@ export default function Dashboard({ user, theme, toggleTheme, getToken }) {
   }, [getToken, dateRange, filterParams])
 
   useEffect(() => { fetchData() }, [fetchData])
+
+  // Reset to page 0 when sort or date changes
+  useEffect(() => { setTaskPage(0); setSignalPage(0) }, [signalSort, dateRange, filterParams])
 
   const loadContactFeed = useCallback(async (contactId) => {
     try {
@@ -413,7 +446,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken }) {
                 </div>
                 {loading && <div style={{ color:'var(--text-tertiary)', fontSize:13 }}>Loading...</div>}
                 {!loading && tasks.length === 0 && <div style={{ color:'var(--text-tertiary)', fontSize:13 }}>No tasks in this time range.</div>}
-                {tasks.map((t, i) => (
+                {tasks.slice(taskPage * PAGE_SIZE, (taskPage + 1) * PAGE_SIZE).map((t, i) => (
                   <div key={i} style={{ padding:'12px 0', borderBottom: i < tasks.length-1 ? '1px solid var(--border)' : 'none' }}>
                     <div style={{ display:'flex', gap:10 }}>
                       <PriorityDot level={t.priority} />
@@ -446,6 +479,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken }) {
                     </div>
                   </div>
                 ))}
+                <Pager page={taskPage} total={tasks.length} pageSize={PAGE_SIZE} onChange={setTaskPage} />
               </Panel>
 
               {/* Live signals */}
@@ -456,13 +490,13 @@ export default function Dashboard({ user, theme, toggleTheme, getToken }) {
                 </div>
                 {loading && <div style={{ color:'var(--text-tertiary)', fontSize:13 }}>Loading...</div>}
                 {!loading && signals.length === 0 && <div style={{ color:'var(--text-tertiary)', fontSize:13 }}>No signals in this time range.</div>}
-                {sortedSignals.slice(0,50).map((s, i) => {
+                {sortedSignals.slice(signalPage * PAGE_SIZE, (signalPage + 1) * PAGE_SIZE).map((s, i) => {
                   const isReply = s.score >= 100
                   const isClick = s.score >= 60 && s.score < 100
                   const iconColor = isReply ? 'var(--accent)' : isClick ? 'var(--amber)' : 'var(--blue)'
                   const iconBg    = isReply ? 'var(--accent-light)' : isClick ? 'var(--amber-light)' : 'var(--blue-light)'
                   return (
-                    <div key={i} style={{ padding:'10px 0', borderBottom: i < Math.min(sortedSignals.length,50)-1 ? '1px solid var(--border)' : 'none' }}>
+                    <div key={i} style={{ padding:'10px 0', borderBottom: i < Math.min(sortedSignals.slice(signalPage * PAGE_SIZE, (signalPage + 1) * PAGE_SIZE).length, PAGE_SIZE) - 1 ? '1px solid var(--border)' : 'none' }}>
                       <div style={{ display:'flex', gap:10 }}>
                         <div style={{ width:28, height:28, borderRadius:'var(--radius)', background:iconBg, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0, marginTop:2 }}>
                           {isReply
@@ -501,6 +535,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken }) {
                     </div>
                   )
                 })}
+                <Pager page={signalPage} total={sortedSignals.length} pageSize={PAGE_SIZE} onChange={setSignalPage} />
               </Panel>
             </div>
 
