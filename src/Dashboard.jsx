@@ -61,8 +61,7 @@ function cleanSubject(subject) {
 }
 
 function hsContactUrl(contactId) {
-  // Opens contact record -- HubSpot redirects /default/ to the correct portal
-  return contactId ? `https://app.hubspot.com/contacts/default/record/0-1/${contactId}` : null
+  return contactId ? `https://app.hubspot.com/contacts/39921549/contact/${contactId}` : null
 }
 
 // ─── UI primitives ────────────────────────────────────────────────────────────
@@ -161,8 +160,11 @@ const DATE_RANGE_OPTIONS = [
   { value:'24',    label:'Last 24 hours' },
   { value:'48',    label:'Last 48 hours' },
   { value:'168',   label:'Last 7 days' },
+  { value:'336',   label:'Last 14 days' },
+  { value:'672',   label:'Last 28 days' },
   { value:'720',   label:'Last 30 days' },
-  { value:'2160',  label:'Last 3 months' },
+  { value:'1440',  label:'Last 60 days' },
+  { value:'2160',  label:'Last 90 days' },
   { value:'2880',  label:'Last 4 months' },
 ]
 
@@ -253,7 +255,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken }) {
   const [selectedContact, setSelectedContact] = useState(null)
 
   // Controls
-  const [dateRange, setDateRange]     = useState('2880')
+  const [dateRange, setDateRange]     = useState('168') // default 7 days
   const [signalSort, setSignalSort]   = useState('score_desc')
   const [contactSort, setContactSort] = useState('name_asc')
 
@@ -330,7 +332,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken }) {
   const warmCount          = signals.filter(s => s.score >= 30 && s.score < 100).length
   const botCount           = botSignals.length
 
-  const tasks = sortedSignals.slice(0, 50).map(s => ({
+  const tasks = sortedSignals.map(s => ({
     name:      s.contact?.name || 'Unknown',
     company:   s.contact?.company || '',
     title:     s.contact?.title || '',
