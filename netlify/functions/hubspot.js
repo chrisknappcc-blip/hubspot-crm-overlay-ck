@@ -367,9 +367,18 @@ async function fetchMarketingEmailRecipientEvents(userId, since) {
         try {
           // v3 marketing emails endpoint -- returns name field
           const res = await hsGet(userId, `/marketing/v3/emails/${id}`);
+          console.log(`[campaign] ID ${id} v3 response:`, JSON.stringify(res).slice(0, 200));
           if (res.name) campaignNames[id] = res.name;
-        } catch {
-          // silently skip -- campaign name stays as ID
+        } catch (err) {
+          console.log(`[campaign] ID ${id} v3 failed: ${err.message}`);
+          // Try email campaigns v1 endpoint as fallback
+          try {
+            const res2 = await hsGet(userId, `/email/public/v1/campaigns/${id}/by-id`);
+            console.log(`[campaign] ID ${id} v1 response:`, JSON.stringify(res2).slice(0, 200));
+            if (res2.name || res2.subject) campaignNames[id] = res2.name || res2.subject;
+          } catch (err2) {
+            console.log(`[campaign] ID ${id} v1 also failed: ${err2.message}`);
+          }
         }
       })
     );
