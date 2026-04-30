@@ -351,60 +351,28 @@ async function fetchMarketingEmailRecipientEvents(userId, since) {
       limit: 200,
     });
 
-    const events = (data.events || [])
-      .filter(ev => ["OPEN", "CLICK"].includes(ev.type));
-
-    // Look up campaign names for IDs that don't already have a name
-    const unknownIds = [...new Set(
-      events
-        .filter(ev => ev.emailCampaignId && !ev.emailCampaignGroupName)
-        .map(ev => String(ev.emailCampaignId))
-    )].slice(0, 25); // cap to avoid too many requests
-
-    const campaignNames = {};
-    await Promise.all(
-      unknownIds.map(async id => {
-        try {
-          // v3 marketing emails endpoint -- returns name field
-          const res = await hsGet(userId, `/marketing/v3/emails/${id}`);
-          console.log(`[campaign] ID ${id} v3 response:`, JSON.stringify(res).slice(0, 200));
-          if (res.name) campaignNames[id] = res.name;
-        } catch (err) {
-          console.log(`[campaign] ID ${id} v3 failed: ${err.message}`);
-          // Try email campaigns v1 endpoint as fallback
-          try {
-            const res2 = await hsGet(userId, `/email/public/v1/campaigns/${id}/by-id`);
-            console.log(`[campaign] ID ${id} v1 response:`, JSON.stringify(res2).slice(0, 200));
-            if (res2.name || res2.subject) campaignNames[id] = res2.name || res2.subject;
-          } catch (err2) {
-            console.log(`[campaign] ID ${id} v1 also failed: ${err2.message}`);
-          }
-        }
-      })
-    );
-
-    return events.map((ev) => ({
-      source:         "marketing_email",
-      id:             `mev-${ev.id || ev.created}`,
-      type:           "MARKETING_EMAIL",
-      eventType:      ev.type,
-      timestamp:      ev.created || null,
-      subject:        ev.emailCampaignGroupName ||
-                      campaignNames[String(ev.emailCampaignId)] ||
-                      null,
-      campaignId:     ev.emailCampaignId ? String(ev.emailCampaignId) : null,
-      body:           null,
-      numOpens:       ev.type === "OPEN"  ? 1 : 0,
-      numClicks:      ev.type === "CLICK" ? 1 : 0,
-      replied:        false,
-      filteredEvent:  ev.type === "OPEN" && ev.browser?.name === "unknown",
-      sentAt:         null,
-      openedAt:       ev.type === "OPEN"  ? ev.created : null,
-      clickedAt:      ev.type === "CLICK" ? ev.created : null,
-      contactId:      ev.contactId ? String(ev.contactId) : null,
-      recipientEmail: ev.recipient || null,
-      url:            ev.url || null,
-    }));
+    return (data.events || [])
+      .filter(ev => ["OPEN", "CLICK"].includes(ev.type))
+      .map((ev) => ({
+        source:         "marketing_email",
+        id:             `mev-${ev.id || ev.created}`,
+        type:           "MARKETING_EMAIL",
+        eventType:      ev.type,
+        timestamp:      ev.created || null,
+        subject:        ev.emailCampaignGroupName || null,
+        campaignId:     ev.emailCampaignId ? String(ev.emailCampaignId) : null,
+        body:           null,
+        numOpens:       ev.type === "OPEN"  ? 1 : 0,
+        numClicks:      ev.type === "CLICK" ? 1 : 0,
+        replied:        false,
+        filteredEvent:  ev.type === "OPEN" && ev.browser?.name === "unknown",
+        sentAt:         null,
+        openedAt:       ev.type === "OPEN"  ? ev.created : null,
+        clickedAt:      ev.type === "CLICK" ? ev.created : null,
+        contactId:      ev.contactId ? String(ev.contactId) : null,
+        recipientEmail: ev.recipient || null,
+        url:            ev.url || null,
+      }));
   } catch (err) {
     console.error("Marketing email events fetch failed:", err.message);
     return [];
@@ -710,7 +678,28 @@ export const handler = async (event, context) => {
       });
     }
 
-    // ── Signals (contact-first, with custom property filters) ─────────────────
+    // ── Campaign names (lightweight, called after signals load) ──────────────
+    // POST body: { ids: ["416593686", "416593687"] }
+    // Returns: { names: { "416593686": "My Email Campaign Name" } }
+    if (method === "POST" && path === "/campaign-names") {
+      const body = JSON.parse(event.body || "{}");
+      const ids  = (body.ids || []).slice(0, 10); // max 10 at a time
+      const names = {};
+      await Promise.all(
+        ids.map(async id => {
+          try {
+            const res = await hsGet(user.userId, `/marketing/v3/emails/${id}`);
+            if (res.name) names[id] = res.name;
+          } catch {
+            try {
+              const res2 = await hsGet(user.userId, `/email/public/v1/campaigns/${id}/by-id`);
+              if (res2.name || res2.subject) names[id] = res2.name || res2.subject;
+            } catch { /* not found */ }
+          }
+        })
+      );
+      return ok({ names });
+    }
     if (method === "GET" && path === "/signals") {
       try {
       const hours      = Math.min(parseInt(qp.hours || "2880", 10), 2880);
