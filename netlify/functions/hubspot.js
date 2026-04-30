@@ -976,51 +976,61 @@ export const handler = async (event, context) => {
       ];
 
       // ── Organizational bot detection ─────────────────────────────────────────
-      // If multiple contacts at the same company have nearly identical time-to-open
-      // (within 2 minutes of each other), it strongly suggests a corporate email
-      // security gateway is scanning all inbound mail.
-      // Example: 2 LifePoint Health contacts both opening exactly 37 minutes after send.
+      // Groups open signals by email domain and flags clusters where 2+ contacts
+      // from the same domain have nearly identical time-to-open or opened at
+      // nearly the same clock time -- a strong indicator of a corporate email
+      // security gateway scanning all inbound mail.
       //
-      // Approach: group open signals by company, then check if 2+ contacts share
-      // a time-to-open within a 2-minute window. If so, flag all as org-bot.
+      // Domain-based matching is more reliable than company name matching
+      // since domains are always exact (no typos or variations).
+      // Window: 5 minutes on either metric.
 
       const openSignals = allReal.filter(s =>
-        s.type === "OPEN" || (s.eventType === "OPEN" && !s.replied && !s.clickedAt)
+        (s.type === "OPEN" || s.eventType === "OPEN") && !s.replied && !s.clickedAt
       );
 
-      // Build map: company -> array of { signalIndex, timeToOpenMs }
-      const companyOpenMap = {};
-      openSignals.forEach((s, idx) => {
-        const company = s.contact?.company?.trim().toLowerCase();
-        if (!company || company === "") return;
+      // Build map: emailDomain -> array of { s, tto, openedMs }
+      const domainOpenMap = {};
+      openSignals.forEach(s => {
+        const email = s.contact?.email || "";
+        const domain = email.includes("@") ? email.split("@")[1].toLowerCase().trim() : null;
+        // Skip generic free email providers
+        const freeDomains = ["gmail.com","yahoo.com","hotmail.com","outlook.com","icloud.com","aol.com","protonmail.com"];
+        if (!domain || freeDomains.includes(domain)) return;
+
         const sentMs   = s.sentAt   ? new Date(s.sentAt).getTime()   : null;
         const openedMs = s.openedAt ? new Date(s.openedAt).getTime() : null;
-        if (!sentMs || !openedMs) return;
+        if (!sentMs || !openedMs || openedMs < sentMs) return;
+
         const tto = openedMs - sentMs;
-        if (tto < 0) return;
-        if (!companyOpenMap[company]) companyOpenMap[company] = [];
-        companyOpenMap[company].push({ s, tto });
+        if (!domainOpenMap[domain]) domainOpenMap[domain] = [];
+        domainOpenMap[domain].push({ s, tto, openedMs, domain });
       });
 
-      // For each company with 2+ opens, check if any pair has tto within 2 minutes
+      // Flag any domain where 2+ contacts opened within 5 minutes of each other
+      // (by tto similarity OR by absolute open time)
       const orgBotContactIds = new Set();
-      Object.entries(companyOpenMap).forEach(([company, entries]) => {
+      Object.entries(domainOpenMap).forEach(([domain, entries]) => {
         if (entries.length < 2) return;
         for (let i = 0; i < entries.length; i++) {
           for (let j = i + 1; j < entries.length; j++) {
-            const diff = Math.abs(entries[i].tto - entries[j].tto);
-            if (diff <= 2 * 60 * 1000) { // within 2 minutes
+            const ttoSimilar    = Math.abs(entries[i].tto    - entries[j].tto)    <= 5 * 60 * 1000;
+            const openedSimilar = Math.abs(entries[i].openedMs - entries[j].openedMs) <= 5 * 60 * 1000;
+            if (ttoSimilar || openedSimilar) {
               orgBotContactIds.add(entries[i].s.contactId);
               orgBotContactIds.add(entries[j].s.contactId);
+              console.log(`[org-bot] @${domain}: contacts ${entries[i].s.contactId} and ${entries[j].s.contactId} -- tto diff: ${Math.round(Math.abs(entries[i].tto - entries[j].tto)/1000)}s`);
             }
           }
         }
       });
 
-      // Move org-bot signals to the bots array
+      // Move org-bot signals to bots array
       const finalReal = [];
       const orgBots   = [];
       allReal.forEach(s => {
+        const email  = s.contact?.email || "";
+        const domain = email.includes("@") ? email.split("@")[1].toLowerCase().trim() : null;
         if (orgBotContactIds.has(s.contactId) &&
             (s.type === "OPEN" || s.eventType === "OPEN") &&
             !s.replied && !s.clickedAt) {
@@ -1029,7 +1039,7 @@ export const handler = async (event, context) => {
             botCheck: {
               isBot:      true,
               confidence: "high",
-              reasons:    [`Organizational scan: multiple contacts at ${s.contact?.company || "same company"} opened within 2 minutes of each other`],
+              reasons:    [`Organizational scan: multiple @${domain || "same domain"} contacts opened within 5 minutes of each other`],
             },
           });
         } else {
