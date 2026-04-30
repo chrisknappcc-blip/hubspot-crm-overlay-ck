@@ -66,9 +66,8 @@ function timeToOpen(sentTs, openedTs) {
   return `${Math.floor(hrs / 24)}d ${hrs % 24}h`
 }
 
-function cleanSubject(subject, campaignId, campaignNames = {}) {
-  if (subject && !/^\d+$/.test(subject)) return subject
-  if (campaignId && campaignNames[campaignId]) return campaignNames[campaignId]
+function cleanSubject(subject, campaignId) {
+  if (subject && !/^\d+$/.test(String(subject))) return subject
   if (campaignId) return `Campaign #${campaignId}`
   return 'Marketing email'
 }
@@ -276,7 +275,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken }) {
   const PAGE_SIZE = 25
   const [taskPage, setTaskPage]       = useState(0)
   const [signalPage, setSignalPage]   = useState(0)
-  const [campaignNames, setCampaignNames] = useState({})
+
 
   // Custom property filters
   const [filterBdr, setFilterBdr]           = useState('')
@@ -318,18 +317,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken }) {
       setBotSignals(sigData.suspectedBotSignals || [])
       setContacts(contactData.contacts || [])
 
-      // Lazy-load campaign names for any signals with a numeric campaignId
-      const campaignIds = [...new Set(
-        sigs
-          .filter(s => s.campaignId && !s.subject)
-          .map(s => s.campaignId)
-      )].slice(0, 10)
-      if (campaignIds.length > 0) {
-        apiFetch('/api/hubspot/campaign-names', getToken, {
-          method: 'POST',
-          body: JSON.stringify({ ids: campaignIds }),
-        }).then(d => setCampaignNames(prev => ({ ...prev, ...d.names }))).catch(() => {})
-      }
+
     } catch (e) {
       console.error(e)
     } finally {
@@ -575,7 +563,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken }) {
                               </button>
                             )}
                           </div>
-                          <div style={{ fontSize:11, color:'var(--text-tertiary)', marginBottom:4 }}>{cleanSubject(s.subject, s.campaignId, campaignNames)}</div>
+                          <div style={{ fontSize:11, color:'var(--text-tertiary)', marginBottom:4 }}>{cleanSubject(s.subject, s.campaignId)}</div>
                           <div style={{ display:'flex', flexDirection:'column', gap:3 }}>
                             {(() => {
                               const chain = s.eventChain || []
