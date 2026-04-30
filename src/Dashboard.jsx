@@ -365,23 +365,27 @@ export default function Dashboard({ user, theme, toggleTheme, getToken }) {
     // For contact_activity signals, they come from sentAt/openedAt/clickedAt/repliedAt
     const chain = s.eventChain || []
     const chainTs = (type) => chain.find(e => e.type === type)?.timestamp || null
+    // For marketing_email source: openedAt/clickedAt come from event timestamp
+    const isMkt = s.source === 'marketing_email'
     return {
-      name:      s.contact?.name || 'Unknown',
-      company:   s.contact?.company || '',
-      title:     s.contact?.title || '',
-      label:     s.label,
-      score:     s.score,
-      ts:        s.timestamp,
-      contactId: s.contactId,
-      priority:  s.score >= 100 ? 'hot' : s.score >= 60 ? 'warm' : 'normal',
-      badgeType: s.score >= 100 ? 'reply' : s.score >= 60 ? 'click' : 'hot',
+      name:       s.contact?.name || s.recipientEmail || 'Unknown',
+      company:    s.contact?.company || '',
+      title:      s.contact?.title || '',
+      label:      s.label,
+      score:      s.score,
+      ts:         s.timestamp,
+      contactId:  s.contactId,
+      priority:   s.score >= 100 ? 'hot' : s.score >= 60 ? 'warm' : 'normal',
+      badgeType:  s.score >= 100 ? 'reply' : s.score >= 60 ? 'click' : 'hot',
       eventChain: chain,
-      sentAt:    s.sentAt    || chainTs('SENT')    || null,
-      openedAt:  s.openedAt  || chainTs('OPENED')  || (s.type === 'MARKETING_EMAIL' && s.eventType === 'OPEN'  ? s.timestamp : null),
-      clickedAt: s.clickedAt || chainTs('CLICKED') || (s.type === 'MARKETING_EMAIL' && s.eventType === 'CLICK' ? s.timestamp : null),
-      repliedAt: s.repliedAt || chainTs('REPLIED') || null,
-      subject:   s.subject   || null,
-      campaignId:s.campaignId|| null,
+      source:     s.source,
+      eventType:  s.eventType,
+      sentAt:     s.sentAt    || chainTs('SENT')    || null,
+      openedAt:   s.openedAt  || chainTs('OPENED')  || (isMkt && s.eventType === 'OPEN'  ? s.timestamp : null),
+      clickedAt:  s.clickedAt || chainTs('CLICKED') || (isMkt && s.eventType === 'CLICK' ? s.timestamp : null),
+      repliedAt:  s.repliedAt || chainTs('REPLIED') || null,
+      subject:    s.subject   || null,
+      campaignId: s.campaignId|| null,
     }
   })
 
@@ -514,12 +518,16 @@ export default function Dashboard({ user, theme, toggleTheme, getToken }) {
                         <div style={{ fontSize:12, color:'var(--text-secondary)', marginBottom:6 }}>{t.title}{t.company ? ` · ${t.company}` : ''}</div>
                         <Badge label={t.label} type={t.badgeType} />
                         <div style={{ marginTop:6, display:'flex', flexDirection:'column', gap:3 }}>
-                          {t.sentAt    && <div style={{ fontSize:11, color:'var(--text-tertiary)', display:'flex', gap:6 }}><span style={{ color:'var(--text-secondary)', fontWeight:500, minWidth:56 }}>Sent</span><span>{exactTs(t.sentAt)}</span></div>}
-                          {t.openedAt  && <div style={{ fontSize:11, color:'var(--text-tertiary)', display:'flex', gap:6, alignItems:'center' }}><span style={{ color:'var(--text-secondary)', fontWeight:500, minWidth:56 }}>Opened</span><span>{exactTs(t.openedAt)}</span>{timeToOpen(t.sentAt, t.openedAt) && <span style={{ marginLeft:4, fontSize:10, background:'var(--accent-light)', color:'var(--accent-text)', padding:'1px 6px', borderRadius:10 }}>{timeToOpen(t.sentAt, t.openedAt)} after send</span>}</div>}
-                          {t.clickedAt && <div style={{ fontSize:11, color:'var(--text-tertiary)', display:'flex', gap:6 }}><span style={{ color:'var(--text-secondary)', fontWeight:500, minWidth:56 }}>Clicked</span><span>{exactTs(t.clickedAt)}</span></div>}
-                          {t.repliedAt && <div style={{ fontSize:11, color:'var(--text-tertiary)', display:'flex', gap:6 }}><span style={{ color:'var(--text-secondary)', fontWeight:500, minWidth:56 }}>Replied</span><span>{exactTs(t.repliedAt)}</span></div>}
-                          {!t.sentAt && !t.openedAt && !t.clickedAt && !t.repliedAt && t.ts && (
-                            <div style={{ fontSize:11, color:'var(--text-tertiary)' }}>{exactTs(t.ts)}</div>
+                          {(t.sentAt || t.openedAt || t.clickedAt || t.repliedAt || t.ts) && (
+                            <div style={{ marginTop:4, display:'flex', flexDirection:'column', gap:3 }}>
+                              {t.sentAt    && <div style={{ fontSize:11, color:'var(--text-tertiary)', display:'flex', gap:6 }}><span style={{ color:'var(--text-secondary)', fontWeight:500, width:56 }}>Sent</span><span>{exactTs(t.sentAt)}</span></div>}
+                              {t.openedAt  && <div style={{ fontSize:11, color:'var(--text-tertiary)', display:'flex', gap:6, alignItems:'center' }}><span style={{ color:'var(--text-secondary)', fontWeight:500, width:56 }}>Opened</span><span>{exactTs(t.openedAt)}</span>{timeToOpen(t.sentAt, t.openedAt) && <span style={{ marginLeft:6, fontSize:10, background:'var(--accent-light)', color:'var(--accent-text)', padding:'1px 6px', borderRadius:10, whiteSpace:'nowrap' }}>{timeToOpen(t.sentAt, t.openedAt)} after send</span>}</div>}
+                              {t.clickedAt && <div style={{ fontSize:11, color:'var(--text-tertiary)', display:'flex', gap:6 }}><span style={{ color:'var(--text-secondary)', fontWeight:500, width:56 }}>Clicked</span><span>{exactTs(t.clickedAt)}</span></div>}
+                              {t.repliedAt && <div style={{ fontSize:11, color:'var(--text-tertiary)', display:'flex', gap:6 }}><span style={{ color:'var(--text-secondary)', fontWeight:500, width:56 }}>Replied</span><span>{exactTs(t.repliedAt)}</span></div>}
+                              {!t.sentAt && !t.openedAt && !t.clickedAt && !t.repliedAt && t.ts && (
+                                <div style={{ fontSize:11, color:'var(--text-tertiary)' }}>{exactTs(t.ts)}</div>
+                              )}
+                            </div>
                           )}
                         </div>
                       </div>
