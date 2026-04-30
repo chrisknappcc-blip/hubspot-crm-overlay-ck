@@ -148,6 +148,41 @@ const SIGNAL_SORT_OPTIONS = [
   { value:'date_asc',    label:'Oldest first' },
 ]
 
+const BDR_OPTIONS = [
+  { value:'', label:'All BDRs' },
+  { value:'Chris Knapp',  label:'Chris Knapp' },
+  { value:'Chiara Pate',  label:'Chiara Pate' },
+]
+
+const TERRITORY_OPTIONS = [
+  { value:'', label:'All territories' },
+  { value:'Northeast', label:'Northeast' },
+  { value:'Southeast', label:'Southeast' },
+  { value:'Midwest',   label:'Midwest' },
+  { value:'Southwest', label:'Southwest' },
+  { value:'West',      label:'West' },
+]
+
+const TIER_OPTIONS = [
+  { value:'', label:'All tiers' },
+  { value:'GOLD 1-10',   label:'GOLD 1-10' },
+  { value:'GOLD 11-20',  label:'GOLD 11-20' },
+  { value:'GOLD 21-30',  label:'GOLD 21-30' },
+  { value:'GOLD 31-40',  label:'GOLD 31-40' },
+  { value:'GOLD 41-50',  label:'GOLD 41-50' },
+  { value:'GOLD 51-60',  label:'GOLD 51-60' },
+  { value:'GOLD 61-70',  label:'GOLD 61-70' },
+  { value:'GOLD 71-80',  label:'GOLD 71-80' },
+  { value:'GOLD 81-90',  label:'GOLD 81-90' },
+  { value:'GOLD 91-100', label:'GOLD 91-100' },
+]
+
+const TARGET_OPTIONS = [
+  { value:'', label:'All accounts' },
+  { value:'Chris Knapp',  label:'Chris Knapp' },
+  { value:'Chiara Pate',  label:'Chiara Pate' },
+]
+
 const CONTACT_SORT_OPTIONS = [
   { value:'name_asc',    label:'Name (A-Z)' },
   { value:'name_desc',   label:'Name (Z-A)' },
@@ -192,21 +227,44 @@ export default function Dashboard({ user, theme, toggleTheme, getToken }) {
   const [selectedContact, setSelectedContact] = useState(null)
 
   // Controls
-  const [dateRange, setDateRange]     = useState('2880') // default 4 months
+  const [dateRange, setDateRange]     = useState('2880')
   const [signalSort, setSignalSort]   = useState('score_desc')
   const [contactSort, setContactSort] = useState('name_asc')
+
+  // Custom property filters
+  const [filterBdr, setFilterBdr]           = useState('')
+  const [filterTerritory, setFilterTerritory] = useState('')
+  const [filterTier, setFilterTier]         = useState('')
+  const [filterTarget, setFilterTarget]     = useState('')
+  const [owners, setOwners]                 = useState([])
 
   const firstName = user?.firstName || user?.emailAddresses?.[0]?.emailAddress?.split('@')[0] || 'there'
   const hour = new Date().getHours()
   const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening'
   const today = new Date().toLocaleDateString('en-US', { weekday:'long', month:'long', day:'numeric' })
 
+  // Load owners once on mount
+  useEffect(() => {
+    apiFetch('/api/hubspot/owners', getToken)
+      .then(d => setOwners(d.owners || []))
+      .catch(() => {})
+  }, [getToken])
+
+  // Build filter query string
+  const filterParams = [
+    filterBdr       ? `assigned_bdr=${encodeURIComponent(filterBdr)}`             : '',
+    filterTerritory ? `territory=${encodeURIComponent(filterTerritory)}`           : '',
+    filterTier      ? `priority_tier__bdr=${encodeURIComponent(filterTier)}`       : '',
+    filterTarget    ? `target_account__bdr_led_outreach=${encodeURIComponent(filterTarget)}` : '',
+  ].filter(Boolean).join('&')
+
   const fetchData = useCallback(async () => {
     setLoading(true)
     try {
+      const params = `hours=${dateRange}&showBots=true${filterParams ? '&' + filterParams : ''}`
       const [sigData, contactData] = await Promise.all([
-        apiFetch(`/api/hubspot/signals?hours=${dateRange}&showBots=true`, getToken),
-        apiFetch('/api/hubspot/contacts', getToken),
+        apiFetch(`/api/hubspot/signals?${params}`, getToken),
+        apiFetch(`/api/hubspot/contacts${filterParams ? '?' + filterParams : ''}`, getToken),
       ])
       setSignals(sigData.signals || [])
       setBotSignals(sigData.suspectedBotSignals || [])
@@ -216,7 +274,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken }) {
     } finally {
       setLoading(false)
     }
-  }, [getToken, dateRange])
+  }, [getToken, dateRange, filterParams])
 
   useEffect(() => { fetchData() }, [fetchData])
 
@@ -321,6 +379,26 @@ export default function Dashboard({ user, theme, toggleTheme, getToken }) {
               <MetricCard label="Warm signals"       value={warmCount}         sub="Opens w/ engagement" subType="neutral" />
               <MetricCard label="Active contacts"    value={contacts.length}   sub="In HubSpot"          subType="neutral" />
               <MetricCard label="Bot opens filtered" value={botCount}          sub="Not shown in feed"   subType="neutral" />
+            </div>
+
+            {/* Filter bar */}
+            <div style={{ display:'flex', flexWrap:'wrap', gap:8, marginBottom:'1.25rem', padding:'10px 14px', background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius-lg)', alignItems:'center' }}>
+              <div style={{ fontSize:12, fontWeight:500, color:'var(--text-tertiary)', marginRight:4 }}>Filter:</div>
+              <Select value={filterBdr} onChange={v => { setFilterBdr(v) }} options={BDR_OPTIONS} />
+              <Select value={filterTerritory} onChange={v => { setFilterTerritory(v) }} options={TERRITORY_OPTIONS} />
+              <Select value={filterTier} onChange={v => { setFilterTier(v) }} options={TIER_OPTIONS} />
+              <Select value={filterTarget} onChange={v => { setFilterTarget(v) }} options={TARGET_OPTIONS} />
+              {(filterBdr || filterTerritory || filterTier || filterTarget) && (
+                <button onClick={() => { setFilterBdr(''); setFilterTerritory(''); setFilterTier(''); setFilterTarget('') }}
+                  style={{ fontSize:12, color:'var(--red)', background:'none', border:'1px solid var(--border)', borderRadius:'var(--radius)', padding:'5px 10px', cursor:'pointer' }}>
+                  Clear filters
+                </button>
+              )}
+              {(filterBdr || filterTerritory || filterTier || filterTarget) && (
+                <div style={{ marginLeft:'auto', fontSize:11, color:'var(--text-tertiary)' }}>
+                  {[filterBdr, filterTerritory, filterTier, filterTarget].filter(Boolean).join(' · ')}
+                </div>
+              )}
             </div>
 
             {/* Two columns: tasks + signals */}
@@ -694,6 +772,18 @@ function ContactsView({ contacts, selected, onSelect, feed, getToken, openHubSpo
                 <div style={{ fontSize:13, fontWeight:500, color:'var(--text)' }}>
                   {validDate ? new Date(lastContacted).toLocaleDateString('en-US', { month:'short', day:'numeric', year:'numeric' }) : '—'}
                 </div>
+              </div>
+              <div style={{ background:'var(--bg-secondary)', borderRadius:'var(--radius)', padding:'10px 12px' }}>
+                <div style={{ fontSize:11, color:'var(--text-tertiary)', marginBottom:2 }}>Assigned BDR</div>
+                <div style={{ fontSize:13, fontWeight:500, color:'var(--text)' }}>{p.assigned_bdr||'—'}</div>
+              </div>
+              <div style={{ background:'var(--bg-secondary)', borderRadius:'var(--radius)', padding:'10px 12px' }}>
+                <div style={{ fontSize:11, color:'var(--text-tertiary)', marginBottom:2 }}>Territory</div>
+                <div style={{ fontSize:13, fontWeight:500, color:'var(--text)' }}>{p.territory||'—'}</div>
+              </div>
+              <div style={{ background:'var(--bg-secondary)', borderRadius:'var(--radius)', padding:'10px 12px' }}>
+                <div style={{ fontSize:11, color:'var(--text-tertiary)', marginBottom:2 }}>Priority tier</div>
+                <div style={{ fontSize:13, fontWeight:500, color:'var(--text)' }}>{p.priority_tier__bdr||'—'}</div>
               </div>
             </div>
           </Panel>
