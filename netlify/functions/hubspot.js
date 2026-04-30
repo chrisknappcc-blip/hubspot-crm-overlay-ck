@@ -53,6 +53,7 @@ const BASE_CONTACT_PROPS = [
   "hs_lead_status", "lifecyclestage", "hubspot_owner_id",
   "notes_last_contacted", "num_contacted_notes",
   "hs_last_email_activity_date",
+  "hs_last_sales_activity_date",
   "hs_email_last_open_date",
   "hs_email_last_click_date",
   "hs_email_last_reply_date",
@@ -178,6 +179,7 @@ function normalizeContact(c) {
     priorityTier:        p.priority_tier__bdr || "",
     // Email activity timestamps
     lastEmailActivityDate: p.hs_last_email_activity_date || null,
+    lastSalesActivityDate: p.hs_last_sales_activity_date || null,
     lastOpenDate:          p.hs_email_last_open_date     || null,
     lastClickDate:         p.hs_email_last_click_date    || null,
     lastReplyDate:         p.hs_email_last_reply_date    || null,
@@ -690,30 +692,69 @@ export const handler = async (event, context) => {
       const sinceISO   = new Date(since).toISOString();
       const includeBots = qp.includeBots === "true";
 
-      // Build filter array -- always includes date filter, optionally custom filters
-      const dateFilter = {
-        propertyName: "hs_last_email_activity_date",
-        operator:     "GTE",
-        value:        sinceISO,
-      };
+      // Build filter groups -- use OR logic across multiple date properties
+      // so we catch contacts active via marketing emails, sequences, AND 1:1 emails.
+      // HubSpot sequences update hs_last_sales_activity_date, not hs_last_email_activity_date.
+      // Marketing emails update hs_email_last_send_date.
+      // We run one search per date property and merge results.
       const customFilters = buildCustomFilters(qp);
-      const allFilters    = [dateFilter, ...customFilters];
 
-      // Fetch recently active contacts + engagement fallback + marketing events
-      const [recentContactsData, engData, marketingEventsData] = await Promise.all([
-        hsPost(user.userId, "/crm/v3/objects/contacts/search", {
-          filterGroups: [{ filters: allFilters }],
-          properties:   BASE_CONTACT_PROPS,
-          sorts:        [{ propertyName: "hs_last_email_activity_date", direction: "DESCENDING" }],
-          limit:        100,
-        }).catch(() => ({ results: [] })),
+      const activityDateProps = [
+        "hs_last_email_activity_date",   // 1:1 sales emails, general activity
+        "hs_email_last_send_date",        // marketing + sequence sends
+        "hs_last_sales_activity_date",    // sequence steps, calls, meetings
+      ];
 
-        // Engagement fallback: only pull within the time window
+      // Run all three searches in parallel for maximum coverage
+      const searchResults = await Promise.all(
+        activityDateProps.map(prop =>
+          hsPost(user.userId, "/crm/v3/objects/contacts/search", {
+            filterGroups: [{ filters: [
+              { propertyName: prop, operator: "GTE", value: sinceISO },
+              ...customFilters,
+            ]}],
+            properties: BASE_CONTACT_PROPS,
+            sorts:      [{ propertyName: prop, direction: "DESCENDING" }],
+            limit:      100,
+          }).catch(() => ({ results: [] }))
+        )
+      );
+
+      // Merge and deduplicate across all three searches
+      const seenIds = new Set();
+      const allContactResults = [];
+      for (const result of searchResults) {
+        for (const c of (result.results || [])) {
+          if (!seenIds.has(c.id)) {
+            seenIds.add(c.id);
+            allContactResults.push(c);
+          }
+        }
+      }
+
+      // Sort merged results by most recent activity across all date props
+      allContactResults.sort((a, b) => {
+        const dateA = Math.max(
+          new Date(a.properties?.hs_last_email_activity_date || 0).getTime(),
+          new Date(a.properties?.hs_email_last_send_date     || 0).getTime(),
+          new Date(a.properties?.hs_last_sales_activity_date || 0).getTime(),
+        );
+        const dateB = Math.max(
+          new Date(b.properties?.hs_last_email_activity_date || 0).getTime(),
+          new Date(b.properties?.hs_email_last_send_date     || 0).getTime(),
+          new Date(b.properties?.hs_last_sales_activity_date || 0).getTime(),
+        );
+        return dateB - dateA;
+      });
+
+      const recentContactsData = { results: allContactResults };
+
+      // Fetch engagement fallback + marketing events in parallel
+      const [engData, marketingEventsData] = await Promise.all([
         hsGet(user.userId, "/engagements/v1/engagements/paged", {
           limit: 100,
-          since, // enforces the date range -- fixes September 2023 appearing in 7-day filter
+          since,
         }).catch(() => ({ results: [] })),
-
         fetchMarketingEmailRecipientEvents(user.userId, since),
       ]);
 
