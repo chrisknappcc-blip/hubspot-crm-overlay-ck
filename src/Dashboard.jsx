@@ -54,9 +54,11 @@ function exactTs(ts) {
   })
 }
 
-function cleanSubject(subject) {
-  if (!subject) return 'Marketing email'
-  if (/^\d+$/.test(subject)) return 'Marketing email'
+function cleanSubject(subject, campaignId) {
+  if (!subject && !campaignId) return 'Marketing email'
+  if (!subject || /^\d+$/.test(subject)) {
+    return campaignId ? `Campaign #${campaignId}` : 'Marketing email'
+  }
   return subject
 }
 
@@ -362,7 +364,15 @@ export default function Dashboard({ user, theme, toggleTheme, getToken }) {
   const openHubSpotContact = (contactId, e) => {
     if (e) e.stopPropagation()
     const url = hsContactUrl(contactId)
-    if (url) window.open(url, '_blank')
+    if (!url) return
+    // Use anchor click to bypass popup blockers reliably
+    const a = document.createElement('a')
+    a.href = url
+    a.target = '_blank'
+    a.rel = 'noopener noreferrer'
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
   }
 
   return (
@@ -522,7 +532,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken }) {
                               </button>
                             )}
                           </div>
-                          <div style={{ fontSize:11, color:'var(--text-tertiary)', marginBottom:4 }}>{cleanSubject(s.subject)}</div>
+                          <div style={{ fontSize:11, color:'var(--text-tertiary)', marginBottom:4 }}>{cleanSubject(s.subject, s.campaignId)}</div>
                           <div style={{ display:'flex', flexDirection:'column', gap:3 }}>
                             {s.sentAt    && <div style={{ fontSize:11, color:'var(--text-tertiary)', display:'flex', gap:6 }}><span style={{ color:'var(--text-secondary)', fontWeight:500, minWidth:52 }}>Sent</span><span>{exactTs(s.sentAt)}</span></div>}
                             {s.openedAt  && <div style={{ fontSize:11, color:'var(--text-tertiary)', display:'flex', gap:6 }}><span style={{ color:'var(--text-secondary)', fontWeight:500, minWidth:52 }}>Opened</span><span>{exactTs(s.openedAt)}</span></div>}
