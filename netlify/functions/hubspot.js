@@ -343,33 +343,6 @@ function mergeFeed(engagements, timelineEvents, sequences, lifecycle) {
     });
 }
 
-// Fetch campaign names from HubSpot marketing email campaigns API
-// Returns a map of campaignId -> campaignName
-async function fetchCampaignNames(userId, campaignIds) {
-  const nameMap = {};
-  if (!campaignIds || campaignIds.length === 0) return nameMap;
-
-  // Fetch each campaign -- HubSpot doesn't have a batch endpoint for this
-  const uniqueIds = [...new Set(campaignIds)].slice(0, 20); // cap at 20
-  await Promise.all(
-    uniqueIds.map(async id => {
-      try {
-        const data = await hsGet(userId, `/marketing-emails/v1/emails/${id}`);
-        if (data.name || data.subject) {
-          nameMap[id] = data.name || data.subject;
-        }
-      } catch {
-        // Try the campaigns endpoint as fallback
-        try {
-          const data = await hsGet(userId, `/email/public/v1/campaigns/${id}`);
-          if (data.name) nameMap[id] = data.name;
-        } catch { /* fail silently */ }
-      }
-    })
-  );
-  return nameMap;
-}
-
 // Fetch per-recipient marketing email events
 async function fetchMarketingEmailRecipientEvents(userId, since) {
   try {
@@ -378,34 +351,16 @@ async function fetchMarketingEmailRecipientEvents(userId, since) {
       limit: 200,
     });
 
-    const events = (data.events || [])
-      .filter(ev => ["OPEN", "CLICK"].includes(ev.type));
-
-    // Collect campaign IDs that don't already have a name in the event
-    const campaignIds = [...new Set(
-      events
-        .filter(ev => ev.emailCampaignId && !ev.emailCampaignGroupName)
-        .map(ev => ev.emailCampaignId)
-    )];
-
-    // Look up campaign names in batch
-    const campaignNames = await fetchCampaignNames(userId, campaignIds);
-
-    return events.map((ev) => {
-      // Try multiple fields for the campaign/email name in order of preference
-      const subject =
-        ev.emailCampaignGroupName ||
-        campaignNames[ev.emailCampaignId] ||
-        null; // null triggers cleanSubject fallback in frontend
-
-      return {
+    return (data.events || [])
+      .filter(ev => ["OPEN", "CLICK"].includes(ev.type))
+      .map((ev) => ({
         source:         "marketing_email",
         id:             `mev-${ev.id || ev.created}`,
         type:           "MARKETING_EMAIL",
         eventType:      ev.type,
         timestamp:      ev.created || null,
-        subject,
-        campaignId:     ev.emailCampaignId || null,
+        subject:        ev.emailCampaignGroupName || null,
+        campaignId:     ev.emailCampaignId ? String(ev.emailCampaignId) : null,
         body:           null,
         numOpens:       ev.type === "OPEN"  ? 1 : 0,
         numClicks:      ev.type === "CLICK" ? 1 : 0,
@@ -417,8 +372,7 @@ async function fetchMarketingEmailRecipientEvents(userId, since) {
         contactId:      ev.contactId ? String(ev.contactId) : null,
         recipientEmail: ev.recipient || null,
         url:            ev.url || null,
-      };
-    });
+      }));
   } catch (err) {
     console.error("Marketing email events fetch failed:", err.message);
     return [];
@@ -725,15 +679,8 @@ export const handler = async (event, context) => {
     }
 
     // ── Signals (contact-first, with custom property filters) ─────────────────
-    // Query params:
-    //   hours=168          lookback window in hours (default 2880 = 4 months, max 2880)
-    //   showBots=true      include suspected bot signals in response
-    //   includeBots=true   skip bot filtering entirely
-    //   assigned_bdr=X     filter by Assigned BDR
-    //   territory=X        filter by Territory
-    //   priority_tier__bdr=X  filter by Priority Tier
-    //   target_account__bdr_led_outreach=X  filter by Target Account
     if (method === "GET" && path === "/signals") {
+      try {
       const hours      = Math.min(parseInt(qp.hours || "2880", 10), 2880);
       const since      = Date.now() - hours * 60 * 60 * 1000;
       const sinceISO   = new Date(since).toISOString();
@@ -965,9 +912,9 @@ export const handler = async (event, context) => {
       ];
 
       const response = {
-        signals: allReal, // no cap -- all signals returned, frontend handles paging
+        signals: allReal,
         meta: {
-          total:             enrichedReal.length,
+          total:             allReal.length,
           suspectedBotCount: allBots.length,
           hoursSearched:     hours,
           activeFilters: {
@@ -985,6 +932,10 @@ export const handler = async (event, context) => {
         response.suspectedBotSignals = allBots.slice(0, 50);
       }
       return ok(response);
+      } catch (err) {
+        console.error("[signals] Error:", err.message, err.stack);
+        return error(500, `Signals error: ${err.message}`);
+      }
     }
 
     // ── Log activity ─────────────────────────────────────────────────────────
