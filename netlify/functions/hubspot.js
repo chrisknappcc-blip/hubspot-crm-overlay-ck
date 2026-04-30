@@ -381,22 +381,22 @@ async function fetchMarketingEmailRecipientEvents(userId, since) {
     const events = (data.events || [])
       .filter(ev => ["OPEN", "CLICK"].includes(ev.type));
 
-    // Collect campaign IDs that don't have a name yet
+    // Collect campaign IDs that don't already have a name in the event
     const campaignIds = [...new Set(
       events
+        .filter(ev => ev.emailCampaignId && !ev.emailCampaignGroupName)
         .map(ev => ev.emailCampaignId)
-        .filter(id => id && !ev?.emailCampaignGroupName)
     )];
 
     // Look up campaign names in batch
     const campaignNames = await fetchCampaignNames(userId, campaignIds);
 
     return events.map((ev) => {
-      // Try multiple fields for the campaign/email name
+      // Try multiple fields for the campaign/email name in order of preference
       const subject =
         ev.emailCampaignGroupName ||
         campaignNames[ev.emailCampaignId] ||
-        ev.emailCampaignId ? null : null; // if only numeric ID, leave null for cleanSubject
+        null; // null triggers cleanSubject fallback in frontend
 
       return {
         source:         "marketing_email",
