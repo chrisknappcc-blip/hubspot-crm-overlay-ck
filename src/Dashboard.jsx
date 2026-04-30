@@ -61,7 +61,8 @@ function cleanSubject(subject) {
 }
 
 function hsContactUrl(contactId) {
-  return contactId ? `https://app.hubspot.com/contacts/default/contact/${contactId}` : null
+  // Opens contact record -- HubSpot redirects /default/ to the correct portal
+  return contactId ? `https://app.hubspot.com/contacts/default/record/0-1/${contactId}` : null
 }
 
 // ─── UI primitives ────────────────────────────────────────────────────────────
@@ -296,7 +297,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken }) {
   const warmCount          = signals.filter(s => s.score >= 30 && s.score < 100).length
   const botCount           = botSignals.length
 
-  const tasks = sortedSignals.slice(0, 10).map(s => ({
+  const tasks = sortedSignals.slice(0, 50).map(s => ({
     name:      s.contact?.name || 'Unknown',
     company:   s.contact?.company || '',
     title:     s.contact?.title || '',
