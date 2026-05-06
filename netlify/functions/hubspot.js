@@ -650,23 +650,30 @@ export const handler = async (event, context) => {
     const path   = rawPath;
     const method = event.httpMethod;
 
-    // Netlify's queryStringParameters can be null or incomplete in some routing configs.
-    // Parse from rawUrl/rawQuery as the authoritative source.
-    let qp = event.queryStringParameters || {};
-    try {
-      const rawUrl = event.rawUrl || event.rawQuery
-        ? `https://x.x/?${event.rawQuery || ""}`
-        : null;
-      if (rawUrl) {
-        const parsed = Object.fromEntries(new URL(rawUrl).searchParams.entries());
-        if (Object.keys(parsed).length > 0) qp = parsed;
-      } else if (event.rawQuery) {
-        const parsed = Object.fromEntries(new URLSearchParams(event.rawQuery).entries());
-        if (Object.keys(parsed).length > 0) qp = parsed;
-      }
-    } catch { /* fall back to queryStringParameters */ }
+    // Parse query params from every possible Netlify source.
+    // Log all sources so we can see what's actually available.
+    const qpFromParams  = event.queryStringParameters || {};
+    const qpFromMulti   = event.multiValueQueryStringParameters || {};
+    const rawQuery      = event.rawQuery || "";
+    const rawUrl        = event.rawUrl   || "";
 
-    console.log(`[router] path=${path} qp=${JSON.stringify(qp)}`);
+    // Try rawQuery first (most reliable on Netlify), fall back to queryStringParameters
+    let qp = {};
+    if (rawQuery) {
+      try {
+        qp = Object.fromEntries(new URLSearchParams(rawQuery).entries());
+      } catch { qp = {}; }
+    }
+    if (Object.keys(qp).length === 0 && rawUrl.includes("?")) {
+      try {
+        qp = Object.fromEntries(new URL(rawUrl).searchParams.entries());
+      } catch { qp = {}; }
+    }
+    if (Object.keys(qp).length === 0) {
+      qp = qpFromParams;
+    }
+
+    console.log(`[router] path=${path} rawQuery="${rawQuery}" qpKeys=${JSON.stringify(Object.keys(qp))} assigned_bdr="${qp.assigned_bdr || "(none)"}`);
 
     // ── OAuth: start connect ─────────────────────────────────────────────────
     if (method === "GET" && path === "/auth/connect") {
@@ -1565,20 +1572,20 @@ export const handler = async (event, context) => {
       const activityDateProps = [
         "hs_last_email_activity_date",    // 1:1 sales emails, general activity
         "hs_email_last_send_date",         // marketing + sequence sends
+        "hs_email_last_open_date",         // marketing email opens -- KEY for today's activity
+        "hs_email_last_click_date",        // marketing email clicks
         "hs_last_sales_activity_date",     // sequence steps, calls, meetings
         "hs_sales_email_last_opened",      // 1:1 sales email opens
         "hs_sales_email_last_replied",     // 1:1 sales email replies
       ];
 
-      // Run all searches in parallel, each with the current page offset.
-      // NOTE: HubSpot search API uses opaque string cursors for pagination, not
-      // numeric offsets. The `after` param must be the paging.next.after token
-      // from a previous response. We can't pass a numeric offset directly.
-      // For now the first page (offset=0) fetches 100 per prop. The "tier 2"
-      // background fetch is disabled until we implement proper cursor tracking.
-      const searchResults = await Promise.all(
-        activityDateProps.map(prop =>
-          hsPost(user.userId, "/crm/v3/objects/contacts/search", {
+      // Run searches SEQUENTIALLY with 150ms gaps to avoid HubSpot's per-second rate limit.
+      // 7 parallel searches = 7 API calls instantly = guaranteed 429 at our volume.
+      // Sequential with small gaps keeps us well within limits.
+      const searchResults = [];
+      for (const prop of activityDateProps) {
+        try {
+          const result = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
             filterGroups: [{ filters: [
               { propertyName: prop, operator: "GTE", value: sinceISO },
               ...customFilters,
@@ -1586,19 +1593,15 @@ export const handler = async (event, context) => {
             properties: BASE_CONTACT_PROPS,
             sorts:      [{ propertyName: prop, direction: "DESCENDING" }],
             limit:      perPropLimit,
-            // after cursor only valid when we have a real paging token
-            // pageOffset > 0 is disabled -- see note above
-          }).catch(err => {
-            console.error(`[signals] search failed for prop ${prop}:`, err.message);
-            return { results: [], total: 0 };
-          })
-        )
-      );
-
-      // Log how many results each prop search returned for debugging
-      searchResults.forEach((r, i) => {
-        console.log(`[signals] prop=${activityDateProps[i]} returned=${( r.results||[]).length} total=${r.total||0} filters=${JSON.stringify(customFilters)}`);
-      });
+          });
+          searchResults.push({ ...result, _prop: prop });
+          console.log(`[signals] prop=${prop} returned=${(result.results||[]).length} total=${result.total||0} filters=${JSON.stringify(customFilters)}`);
+        } catch (err) {
+          console.error(`[signals] search failed for prop ${prop}:`, err.message);
+          searchResults.push({ results: [], total: 0, _prop: prop });
+        }
+        await new Promise(r => setTimeout(r, 150));
+      }
 
       // Merge and deduplicate across all three searches
       const seenIds = new Set();
