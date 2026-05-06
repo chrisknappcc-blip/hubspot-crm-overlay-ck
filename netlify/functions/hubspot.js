@@ -13,6 +13,10 @@
 //   GET  /hubspot/gold                    -> Gold-tier companies + contacts
 //   GET  /hubspot/activity                -> outbound + inbound activity counts
 //   POST /hubspot/activity                -> log a note/call/meeting to a contact
+//   GET  /hubspot/tabs                    -> dynamic tab registry for current user
+//   POST /hubspot/tabs                    -> add or update a tab (admin only)
+//   DELETE /hubspot/tabs/:id              -> remove a tab (admin only)
+//   GET  /hubspot/tabs/preview            -> fetch page title from a URL for auto-naming
 //
 // Custom filter query params (all optional, stackable):
 //   assigned_bdr=Chris+Knapp
@@ -22,6 +26,13 @@
 
 import { withAuth } from "./utils/auth.js";
 import { getTokens, setTokens, isTokenValid } from "./utils/tokenStore.js";
+import { getTabsForUser, getRegistry, saveRegistry, slugify, fetchPageTitle } from "./utils/tabRegistry.js";
+
+// Admin user IDs -- comma-separated Clerk user IDs in ADMIN_USER_IDS env var
+// e.g. ADMIN_USER_IDS=user_abc123,user_def456
+const ADMIN_USER_IDS = new Set(
+  (process.env.ADMIN_USER_IDS || "").split(",").map(s => s.trim()).filter(Boolean)
+);
 
 const HS_CLIENT_ID     = process.env.HUBSPOT_CLIENT_ID;
 const HS_CLIENT_SECRET = process.env.HUBSPOT_CLIENT_SECRET;
@@ -2027,6 +2038,100 @@ export const handler = async (event, context) => {
       });
 
       return ok({ success: true, engagementId: activity.engagement?.id });
+    }
+
+    // ── Tab registry ──────────────────────────────────────────────────────────
+    //
+    // GET /tabs -- returns tabs visible to the current user
+    // POST /tabs -- create or update a tab (admin only)
+    // DELETE /tabs/:id -- remove a tab (admin only)
+    // GET /tabs/preview?url= -- fetch page <title> for auto-naming (admin only)
+
+    if (method === "GET" && path === "/tabs") {
+      try {
+        const tabs = await getTabsForUser(user.userId);
+        return ok({ tabs, isAdmin: ADMIN_USER_IDS.has(user.userId) });
+      } catch (err) {
+        console.error("[tabs] GET error:", err.message);
+        return error(500, `Tabs error: ${err.message}`);
+      }
+    }
+
+    if (method === "GET" && path === "/tabs/preview") {
+      if (!ADMIN_USER_IDS.has(user.userId)) return error(403, "Admin only");
+      const url = qp.url ? decodeURIComponent(qp.url) : null;
+      if (!url) return error(400, "url param required");
+      try {
+        const title = await fetchPageTitle(url);
+        // Auto-generate a label: prefer page title, fall back to hostname
+        let suggestedLabel = title;
+        if (!suggestedLabel) {
+          try { suggestedLabel = new URL(url).hostname.replace(/^www\./, ""); } catch { suggestedLabel = "New App"; }
+        }
+        return ok({ title, suggestedLabel });
+      } catch (err) {
+        return ok({ title: null, suggestedLabel: "New App" });
+      }
+    }
+
+    if (method === "POST" && path === "/tabs") {
+      if (!ADMIN_USER_IDS.has(user.userId)) return error(403, "Admin only");
+      try {
+        const body = JSON.parse(event.body || "{}");
+        const { url, label, badge, allowedUsers, enabled = true } = body;
+
+        if (!url)   return error(400, "url is required");
+        if (!label) return error(400, "label is required");
+
+        // Validate URL
+        try { new URL(url); } catch { return error(400, "Invalid URL"); }
+
+        const registry = await getRegistry();
+        const id       = body.id || slugify(label);
+        const now      = new Date().toISOString();
+        const existing = registry.findIndex(t => t.id === id);
+
+        const tab = {
+          id,
+          label:        label.trim().slice(0, 40),
+          url:          url.trim(),
+          type:         "iframe",
+          enabled,
+          allowedUsers: allowedUsers || [],
+          badge:        badge || null,
+          addedBy:      user.userId,
+          createdAt:    existing >= 0 ? registry[existing].createdAt : now,
+          updatedAt:    now,
+        };
+
+        if (existing >= 0) {
+          registry[existing] = tab;
+        } else {
+          registry.push(tab);
+        }
+
+        await saveRegistry(registry);
+        return ok({ tab, action: existing >= 0 ? "updated" : "created" });
+      } catch (err) {
+        console.error("[tabs] POST error:", err.message);
+        return error(500, `Tab save error: ${err.message}`);
+      }
+    }
+
+    if (method === "DELETE" && path.startsWith("/tabs/")) {
+      if (!ADMIN_USER_IDS.has(user.userId)) return error(403, "Admin only");
+      const tabId = path.split("/tabs/")[1];
+      if (!tabId) return error(400, "Tab ID required");
+      try {
+        const registry = await getRegistry();
+        const filtered = registry.filter(t => t.id !== tabId);
+        if (filtered.length === registry.length) return error(404, "Tab not found");
+        await saveRegistry(filtered);
+        return ok({ deleted: tabId });
+      } catch (err) {
+        console.error("[tabs] DELETE error:", err.message);
+        return error(500, `Tab delete error: ${err.message}`);
+      }
     }
 
     return error(404, "Route not found");
