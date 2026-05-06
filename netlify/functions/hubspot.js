@@ -1093,7 +1093,10 @@ export const handler = async (event, context) => {
           return ok({ accounts: [], meta: { total: 0, byTier: {}, filters: { assigned_bdr: qp.assigned_bdr || null } } });
         }
 
-        // Fetch associated contacts for each company in parallel (batched at 10 at a time)
+        // Only fetch contact details when a BDR filter is set.
+        // Without a filter we'd need to fetch contacts for all 68 companies (68+ API calls)
+        // which reliably hits the Netlify 26s timeout. Company-level data loads instantly.
+        const hasBdrFilter = !!qp.assigned_bdr;
         const CONTACT_PROPS = [
           "firstname","lastname","email","jobtitle",
           "hs_email_last_open_date","hs_email_last_click_date",
@@ -1103,28 +1106,30 @@ export const handler = async (event, context) => {
         ];
 
         const contactsByCompany = {};
-        const batchSize = 10;
-        for (let i = 0; i < goldCompanies.length; i += batchSize) {
-          const batch = goldCompanies.slice(i, i + batchSize);
-          await Promise.all(batch.map(async (company) => {
-            try {
-              const assoc = await hsGet(
-                user.userId,
-                `/crm/v3/objects/companies/${company.id}/associations/contacts`,
-                { limit: 5 }
-              );
-              const contactIds = (assoc.results || []).map(r => r.id).slice(0, 5);
-              if (contactIds.length === 0) { contactsByCompany[company.id] = []; return; }
+        if (hasBdrFilter) {
+          const batchSize = 10;
+          for (let i = 0; i < goldCompanies.length; i += batchSize) {
+            const batch = goldCompanies.slice(i, i + batchSize);
+            await Promise.all(batch.map(async (company) => {
+              try {
+                const assoc = await hsGet(
+                  user.userId,
+                  `/crm/v3/objects/companies/${company.id}/associations/contacts`,
+                  { limit: 5 }
+                );
+                const contactIds = (assoc.results || []).map(r => r.id).slice(0, 5);
+                if (contactIds.length === 0) { contactsByCompany[company.id] = []; return; }
 
-              const batch = await hsPost(user.userId, "/crm/v3/objects/contacts/batch/read", {
-                properties: CONTACT_PROPS,
-                inputs:     contactIds.map(id => ({ id })),
-              });
-              contactsByCompany[company.id] = batch.results || [];
-            } catch {
-              contactsByCompany[company.id] = [];
-            }
-          }));
+                const batchRead = await hsPost(user.userId, "/crm/v3/objects/contacts/batch/read", {
+                  properties: CONTACT_PROPS,
+                  inputs:     contactIds.map(id => ({ id })),
+                });
+                contactsByCompany[company.id] = batchRead.results || [];
+              } catch {
+                contactsByCompany[company.id] = [];
+              }
+            }));
+          }
         }
 
         // Extract leading number from tier for numeric sort
@@ -1323,7 +1328,10 @@ export const handler = async (event, context) => {
               limit: 1,
             });
             return data.total || 0;
-          } catch { return 0; }
+          } catch (err) {
+            console.error(`[activity] countByBdr ${dateProp} ${repName}:`, err.message);
+            return 0;
+          }
         }
 
         // Count contacts where EITHER prop >= since AND assigned_bdr = repName (OR filter groups)
@@ -1344,7 +1352,10 @@ export const handler = async (event, context) => {
               limit: 1,
             });
             return data.total || 0;
-          } catch { return 0; }
+          } catch (err) {
+            console.error(`[activity] countEitherByBdr ${propA}/${propB} ${repName}:`, err.message);
+            return 0;
+          }
         }
 
         // AE view: count by hubspot_owner_id (for include_owned mode)
@@ -1364,8 +1375,10 @@ export const handler = async (event, context) => {
           } catch { return 0; }
         }
 
-        // Fan out counts across all target reps in parallel
-        const repResults = await Promise.all(targetReps.map(async (repName) => {
+        // Run counts sequentially per rep to avoid rate limits.
+        // 2 reps × 5 queries each = 10 total -- sequential is fine here.
+        const repResults = [];
+        for (const repName of targetReps) {
           const [emailsSent, sequencesStarted, replies, clicks, opens] = await Promise.all([
             countEitherByBdr("hs_email_last_send_date", "hs_last_email_activity_date", repName),
             countByBdr("hs_latest_sequence_enrolled_date", repName),
@@ -1373,8 +1386,10 @@ export const handler = async (event, context) => {
             countEitherByBdr("hs_email_last_click_date", "hs_sales_email_last_clicked", repName),
             countEitherByBdr("hs_email_last_open_date",  "hs_sales_email_last_opened",  repName),
           ]);
-          return { repName, emailsSent, sequencesStarted, replies, clicks, opens };
-        }));
+          console.log(`[activity] rep=${repName} emailsSent=${emailsSent} sequences=${sequencesStarted} replies=${replies} clicks=${clicks} opens=${opens}`);
+          repResults.push({ repName, emailsSent, sequencesStarted, replies, clicks, opens });
+          await new Promise(r => setTimeout(r, 200)); // gap between reps
+        }
 
         // Optional AE pass: also count by hubspot_owner_id
         let ownedCounts = { emailsSent:0, replies:0, clicks:0, opens:0 };
