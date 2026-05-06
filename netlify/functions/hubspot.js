@@ -2187,481 +2187,421 @@ export const handler = async (event, context) => {
       }
     }
 
+
     // ── Reports ───────────────────────────────────────────────────────────────
-    // Comprehensive sales reporting across outbound, inbound, deals, and marketing.
+    // Tabs: email_activity | marketing | sequences | deals
+    // Params: section, period (today|week|month|quarter|6months|year|alltime), rep
     //
-    // Query params:
-    //   section=outbound|inbound|deals|marketing  (required)
-    //   period=today|week|month|quarter|6months|year|alltime  (default: month)
-    //   rep=Chris+Knapp|Chiara+Pate|all  (default: all)
-    //
-    // Periods:
-    //   today      = current calendar day (midnight to now)
-    //   week       = last 7 days
-    //   month      = last 30 days
-    //   quarter    = last 90 days
-    //   6months    = last 180 days
-    //   year       = last 365 days
-    //   alltime    = no date filter
+    // HubSpot deep links use portal 39921549.
+    // Dashboard: https://app.hubspot.com/reports-dashboard/39921549/view/19874520
     if (method === "GET" && path === "/reports") {
       try {
-        const section = qp.section || "outbound";
+        const section = qp.section || "email_activity";
         const period  = qp.period  || "month";
         const rep     = qp.rep && qp.rep !== "all" ? decodeURIComponent(qp.rep).trim() : null;
 
-        // Calculate since timestamp for the period
-        const now = Date.now();
-        const PERIODS = {
-          today:    24 * 60 * 60 * 1000,
-          week:     7  * 24 * 60 * 60 * 1000,
-          month:    30 * 24 * 60 * 60 * 1000,
-          quarter:  90 * 24 * 60 * 60 * 1000,
-          "6months":180 * 24 * 60 * 60 * 1000,
-          year:     365 * 24 * 60 * 60 * 1000,
-          alltime:  null,
-        };
-        const periodMs  = PERIODS[period] ?? PERIODS.month;
-        const sinceMs   = periodMs ? now - periodMs : null;
-        const sinceISO  = sinceMs ? new Date(sinceMs).toISOString() : null;
+        const PORTAL    = "39921549";
+        const HS_BASE   = "https://app.hubspot.com";
+        const DASHBOARD = `${HS_BASE}/reports-dashboard/${PORTAL}/view/19874520`;
+        const CONTACTS_LIST = `${HS_BASE}/contacts/${PORTAL}/objects/0-1/views/all/list`;
+        const DEALS_LIST    = `${HS_BASE}/contacts/${PORTAL}/objects/0-3/views/all/list`;
+        const SEQUENCES     = `${HS_BASE}/sequences/${PORTAL}`;
+        const MKT_EMAIL     = `${HS_BASE}/email/${PORTAL}/manage`;
 
-        // Rep filter builders
+        const now = Date.now();
+        const PERIOD_MS = {
+          today:   () => now - (now % 86400000),           // midnight today
+          week:    () => now - 7   * 86400000,
+          month:   () => now - 30  * 86400000,
+          quarter: () => now - 90  * 86400000,
+          "6months": () => now - 180 * 86400000,
+          year:    () => now - 365 * 86400000,
+          alltime: () => null,
+        };
+        const sinceMs  = (PERIOD_MS[period] ?? PERIOD_MS.month)();
+        const sinceISO = sinceMs ? new Date(sinceMs).toISOString() : null;
+
         const KNOWN_BDRS = ["Chris Knapp", "Chiara Pate"];
         const targetReps = rep ? [rep] : KNOWN_BDRS;
 
-        // Helper: build BDR filter for contact searches
-        const bdrContactFilter = () => rep
+        const bdrFilters = () => rep
           ? [{ propertyName: "assigned_bdr", operator: "EQ", value: rep }]
           : [{ propertyName: "assigned_bdr", operator: "IN", values: KNOWN_BDRS }];
 
-        // Helper: count contacts matching filters, returns total only
-        const countContacts = async (filters) => {
+        // Generic count helper
+        const countC = async (filterGroups) => {
           try {
-            const data = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
-              filterGroups: [{ filters }],
-              properties: ["assigned_bdr"],
-              limit: 1,
+            const d = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
+              filterGroups, properties: ["assigned_bdr"], limit: 1,
             });
-            return data.total || 0;
-          } catch { return 0; }
+            return d.total || 0;
+          } catch (e) {
+            console.error("[reports count]", e.message);
+            return 0;
+          }
         };
 
-        // Helper: fetch contacts (up to limit) with given filters
-        const fetchContacts = async (filters, props, sortProp, limit = 100) => {
-          try {
-            const data = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
-              filterGroups: [{ filters }],
-              properties: props,
-              sorts: [{ propertyName: sortProp, direction: "DESCENDING" }],
-              limit,
-            });
-            return data.results || [];
-          } catch { return []; }
-        };
+        // Count with single filterGroup
+        const count1 = (filters) => countC([{ filters }]);
 
-        // Helper: fetch deals with filters
-        const fetchDeals = async (extraFilters = [], limit = 200) => {
-          const filters = [...extraFilters];
-          if (sinceISO) filters.push({ propertyName: "createdate", operator: "GTE", value: sinceISO });
+        // Count with OR across two date props (two filterGroups)
+        const countOr = (propA, propB, extraFilters = []) => countC([
+          { filters: [...extraFilters, { propertyName: propA, operator: sinceISO ? "GTE" : "HAS_PROPERTY", ...(sinceISO ? { value: sinceISO } : {}) }] },
+          { filters: [...extraFilters, { propertyName: propB, operator: sinceISO ? "GTE" : "HAS_PROPERTY", ...(sinceISO ? { value: sinceISO } : {}) }] },
+        ]);
+
+        // Date filter for a property
+        const df = (prop) => sinceISO
+          ? [{ propertyName: prop, operator: "GTE", value: sinceISO }]
+          : [{ propertyName: prop, operator: "HAS_PROPERTY" }];
+
+        // Fetch contacts helper
+        const fetchC = async (filterGroups, props, sortProp, limit = 100) => {
           try {
-            let deals = [], after;
-            while (deals.length < limit) {
+            const results = [];
+            let after;
+            while (results.length < limit) {
               const body = {
-                filterGroups: [{ filters }],
-                properties: ["dealname","dealstage","pipeline","amount","closedate","createdate","hubspot_owner_id","hs_projected_amount","closed_lost_reason","hs_deal_stage_probability"],
-                sorts: [{ propertyName: "createdate", direction: "DESCENDING" }],
-                limit: Math.min(100, limit - deals.length),
+                filterGroups, properties: props,
+                sorts: [{ propertyName: sortProp, direction: "DESCENDING" }],
+                limit: Math.min(100, limit - results.length),
               };
               if (after) body.after = after;
-              const data = await hsPost(user.userId, "/crm/v3/objects/deals/search", body);
-              deals.push(...(data.results || []));
-              if (!data.paging?.next?.after || (data.results || []).length < 100) break;
-              after = data.paging.next.after;
+              const d = await hsPost(user.userId, "/crm/v3/objects/contacts/search", body);
+              results.push(...(d.results || []));
+              if (!d.paging?.next?.after || (d.results||[]).length < 100) break;
+              after = d.paging.next.after;
+              await new Promise(r => setTimeout(r, 150));
             }
-            return deals;
+            return results;
           } catch { return []; }
         };
 
-        // Pipeline + stage reference maps (from property definitions)
-        const PIPELINES = {
-          "679336808": "New Business Opportunity",
-          "679502246": "Expansion Deal",
-          "678610513": "New Business Deal",
-        };
-        const STAGES = {
-          "995708483": { label:"Target Identified",              pipeline:"679336808", closed:false, won:false },
-          "995708484": { label:"Initial Outreach/Reengaged",     pipeline:"679336808", closed:false, won:false },
-          "1284036410":{ label:"Email Opened/No Response",       pipeline:"679336808", closed:false, won:false },
-          "1288757038":{ label:"Reengagement Needed",            pipeline:"679336808", closed:false, won:false },
-          "995708485": { label:"Engaged",                        pipeline:"679336808", closed:false, won:false },
-          "995708486": { label:"Meeting Scheduled",              pipeline:"679336808", closed:false, won:false },
-          "995708487": { label:"Meeting Completed",              pipeline:"679336808", closed:false, won:false },
-          "995708488": { label:"Qualified (Deal Pipeline)",      pipeline:"679336808", closed:false, won:false },
-          "995708489": { label:"Unengaged",                      pipeline:"679336808", closed:false, won:false },
-          "996311842": { label:"Trade Show Meeting Follow-Up",   pipeline:"679336808", closed:false, won:false },
-          "1331037807":{ label:"Meeting Completed - Not A Fit",  pipeline:"679336808", closed:false, won:false },
-          "1331034125":{ label:"Meeting Completed - Partnership", pipeline:"679336808", closed:false, won:false },
-          "1347324753":{ label:"Closed/Lost",                    pipeline:"679336808", closed:true,  won:false },
-          "995723921": { label:"Expansion Targets",              pipeline:"679502246", closed:false, won:false },
-          "995723922": { label:"Engaged",                        pipeline:"679502246", closed:false, won:false },
-          "995723923": { label:"Value Prop/Scoping",             pipeline:"679502246", closed:false, won:false },
-          "995723924": { label:"Pricing Proposal",               pipeline:"679502246", closed:false, won:false },
-          "995723926": { label:"Procurement/Contracting",        pipeline:"679502246", closed:false, won:false },
-          "995723927": { label:"Closed Lost",                    pipeline:"679502246", closed:true,  won:false },
-          "995739776": { label:"Closed Won",                     pipeline:"679502246", closed:true,  won:true  },
-          "1004627778":{ label:"Revisit",                        pipeline:"679502246", closed:false, won:false },
-          "995756094": { label:"Qualified",                      pipeline:"678610513", closed:false, won:false },
-          "995756095": { label:"Problem Solution Fit",           pipeline:"678610513", closed:false, won:false },
-          "995756096": { label:"Value Prop/Scoping",             pipeline:"678610513", closed:false, won:false },
-          "995756097": { label:"Pricing Proposal",               pipeline:"678610513", closed:false, won:false },
-          "995756098": { label:"IT/Technical Review",            pipeline:"678610513", closed:false, won:false },
-          "995756099": { label:"Contracting/Legal",              pipeline:"678610513", closed:false, won:false },
-          "995756100": { label:"Closed - Lost",                  pipeline:"678610513", closed:true,  won:false },
-          "995749999": { label:"Closed - Won",                   pipeline:"678610513", closed:true,  won:true  },
-          "995750000": { label:"Revisit",                        pipeline:"678610513", closed:false, won:false },
-        };
+        // ── EMAIL ACTIVITY ────────────────────────────────────────────────────
+        if (section === "email_activity") {
+          const bdr = bdrFilters();
 
-        // ── OUTBOUND section ──────────────────────────────────────────────────
-        if (section === "outbound") {
-          const bdrFilters = bdrContactFilter();
-          const dateFilter = sinceISO ? [{ propertyName: "hs_email_last_send_date", operator: "GTE", value: sinceISO }] : [];
-          const seqFilter  = sinceISO ? [{ propertyName: "hs_latest_sequence_enrolled_date", operator: "GTE", value: sinceISO }] : [];
-
-          // Run all counts in parallel per rep, then summarize
-          const repData = await Promise.all(targetReps.map(async (repName) => {
-            const repFilter = [{ propertyName: "assigned_bdr", operator: "EQ", value: repName }];
-            const [emailsSent, sequencesStarted, contactsReached] = await Promise.all([
-              countContacts([...repFilter, ...dateFilter.length ? dateFilter : [{ propertyName: "hs_email_last_send_date", operator: "HAS_PROPERTY" }]]),
-              countContacts([...repFilter, ...seqFilter.length  ? seqFilter  : [{ propertyName: "hs_latest_sequence_enrolled_date", operator: "HAS_PROPERTY" }]]),
-              sinceISO ? countContacts([...repFilter, { propertyName: "notes_last_contacted", operator: "GTE", value: sinceISO }]) : countContacts([...repFilter, { propertyName: "notes_last_contacted", operator: "HAS_PROPERTY" }]),
+          // All counts in parallel per rep then summarize
+          const repData = [];
+          for (const repName of targetReps) {
+            const rf = [{ propertyName: "assigned_bdr", operator: "EQ", value: repName }];
+            const [sent, opens, clicks, mktReplies, salesReplies, sequences] = await Promise.all([
+              count1([...rf, ...df("hs_email_last_send_date")]),
+              count1([...rf, ...df("hs_email_last_open_date")]),
+              count1([...rf, ...df("hs_email_last_click_date")]),
+              count1([...rf, ...df("hs_email_last_reply_date")]),
+              count1([...rf, ...df("hs_sales_email_last_replied")]),
+              count1([...rf, ...df("hs_latest_sequence_enrolled_date")]),
             ]);
+            const replies  = Math.max(mktReplies, salesReplies); // de-overlap best we can
+            const openRate  = sent > 0 ? +((opens   / sent) * 100).toFixed(1) : 0;
+            const clickRate = sent > 0 ? +((clicks  / sent) * 100).toFixed(1) : 0;
+            const replyRate = sent > 0 ? +((replies / sent) * 100).toFixed(1) : 0;
+            repData.push({ rep: repName, sent, opens, clicks, replies, sequences, openRate, clickRate, replyRate });
             await new Promise(r => setTimeout(r, 200));
-            return { rep: repName, emailsSent, sequencesStarted, contactsReached };
-          }));
+          }
 
-          // Engagement counts (calls/meetings/notes from engagements)
-          const engTotals = { calls:0, meetings:0, notes:0 };
-          const engByRep  = {};
-          try {
-            let offset = 0, hasMore = true;
-            while (hasMore && offset < 3000) {
-              const params = { limit: 250, offset };
-              if (sinceMs) params.since = sinceMs;
-              const engData = await hsGet(user.userId, "/engagements/v1/engagements/paged", params).catch(() => ({ results:[], hasMore:false }));
-              for (const eng of (engData.results || [])) {
-                const type = eng.engagement?.type || "";
-                if (!["CALL","MEETING","NOTE"].includes(type)) continue;
-                if (type === "CALL")    engTotals.calls++;
-                if (type === "MEETING") engTotals.meetings++;
-                if (type === "NOTE")    engTotals.notes++;
-              }
-              hasMore = engData.hasMore && (engData.results || []).length === 250;
-              offset += (engData.results || []).length;
-            }
-          } catch {}
+          const T = repData.reduce((a, r) => ({
+            sent:      a.sent      + r.sent,
+            opens:     a.opens     + r.opens,
+            clicks:    a.clicks    + r.clicks,
+            replies:   a.replies   + r.replies,
+            sequences: a.sequences + r.sequences,
+          }), { sent:0, opens:0, clicks:0, replies:0, sequences:0 });
+          T.openRate  = T.sent > 0 ? +((T.opens   / T.sent) * 100).toFixed(1) : 0;
+          T.clickRate = T.sent > 0 ? +((T.clicks  / T.sent) * 100).toFixed(1) : 0;
+          T.replyRate = T.sent > 0 ? +((T.replies / T.sent) * 100).toFixed(1) : 0;
 
-          // Recent activity list for drill-down (last 300 contacts with send date)
-          const recentContacts = await fetchContacts(
-            [...bdrFilters, ...dateFilter.length ? dateFilter : [{ propertyName: "hs_email_last_send_date", operator: "HAS_PROPERTY" }]],
-            ["firstname","lastname","email","company","assigned_bdr","hs_email_last_send_date","hs_email_last_email_name","hs_latest_sequence_enrolled_date"],
+          // Recent activity: fetch up to 300, sorted by send date
+          const recent = await fetchC(
+            [{ filters: [...bdr, ...df("hs_email_last_send_date")] }],
+            ["firstname","lastname","email","company","assigned_bdr",
+             "hs_email_last_send_date","hs_email_last_email_name",
+             "hs_email_last_open_date","hs_email_last_click_date",
+             "hs_email_last_reply_date","hs_sales_email_last_replied"],
             "hs_email_last_send_date", 300
           );
 
-          const totals = repData.reduce((a, r) => ({
-            emailsSent:       a.emailsSent       + r.emailsSent,
-            sequencesStarted: a.sequencesStarted + r.sequencesStarted,
-            contactsReached:  a.contactsReached  + r.contactsReached,
-          }), { emailsSent:0, sequencesStarted:0, contactsReached:0 });
-
           return ok({
-            section: "outbound",
-            period,
-            rep: rep || "all",
-            totals: { ...totals, ...engTotals },
+            section: "email_activity", period, rep: rep || "all",
+            totals: T,
             byRep: repData,
-            recentActivity: recentContacts.map(c => ({
-              id:         c.id,
-              name:       `${c.properties?.firstname||""} ${c.properties?.lastname||""}`.trim(),
-              company:    c.properties?.company || "",
-              assignedBdr:c.properties?.assigned_bdr || "",
-              lastSent:   c.properties?.hs_email_last_send_date || null,
-              emailName:  c.properties?.hs_email_last_email_name || null,
-              sequenceEnrolled: c.properties?.hs_latest_sequence_enrolled_date || null,
-              url: `https://app.hubspot.com/contacts/39921549/record/0-1/${c.id}`,
-            })),
-          });
-        }
-
-        // ── INBOUND section ───────────────────────────────────────────────────
-        if (section === "inbound") {
-          const bdrFilters = bdrContactFilter();
-
-          const makeFilter = (prop) => [
-            ...bdrFilters,
-            ...(sinceISO ? [{ propertyName: prop, operator: "GTE", value: sinceISO }] : [{ propertyName: prop, operator: "HAS_PROPERTY" }]),
-          ];
-
-          const [replies, clicks, opens, sent] = await Promise.all([
-            countContacts(makeFilter("hs_email_last_reply_date")),
-            countContacts(makeFilter("hs_email_last_click_date")),
-            countContacts(makeFilter("hs_email_last_open_date")),
-            countContacts(bdrFilters.concat(sinceISO ? [{ propertyName: "hs_email_last_send_date", operator: "GTE", value: sinceISO }] : [{ propertyName: "hs_email_last_send_date", operator: "HAS_PROPERTY" }])),
-          ]);
-
-          const replyRate = sent > 0 ? ((replies / sent) * 100).toFixed(1) : "0.0";
-          const openRate  = sent > 0 ? ((opens  / sent) * 100).toFixed(1) : "0.0";
-          const clickRate = sent > 0 ? ((clicks / sent) * 100).toFixed(1) : "0.0";
-
-          // Per-rep inbound breakdown
-          const repData = await Promise.all(targetReps.map(async (repName) => {
-            const rf = [{ propertyName: "assigned_bdr", operator: "EQ", value: repName }];
-            const mf = (prop) => [...rf, ...(sinceISO ? [{ propertyName: prop, operator: "GTE", value: sinceISO }] : [{ propertyName: prop, operator: "HAS_PROPERTY" }])];
-            const [rReplies, rClicks, rOpens, rSent] = await Promise.all([
-              countContacts(mf("hs_email_last_reply_date")),
-              countContacts(mf("hs_email_last_click_date")),
-              countContacts(mf("hs_email_last_open_date")),
-              countContacts([...rf, ...(sinceISO ? [{ propertyName: "hs_email_last_send_date", operator: "GTE", value: sinceISO }] : [{ propertyName: "hs_email_last_send_date", operator: "HAS_PROPERTY" }])]),
-            ]);
-            await new Promise(r => setTimeout(r, 200));
-            return { rep: repName, replies: rReplies, clicks: rClicks, opens: rOpens, sent: rSent,
-              replyRate: rSent > 0 ? ((rReplies/rSent)*100).toFixed(1) : "0.0",
-              openRate:  rSent > 0 ? ((rOpens/rSent)*100).toFixed(1)   : "0.0",
-              clickRate: rSent > 0 ? ((rClicks/rSent)*100).toFixed(1)  : "0.0",
-            };
-          }));
-
-          // Recent replies -- use OR across marketing + sales reply props.
-          // Only 8 contacts total have hs_email_last_reply_date so don't restrict by period --
-          // show all available replies sorted by most recent.
-          let recentReplies = [];
-          try {
-            const [mktReplies, salesReplies] = await Promise.all([
-              hsPost(user.userId, "/crm/v3/objects/contacts/search", {
-                filterGroups: [{ filters: [
-                  ...bdrFilters,
-                  { propertyName: "hs_email_last_reply_date", operator: "HAS_PROPERTY" },
-                ]}],
-                properties: ["firstname","lastname","email","company","assigned_bdr","hs_email_last_reply_date","hs_email_last_email_name"],
-                sorts: [{ propertyName: "hs_email_last_reply_date", direction: "DESCENDING" }],
-                limit: 100,
-              }).then(d => d.results || []),
-              hsPost(user.userId, "/crm/v3/objects/contacts/search", {
-                filterGroups: [{ filters: [
-                  ...bdrFilters,
-                  { propertyName: "hs_sales_email_last_replied", operator: "HAS_PROPERTY" },
-                ]}],
-                properties: ["firstname","lastname","email","company","assigned_bdr","hs_sales_email_last_replied","hs_email_last_email_name"],
-                sorts: [{ propertyName: "hs_sales_email_last_replied", direction: "DESCENDING" }],
-                limit: 100,
-              }).then(d => d.results || []),
-            ]);
-            // Merge and dedup by contact ID, pick best reply date
-            const seen = {};
-            for (const c of [...mktReplies, ...salesReplies]) {
-              const existing = seen[c.id];
-              const ts = Math.max(
-                c.properties?.hs_email_last_reply_date    ? new Date(c.properties.hs_email_last_reply_date).getTime()    : 0,
-                c.properties?.hs_sales_email_last_replied ? new Date(c.properties.hs_sales_email_last_replied).getTime() : 0,
-              );
-              if (!existing || ts > existing._ts) {
-                seen[c.id] = { ...c, _ts: ts,
-                  properties: { ...c.properties,
-                    _bestReplyDate: ts > 0 ? new Date(ts).toISOString() : null,
-                  }
-                };
-              }
-            }
-            recentReplies = Object.values(seen).sort((a,b) => b._ts - a._ts).slice(0, 100);
-          } catch (err) {
-            console.error("[reports] replies fetch error:", err.message);
-          }
-
-          return ok({
-            section: "inbound",
-            period,
-            rep: rep || "all",
-            totals: { replies, clicks, opens, sent, replyRate, openRate, clickRate },
-            byRep: repData,
-            recentReplies: recentReplies.map(c => ({
-              id:         c.id,
-              name:       `${c.properties?.firstname||""} ${c.properties?.lastname||""}`.trim(),
-              company:    c.properties?.company || "",
-              assignedBdr:c.properties?.assigned_bdr || "",
-              replyDate:  c.properties?._bestReplyDate || c.properties?.hs_email_last_reply_date || c.properties?.hs_sales_email_last_replied || null,
-              emailName:  c.properties?.hs_email_last_email_name || null,
-              url: `https://app.hubspot.com/contacts/39921549/record/0-1/${c.id}`,
-            })),
-          });
-        }
-
-        // ── DEALS section ─────────────────────────────────────────────────────
-        if (section === "deals") {
-          // Fetch all deals in period (no owner filter -- deals owned by AEs)
-          const allDeals = await fetchDeals([], 500);
-
-          // Compute pipeline breakdown by stage
-          const byStage = {};
-          const byPipeline = {};
-          let totalValue = 0, totalWeighted = 0;
-          let wonCount = 0, wonValue = 0;
-          let lostCount = 0, lostValue = 0;
-          const lostReasons = {};
-          const closedDeals = []; // for velocity calc
-
-          for (const deal of allDeals) {
-            const p = deal.properties || {};
-            const stageId    = p.dealstage || "";
-            const pipelineId = p.pipeline  || "";
-            const amount     = parseFloat(p.amount || 0);
-            const weighted   = parseFloat(p.hs_projected_amount || 0);
-            const stage      = STAGES[stageId];
-
-            totalValue    += amount;
-            totalWeighted += weighted;
-
-            // By pipeline
-            if (!byPipeline[pipelineId]) byPipeline[pipelineId] = { label: PIPELINES[pipelineId] || pipelineId, count:0, value:0, weighted:0 };
-            byPipeline[pipelineId].count++;
-            byPipeline[pipelineId].value    += amount;
-            byPipeline[pipelineId].weighted += weighted;
-
-            // By stage
-            if (!byStage[stageId]) byStage[stageId] = { label: stage?.label || stageId, pipeline: PIPELINES[pipelineId] || pipelineId, count:0, value:0 };
-            byStage[stageId].count++;
-            byStage[stageId].value += amount;
-
-            if (stage?.won) {
-              wonCount++; wonValue += amount;
-              // Velocity: createdate to closedate in days
-              if (p.createdate && p.closedate) {
-                closedDeals.push({
-                  days: Math.round((new Date(p.closedate) - new Date(p.createdate)) / (1000*60*60*24)),
-                  amount,
-                });
-              }
-            }
-            if (stage?.closed && !stage?.won) {
-              lostCount++; lostValue += amount;
-              const reason = p.closed_lost_reason || "No reason given";
-              lostReasons[reason] = (lostReasons[reason] || 0) + 1;
-            }
-          }
-
-          const totalClosed  = wonCount + lostCount;
-          const winRate      = totalClosed > 0 ? ((wonCount / totalClosed) * 100).toFixed(1) : "0.0";
-          const avgVelocity  = closedDeals.length > 0
-            ? Math.round(closedDeals.reduce((a, d) => a + d.days, 0) / closedDeals.length)
-            : null;
-          const avgDealSize  = wonCount > 0 ? Math.round(wonValue / wonCount) : 0;
-
-          // Recent deals for drill-down (top 50)
-          const recentDeals = allDeals.slice(0, 50).map(deal => {
-            const p = deal.properties || {};
-            const stage = STAGES[p.dealstage];
-            return {
-              id:          deal.id,
-              name:        p.dealname || "",
-              stage:       stage?.label || p.dealstage || "",
-              pipeline:    PIPELINES[p.pipeline] || p.pipeline || "",
-              amount:      parseFloat(p.amount || 0),
-              weighted:    parseFloat(p.hs_projected_amount || 0),
-              closeDate:   p.closedate   || null,
-              createDate:  p.createdate  || null,
-              ownerId:     p.hubspot_owner_id || null,
-              lostReason:  p.closed_lost_reason || null,
-              isWon:       stage?.won    || false,
-              isLost:      (stage?.closed && !stage?.won) || false,
-              url: `https://app.hubspot.com/contacts/39921549/record/0-3/${deal.id}`,
-            };
-          });
-
-          return ok({
-            section: "deals",
-            period,
-            totals: {
-              total: allDeals.length, totalValue, totalWeighted,
-              wonCount, wonValue, lostCount, lostValue,
-              winRate, avgVelocity, avgDealSize,
+            links: {
+              dashboard: DASHBOARD,
+              sent:    CONTACTS_LIST,
+              opens:   CONTACTS_LIST,
+              clicks:  CONTACTS_LIST,
+              replies: CONTACTS_LIST,
             },
-            byPipeline: Object.values(byPipeline),
-            byStage:    Object.values(byStage).sort((a,b) => b.count - a.count),
-            lostReasons: Object.entries(lostReasons)
-              .map(([reason, count]) => ({ reason, count }))
-              .sort((a,b) => b.count - a.count),
-            recentDeals,
+            recent: recent.map(c => {
+              const p = c.properties || {};
+              const replyDate = p.hs_email_last_reply_date || p.hs_sales_email_last_replied || null;
+              return {
+                id:         c.id,
+                name:       `${p.firstname||""} ${p.lastname||""}`.trim(),
+                company:    p.company || "",
+                bdr:        p.assigned_bdr || "",
+                sent:       p.hs_email_last_send_date || null,
+                opened:     p.hs_email_last_open_date || null,
+                clicked:    p.hs_email_last_click_date || null,
+                replied:    replyDate,
+                emailName:  p.hs_email_last_email_name || null,
+                url: `${HS_BASE}/contacts/${PORTAL}/record/0-1/${c.id}`,
+              };
+            }),
           });
         }
 
-        // ── MARKETING section ─────────────────────────────────────────────────
+        // ── MARKETING ─────────────────────────────────────────────────────────
         if (section === "marketing") {
-          // Marketing = contacts reached via marketing emails (hs_email_last_send_date)
-          // with open/click/reply breakdown -- not filtered by BDR since marketing
-          // emails go to all contacts
-          const makeFilter = (prop) => sinceISO
-            ? [{ propertyName: prop, operator: "GTE", value: sinceISO }]
-            : [{ propertyName: prop, operator: "HAS_PROPERTY" }];
-
           const [totalReached, totalOpened, totalClicked, totalReplied] = await Promise.all([
-            countContacts(makeFilter("hs_email_last_send_date")),
-            countContacts(makeFilter("hs_email_last_open_date")),
-            countContacts(makeFilter("hs_email_last_click_date")),
-            countContacts(makeFilter("hs_email_last_reply_date")),
+            count1(df("hs_email_last_send_date")),
+            count1(df("hs_email_last_open_date")),
+            count1(df("hs_email_last_click_date")),
+            count1(df("hs_email_last_reply_date")),
           ]);
 
-          const openRate  = totalReached > 0 ? ((totalOpened  / totalReached) * 100).toFixed(1) : "0.0";
-          const clickRate = totalReached > 0 ? ((totalClicked / totalReached) * 100).toFixed(1) : "0.0";
-          const replyRate = totalReached > 0 ? ((totalReplied / totalReached) * 100).toFixed(1) : "0.0";
+          const openRate  = totalReached > 0 ? +((totalOpened  / totalReached) * 100).toFixed(1) : 0;
+          const clickRate = totalReached > 0 ? +((totalClicked / totalReached) * 100).toFixed(1) : 0;
+          const replyRate = totalReached > 0 ? +((totalReplied / totalReached) * 100).toFixed(1) : 0;
 
-          // Campaign grouping: paginate through all contacts with email_last_email_name set
-          // to capture all campaigns, not just the most recently sent one.
-          // Sort by email name (stable) so pagination is consistent.
+          // Campaign breakdown -- paginate through all contacts with email name set
           const byCampaign = {};
           try {
-            let camAfter, camFetched = 0;
-            while (camFetched < 2000) {
-              const camFilters = [
-                { propertyName: "hs_email_last_email_name", operator: "HAS_PROPERTY" },
-                ...(sinceISO ? [{ propertyName: "hs_email_last_send_date", operator: "GTE", value: sinceISO }] : []),
-              ];
-              const camBody = {
-                filterGroups: [{ filters: camFilters }],
-                properties: ["hs_email_last_email_name","hs_email_last_open_date","hs_email_last_send_date"],
+            let after, fetched = 0;
+            while (fetched < 3000) {
+              const body = {
+                filterGroups: [{ filters: [
+                  { propertyName: "hs_email_last_email_name", operator: "HAS_PROPERTY" },
+                  ...(sinceISO ? [{ propertyName: "hs_email_last_send_date", operator: "GTE", value: sinceISO }] : []),
+                ]}],
+                properties: ["hs_email_last_email_name","hs_email_last_open_date","hs_email_last_click_date","hs_email_last_reply_date","hs_email_last_send_date"],
                 sorts: [{ propertyName: "hs_email_last_email_name", direction: "ASCENDING" }],
                 limit: 100,
               };
-              if (camAfter) camBody.after = camAfter;
-              const camData = await hsPost(user.userId, "/crm/v3/objects/contacts/search", camBody);
-              for (const c of (camData.results || [])) {
+              if (after) body.after = after;
+              const d = await hsPost(user.userId, "/crm/v3/objects/contacts/search", body);
+              for (const c of (d.results || [])) {
                 const name = c.properties?.hs_email_last_email_name || "Unknown";
-                if (!byCampaign[name]) byCampaign[name] = { name, sent:0, opened:0 };
+                if (!byCampaign[name]) byCampaign[name] = { name, sent:0, opened:0, clicked:0, replied:0 };
                 byCampaign[name].sent++;
-                if (c.properties?.hs_email_last_open_date) byCampaign[name].opened++;
+                if (c.properties?.hs_email_last_open_date)  byCampaign[name].opened++;
+                if (c.properties?.hs_email_last_click_date) byCampaign[name].clicked++;
+                if (c.properties?.hs_email_last_reply_date) byCampaign[name].replied++;
               }
-              camFetched += (camData.results || []).length;
-              if (!camData.paging?.next?.after || (camData.results||[]).length < 100) break;
-              camAfter = camData.paging.next.after;
+              fetched += (d.results||[]).length;
+              if (!d.paging?.next?.after || (d.results||[]).length < 100) break;
+              after = d.paging.next.after;
               await new Promise(r => setTimeout(r, 150));
             }
-          } catch (err) {
-            console.error("[reports] campaign fetch error:", err.message);
-          }
+          } catch (e) { console.error("[reports mkt campaigns]", e.message); }
 
-          const campaigns = Object.values(byCampaign)
-            .map(c => ({ ...c, openRate: c.sent > 0 ? ((c.opened/c.sent)*100).toFixed(1) : "0.0" }))
-            .sort((a,b) => b.sent - a.sent)
-            .slice(0, 30);
+          const campaigns = Object.values(byCampaign).map(c => ({
+            ...c,
+            openRate:  c.sent > 0 ? +((c.opened  / c.sent) * 100).toFixed(1) : 0,
+            clickRate: c.sent > 0 ? +((c.clicked / c.sent) * 100).toFixed(1) : 0,
+            replyRate: c.sent > 0 ? +((c.replied / c.sent) * 100).toFixed(1) : 0,
+          })).sort((a,b) => b.sent - a.sent).slice(0, 30);
 
           return ok({
-            section: "marketing",
-            period,
+            section: "marketing", period,
             totals: { totalReached, totalOpened, totalClicked, totalReplied, openRate, clickRate, replyRate },
             campaigns,
+            links: { dashboard: DASHBOARD, manage: MKT_EMAIL },
           });
         }
 
-        return error(400, `Unknown section: ${section}. Use outbound|inbound|deals|marketing`);
+        // ── SEQUENCES ─────────────────────────────────────────────────────────
+        if (section === "sequences") {
+          const bdr = bdrFilters();
+
+          // Count contacts by sequence enrollment
+          const [enrolled, replied, opened, clicked] = await Promise.all([
+            count1([...bdr, ...df("hs_latest_sequence_enrolled_date")]),
+            countOr("hs_email_last_reply_date", "hs_sales_email_last_replied", bdr),
+            count1([...bdr, ...df("hs_email_last_open_date")]),
+            count1([...bdr, ...df("hs_email_last_click_date")]),
+          ]);
+
+          const replyRate = enrolled > 0 ? +((replied / enrolled) * 100).toFixed(1) : 0;
+          const openRate  = enrolled > 0 ? +((opened  / enrolled) * 100).toFixed(1) : 0;
+          const clickRate = enrolled > 0 ? +((clicked / enrolled) * 100).toFixed(1) : 0;
+
+          // Per-rep breakdown
+          const repData = [];
+          for (const repName of targetReps) {
+            const rf = [{ propertyName: "assigned_bdr", operator: "EQ", value: repName }];
+            const [rEnrolled, rReplied, rOpened, rClicked] = await Promise.all([
+              count1([...rf, ...df("hs_latest_sequence_enrolled_date")]),
+              countOr("hs_email_last_reply_date", "hs_sales_email_last_replied", rf),
+              count1([...rf, ...df("hs_email_last_open_date")]),
+              count1([...rf, ...df("hs_email_last_click_date")]),
+            ]);
+            repData.push({
+              rep: repName,
+              enrolled: rEnrolled, replied: rReplied, opened: rOpened, clicked: rClicked,
+              replyRate: rEnrolled > 0 ? +((rReplied / rEnrolled) * 100).toFixed(1) : 0,
+              openRate:  rEnrolled > 0 ? +((rOpened  / rEnrolled) * 100).toFixed(1) : 0,
+              clickRate: rEnrolled > 0 ? +((rClicked / rEnrolled) * 100).toFixed(1) : 0,
+            });
+            await new Promise(r => setTimeout(r, 200));
+          }
+
+          // Per-sequence breakdown (group by hs_latest_sequence_enrolled)
+          const bySequence = {};
+          try {
+            const seqContacts = await fetchC(
+              [{ filters: [...bdr, ...df("hs_latest_sequence_enrolled_date")] }],
+              ["assigned_bdr","hs_latest_sequence_enrolled","hs_latest_sequence_enrolled_date",
+               "hs_email_last_reply_date","hs_sales_email_last_replied",
+               "hs_email_last_open_date","hs_email_last_click_date"],
+              "hs_latest_sequence_enrolled_date", 500
+            );
+            for (const c of seqContacts) {
+              const p = c.properties || {};
+              const seqId = p.hs_latest_sequence_enrolled || "Unknown";
+              if (!bySequence[seqId]) bySequence[seqId] = { sequenceId: seqId, enrolled:0, replied:0, opened:0, clicked:0 };
+              bySequence[seqId].enrolled++;
+              if (p.hs_email_last_reply_date || p.hs_sales_email_last_replied) bySequence[seqId].replied++;
+              if (p.hs_email_last_open_date)  bySequence[seqId].opened++;
+              if (p.hs_email_last_click_date) bySequence[seqId].clicked++;
+            }
+          } catch (e) { console.error("[reports sequences]", e.message); }
+
+          const sequences = Object.values(bySequence).map(s => ({
+            ...s,
+            replyRate: s.enrolled > 0 ? +((s.replied / s.enrolled) * 100).toFixed(1) : 0,
+            openRate:  s.enrolled > 0 ? +((s.opened  / s.enrolled) * 100).toFixed(1) : 0,
+            clickRate: s.enrolled > 0 ? +((s.clicked / s.enrolled) * 100).toFixed(1) : 0,
+          })).sort((a,b) => b.enrolled - a.enrolled).slice(0, 30);
+
+          return ok({
+            section: "sequences", period, rep: rep || "all",
+            totals: { enrolled, replied, opened, clicked, replyRate, openRate, clickRate },
+            byRep: repData,
+            sequences,
+            links: { dashboard: DASHBOARD, sequences: SEQUENCES },
+          });
+        }
+
+        // ── DEALS ─────────────────────────────────────────────────────────────
+        if (section === "deals") {
+          const ownerFilter = qp.owner ? [{ propertyName: "hubspot_owner_id", operator: "EQ", value: qp.owner }] : [];
+          const dateFilters = sinceISO ? [{ propertyName: "createdate", operator: "GTE", value: sinceISO }] : [];
+
+          const PIPELINES = {
+            "679336808": "New Business Opportunity",
+            "679502246": "Expansion Deal",
+            "678610513": "New Business Deal",
+          };
+          const STAGES = {
+            "995708483": { label:"Target Identified",              pipeline:"679336808", won:false, lost:false },
+            "995708484": { label:"Initial Outreach/Reengaged",     pipeline:"679336808", won:false, lost:false },
+            "1284036410":{ label:"Email Opened/No Response",       pipeline:"679336808", won:false, lost:false },
+            "1288757038":{ label:"Reengagement Needed",            pipeline:"679336808", won:false, lost:false },
+            "995708485": { label:"Engaged",                        pipeline:"679336808", won:false, lost:false },
+            "995708486": { label:"Meeting Scheduled",              pipeline:"679336808", won:false, lost:false },
+            "995708487": { label:"Meeting Completed",              pipeline:"679336808", won:false, lost:false },
+            "995708488": { label:"Qualified",                      pipeline:"679336808", won:false, lost:false },
+            "995708489": { label:"Unengaged",                      pipeline:"679336808", won:false, lost:false },
+            "996311842": { label:"Trade Show Follow-Up",           pipeline:"679336808", won:false, lost:false },
+            "1331037807":{ label:"Meeting Completed - Not A Fit",  pipeline:"679336808", won:false, lost:false },
+            "1331034125":{ label:"Meeting Completed - Partnership", pipeline:"679336808", won:false, lost:false },
+            "1347324753":{ label:"Closed/Lost",                    pipeline:"679336808", won:false, lost:true  },
+            "995723921": { label:"Expansion Targets",              pipeline:"679502246", won:false, lost:false },
+            "995723922": { label:"Engaged",                        pipeline:"679502246", won:false, lost:false },
+            "995723923": { label:"Value Prop/Scoping",             pipeline:"679502246", won:false, lost:false },
+            "995723924": { label:"Pricing Proposal",               pipeline:"679502246", won:false, lost:false },
+            "995723926": { label:"Procurement/Contracting",        pipeline:"679502246", won:false, lost:false },
+            "995723927": { label:"Closed Lost",                    pipeline:"679502246", won:false, lost:true  },
+            "995739776": { label:"Closed Won",                     pipeline:"679502246", won:true,  lost:false },
+            "1004627778":{ label:"Revisit",                        pipeline:"679502246", won:false, lost:false },
+            "995756094": { label:"Qualified",                      pipeline:"678610513", won:false, lost:false },
+            "995756095": { label:"Problem Solution Fit",           pipeline:"678610513", won:false, lost:false },
+            "995756096": { label:"Value Prop/Scoping",             pipeline:"678610513", won:false, lost:false },
+            "995756097": { label:"Pricing Proposal",               pipeline:"678610513", won:false, lost:false },
+            "995756098": { label:"IT/Technical Review",            pipeline:"678610513", won:false, lost:false },
+            "995756099": { label:"Contracting/Legal",              pipeline:"678610513", won:false, lost:false },
+            "995756100": { label:"Closed - Lost",                  pipeline:"678610513", won:false, lost:true  },
+            "995749999": { label:"Closed - Won",                   pipeline:"678610513", won:true,  lost:false },
+            "995750000": { label:"Revisit",                        pipeline:"678610513", won:false, lost:false },
+          };
+
+          // Fetch all deals in period
+          let allDeals = [], after;
+          while (allDeals.length < 1000) {
+            const body = {
+              filterGroups: [{ filters: [...ownerFilter, ...dateFilters] }],
+              properties: ["dealname","dealstage","pipeline","amount","closedate","createdate","hubspot_owner_id","hs_projected_amount","closed_lost_reason"],
+              sorts: [{ propertyName: "createdate", direction: "DESCENDING" }],
+              limit: 100,
+            };
+            if (after) body.after = after;
+            const d = await hsPost(user.userId, "/crm/v3/objects/deals/search", body).catch(() => ({ results:[] }));
+            allDeals.push(...(d.results || []));
+            if (!d.paging?.next?.after || (d.results||[]).length < 100) break;
+            after = d.paging.next.after;
+            await new Promise(r => setTimeout(r, 150));
+          }
+
+          let totalValue=0, totalWeighted=0, wonCount=0, wonValue=0, lostCount=0, lostValue=0;
+          const byStage={}, byPipeline={}, lostReasons={}, closedDays=[];
+
+          for (const deal of allDeals) {
+            const p = deal.properties || {};
+            const amt = parseFloat(p.amount||0);
+            const wt  = parseFloat(p.hs_projected_amount||0);
+            const stage = STAGES[p.dealstage] || {};
+            const pipeId = p.pipeline || "";
+
+            totalValue    += amt;
+            totalWeighted += wt;
+
+            if (!byPipeline[pipeId]) byPipeline[pipeId] = { label: PIPELINES[pipeId]||pipeId, count:0, value:0, weighted:0 };
+            byPipeline[pipeId].count++;
+            byPipeline[pipeId].value    += amt;
+            byPipeline[pipeId].weighted += wt;
+
+            const sk = p.dealstage||"unknown";
+            if (!byStage[sk]) byStage[sk] = { label: stage.label||sk, pipeline: PIPELINES[pipeId]||pipeId, count:0, value:0, won:stage.won||false, lost:stage.lost||false };
+            byStage[sk].count++;
+            byStage[sk].value += amt;
+
+            if (stage.won)  { wonCount++;  wonValue  += amt; if (p.createdate && p.closedate) closedDays.push(Math.round((new Date(p.closedate)-new Date(p.createdate))/(86400000))); }
+            if (stage.lost) { lostCount++; lostValue += amt; const r = p.closed_lost_reason||"No reason"; lostReasons[r]=(lostReasons[r]||0)+1; }
+          }
+
+          const winRate    = (wonCount+lostCount) > 0 ? +(wonCount/(wonCount+lostCount)*100).toFixed(1) : 0;
+          const avgVelocity= closedDays.length > 0 ? Math.round(closedDays.reduce((a,b)=>a+b,0)/closedDays.length) : null;
+          const avgDealSize= wonCount > 0 ? Math.round(wonValue/wonCount) : 0;
+
+          return ok({
+            section: "deals", period, owner: qp.owner || null,
+            totals: { total: allDeals.length, totalValue, totalWeighted, wonCount, wonValue, lostCount, lostValue, winRate, avgVelocity, avgDealSize },
+            byPipeline: Object.values(byPipeline).sort((a,b)=>b.count-a.count),
+            byStage:    Object.values(byStage).sort((a,b)=>b.count-a.count),
+            lostReasons: Object.entries(lostReasons).map(([reason,count])=>({reason,count})).sort((a,b)=>b.count-a.count),
+            recentDeals: allDeals.slice(0,200).map(deal => {
+              const p = deal.properties||{};
+              const stage = STAGES[p.dealstage]||{};
+              return {
+                id: deal.id, name: p.dealname||"", stage: stage.label||p.dealstage||"",
+                pipeline: PIPELINES[p.pipeline]||p.pipeline||"",
+                amount: parseFloat(p.amount||0), weighted: parseFloat(p.hs_projected_amount||0),
+                closeDate: p.closedate||null, createDate: p.createdate||null,
+                ownerId: p.hubspot_owner_id||null, lostReason: p.closed_lost_reason||null,
+                isWon: stage.won||false, isLost: stage.lost||false,
+                url: `${HS_BASE}/contacts/${PORTAL}/record/0-3/${deal.id}`,
+              };
+            }),
+            links: { dashboard: DASHBOARD, deals: DEALS_LIST },
+          });
+        }
+
+        return error(400, `Unknown section: ${section}`);
 
       } catch (err) {
-        console.error("[reports] Error:", err.message, err.stack);
+        console.error("[reports] Error:", err.message);
         return error(500, `Reports error: ${err.message}`);
       }
     }
