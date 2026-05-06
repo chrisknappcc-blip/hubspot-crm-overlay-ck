@@ -1536,7 +1536,7 @@ function ReportsTab({ safeFetch, owners }) {
         </div>
         <div style={{ marginLeft:'auto', display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
           <Select value={period} onChange={setPeriod} options={REPORT_PERIOD_OPTIONS} />
-          {section !== 'deals' && section !== 'marketing' && (
+          {section !== 'deals' && (
             <Select value={rep} onChange={setRep} options={REPORT_REP_OPTIONS} />
           )}
           {section === 'deals' && (
@@ -1656,6 +1656,29 @@ function ReportsTab({ safeFetch, owners }) {
               <KpiCard label="Click rate" value={fmtPct(T.clickRate)} sub="Industry avg ~2-3%" href={L.manage} accent />
               <KpiCard label="Reply rate" value={fmtPct(T.replyRate)} sub="Industry avg ~1%"   href={L.manage} accent />
             </div>
+
+            {(data.byRep||[]).length > 1 && (
+              <Panel style={{ marginBottom:12 }}>
+                <SectionTitle>By rep</SectionTitle>
+                <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
+                  <THead cols={['Rep','Reached','Opened','Open %','Clicked','Click %','Replied','Reply %']} />
+                  <tbody>
+                    {(data.byRep||[]).map((r,i) => (
+                      <tr key={i} style={{ borderBottom:i<data.byRep.length-1?'1px solid var(--border)':'none' }}>
+                        <td style={{ padding:'8px 10px 8px 0', fontWeight:500 }}>{r.rep}</td>
+                        <td style={{ padding:'8px 10px 8px 0', color:'var(--text-secondary)' }}>{fmt(r.reached)}</td>
+                        <td style={{ padding:'8px 10px 8px 0', color:'var(--text-secondary)' }}>{fmt(r.opened)}</td>
+                        <td style={{ padding:'8px 10px 8px 0', color:'var(--accent)' }}>{fmtPct(r.openRate)}</td>
+                        <td style={{ padding:'8px 10px 8px 0', color:'var(--text-secondary)' }}>{fmt(r.clicked)}</td>
+                        <td style={{ padding:'8px 10px 8px 0', color:'var(--accent)' }}>{fmtPct(r.clickRate)}</td>
+                        <td style={{ padding:'8px 10px 8px 0', color:'var(--text-secondary)' }}>{fmt(r.replied)}</td>
+                        <td style={{ padding:'8px 0', color:'var(--accent)' }}>{fmtPct(r.replyRate)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </Panel>
+            )}
 
             <Panel>
               <SectionTitle>By campaign / email</SectionTitle>
