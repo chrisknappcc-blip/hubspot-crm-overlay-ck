@@ -204,10 +204,10 @@ const DATE_RANGE_OPTIONS = [
 ]
 
 const TASK_DAYS_OPTIONS = [
-  { value:'7',  label:'Next 7 days' },
-  { value:'14', label:'Next 14 days' },
-  { value:'21', label:'Next 21 days' },
-  { value:'30', label:'Next 30 days' },
+  { value:'7',  label:'Last 7 days' },
+  { value:'14', label:'Last 14 days' },
+  { value:'21', label:'Last 21 days' },
+  { value:'30', label:'Last 30 days' },
 ]
 
 const ACTIVITY_DAYS_OPTIONS = [
@@ -242,16 +242,16 @@ const TERRITORY_OPTIONS = [
 
 const TIER_OPTIONS = [
   { value:'', label:'All tiers' },
-  { value:'GOLD 1-10',   label:'GOLD 1-10' },
-  { value:'GOLD 11-20',  label:'GOLD 11-20' },
-  { value:'GOLD 21-30',  label:'GOLD 21-30' },
-  { value:'GOLD 31-40',  label:'GOLD 31-40' },
-  { value:'GOLD 41-50',  label:'GOLD 41-50' },
-  { value:'GOLD 51-60',  label:'GOLD 51-60' },
-  { value:'GOLD 61-70',  label:'GOLD 61-70' },
-  { value:'GOLD 71-80',  label:'GOLD 71-80' },
-  { value:'GOLD 81-90',  label:'GOLD 81-90' },
-  { value:'GOLD 91-100', label:'GOLD 91-100' },
+  { value:'GOLD - 1-10',   label:'GOLD 1-10' },
+  { value:'GOLD - 11-20',  label:'GOLD 11-20' },
+  { value:'GOLD - 21-30',  label:'GOLD 21-30' },
+  { value:'GOLD - 31-40',  label:'GOLD 31-40' },
+  { value:'GOLD - 41-50',  label:'GOLD 41-50' },
+  { value:'GOLD - 51-60',  label:'GOLD 51-60' },
+  { value:'GOLD - 61-70',  label:'GOLD 61-70' },
+  { value:'GOLD - 71-80',  label:'GOLD 71-80' },
+  { value:'GOLD - 81-90',  label:'GOLD 81-90' },
+  { value:'GOLD - 91-100', label:'GOLD 91-100' },
 ]
 
 const TARGET_OPTIONS = [
@@ -334,10 +334,16 @@ export default function Dashboard({ user, theme, toggleTheme, getToken }) {
   const [goldTierFilter, setGoldTierFilter] = useState('')
 
   // Activity summary
-  const [activityData, setActivityData]   = useState(null)
-  const [activityDays, setActivityDays]   = useState('7')
-  const [activityScope, setActivityScope] = useState('me')
+  const [activityData, setActivityData]       = useState(null)
+  const [activityDays, setActivityDays]       = useState('7')
+  const [activityRep, setActivityRep]         = useState('all')   // 'all' or rep name
+  const [activityIncludeOwned, setActivityIncludeOwned] = useState(false)
   const [activityLoading, setActivityLoading] = useState(false)
+
+  // Real-time polling
+  const [newSignalCount, setNewSignalCount]   = useState(0)
+  const [lastPollTime, setLastPollTime]       = useState(null)
+  const pollIntervalRef                       = useRef(null)
 
   // UI
   const [activeTab, setActiveTab]         = useState('dashboard')
@@ -460,19 +466,55 @@ export default function Dashboard({ user, theme, toggleTheme, getToken }) {
   const fetchActivity = useCallback(async () => {
     setActivityLoading(true)
     try {
-      const data = await apiFetch(`/api/hubspot/activity?days=${activityDays}&scope=${activityScope}`, getToken)
+      const params = [
+        `days=${activityDays}`,
+        activityRep !== 'all' ? `rep=${encodeURIComponent(activityRep)}` : 'rep=all',
+        activityIncludeOwned ? 'include_owned=true' : '',
+      ].filter(Boolean).join('&')
+      const data = await apiFetch(`/api/hubspot/activity?${params}`, getToken)
       setActivityData(data)
     } catch (e) {
       console.error('[activity]', e)
     } finally {
       setActivityLoading(false)
     }
-  }, [getToken, activityDays, activityScope])
+  }, [getToken, activityDays, activityRep, activityIncludeOwned])
+
+  // ── Real-time polling (every 3 minutes) ──────────────────────────────────
+  const fetchRecentSignals = useCallback(async () => {
+    try {
+      const since = lastPollTime
+        ? new Date(lastPollTime).toISOString()
+        : new Date(Date.now() - 15 * 60 * 1000).toISOString()
+      const params = `since=${encodeURIComponent(since)}${filterBdr ? `&assigned_bdr=${encodeURIComponent(filterBdr)}` : ''}`
+      const data = await apiFetch(`/api/hubspot/signals/recent?${params}`, getToken)
+      const incoming = data.signals || []
+      if (incoming.length > 0) {
+        setSignals(prev => {
+          const existingIds = new Set(prev.map(s => s.id))
+          const fresh = incoming.filter(s => !existingIds.has(s.id))
+          if (fresh.length === 0) return prev
+          setNewSignalCount(c => c + fresh.length)
+          return [...fresh, ...prev] // prepend so newest is first
+        })
+      }
+      setLastPollTime(Date.now())
+    } catch { /* polling errors are silent */ }
+  }, [getToken, lastPollTime, filterBdr])
 
   useEffect(() => { fetchData() }, [fetchData])
   useEffect(() => { fetchTasks() }, [fetchTasks])
   useEffect(() => { fetchGold() }, [fetchGold])
   useEffect(() => { fetchActivity() }, [fetchActivity])
+
+  // Start real-time polling on mount, clear on unmount
+  useEffect(() => {
+    setLastPollTime(Date.now())
+    pollIntervalRef.current = setInterval(() => {
+      fetchRecentSignals()
+    }, 3 * 60 * 1000) // every 3 minutes
+    return () => clearInterval(pollIntervalRef.current)
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Reset pages when controls change
   useEffect(() => { setTaskPage(0); setSignalPage(0) }, [signalSort, dateRange, filterParams])
@@ -576,17 +618,36 @@ export default function Dashboard({ user, theme, toggleTheme, getToken }) {
       <nav style={{ background:'var(--bg-panel)', borderBottom:'1px solid var(--border)', padding:'0 1.5rem', display:'flex', alignItems:'center', height:52, gap:24, position:'sticky', top:0, zIndex:50 }}>
         <div style={{ fontSize:13, fontWeight:500, letterSpacing:'.05em', textTransform:'uppercase', color:'var(--accent)', marginRight:8 }}>CarePathIQ</div>
 
-        {['dashboard','contacts'].map(tab => (
-          <button key={tab} onClick={() => setActiveTab(tab)}
-            style={{ fontSize:13, fontWeight:activeTab===tab?500:400, color:activeTab===tab?'var(--text)':'var(--text-secondary)', padding:'0 2px', height:52, background:'none', border:'none', borderBottom:activeTab===tab?'2px solid var(--accent)':'2px solid transparent', cursor:'pointer', textTransform:'capitalize' }}>
-            {tab}
+        {[
+          { key:'dashboard', label:'Dashboard' },
+          { key:'contacts',  label:'Contacts' },
+          { key:'map-tool',  label:'Market Mapper' },
+          { key:'cpiq',      label:'CPIQ' },
+        ].map(tab => (
+          <button key={tab.key} onClick={() => { setActiveTab(tab.key); if (tab.key === 'dashboard') setNewSignalCount(0) }}
+            style={{ fontSize:13, fontWeight:activeTab===tab.key?500:400, color:activeTab===tab.key?'var(--text)':'var(--text-secondary)', padding:'0 2px', height:52, background:'none', border:'none', borderBottom:activeTab===tab.key?'2px solid var(--accent)':'2px solid transparent', cursor:'pointer', display:'flex', alignItems:'center', gap:6 }}>
+            {tab.label}
+            {tab.key === 'dashboard' && newSignalCount > 0 && (
+              <span style={{ fontSize:10, fontWeight:600, background:'var(--red)', color:'#fff', borderRadius:10, padding:'1px 6px', minWidth:16, textAlign:'center' }}>
+                {newSignalCount}
+              </span>
+            )}
+            {tab.key === 'cpiq' && (
+              <span style={{ fontSize:9, fontWeight:600, background:'var(--amber-light)', color:'var(--amber)', borderRadius:4, padding:'1px 5px', letterSpacing:'.03em' }}>
+                SOON
+              </span>
+            )}
           </button>
         ))}
 
         <div style={{ marginLeft:'auto', display:'flex', alignItems:'center', gap:10 }}>
-          {loadingMore && (
-            <div style={{ fontSize:11, color:'var(--text-tertiary)' }}>Loading more signals...</div>
-          )}
+          {/* Live polling indicator */}
+          <div style={{ display:'flex', alignItems:'center', gap:5 }}>
+            <div style={{ width:6, height:6, borderRadius:'50%', background:'var(--accent)', animation:'pulse 2s infinite' }} />
+            <span style={{ fontSize:11, color:'var(--text-tertiary)' }}>
+              {loadingMore ? 'Loading more...' : 'Live'}
+            </span>
+          </div>
           <button onClick={toggleTheme}
             style={{ width:32, height:32, borderRadius:'var(--radius)', background:'var(--bg-secondary)', display:'flex', alignItems:'center', justifyContent:'center', border:'1px solid var(--border)', cursor:'pointer' }}>
             {theme === 'light'
@@ -880,10 +941,10 @@ export default function Dashboard({ user, theme, toggleTheme, getToken }) {
                 <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
                   {/* Tier quick-filter pills */}
                   <div style={{ display:'flex', gap:4, flexWrap:'wrap' }}>
-                    {['', 'GOLD 1-10', 'GOLD 11-20', 'GOLD 21-30', 'GOLD 31-40', 'GOLD 41-50'].map(tier => (
+                    {['', 'GOLD - 1-10', 'GOLD - 11-20', 'GOLD - 21-30', 'GOLD - 31-40', 'GOLD - 41-50'].map(tier => (
                       <button key={tier} onClick={() => { setGoldTierFilter(tier); setGoldPage(0) }}
                         style={{ fontSize:11, padding:'3px 8px', borderRadius:20, border:'1px solid var(--border)', cursor:'pointer', background: goldTierFilter===tier ? '#FEF3C7' : 'var(--bg-secondary)', color: goldTierFilter===tier ? '#92400E' : 'var(--text-tertiary)', fontWeight: goldTierFilter===tier ? 500 : 400 }}>
-                        {tier || 'All'}
+                        {tier ? tier.replace('GOLD - ', 'GOLD ') : 'All'}
                       </button>
                     ))}
                   </div>
@@ -899,31 +960,38 @@ export default function Dashboard({ user, theme, toggleTheme, getToken }) {
                 <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
                   <thead>
                     <tr>
-                      {['Contact', 'Company', 'Tier', 'Signal', 'Last activity'].map(h => (
+                      {['Company', 'Contacts', 'Tier', 'Signal', 'Last activity'].map(h => (
                         <th key={h} style={{ textAlign:'left', fontSize:11, fontWeight:500, color:'var(--text-tertiary)', textTransform:'uppercase', letterSpacing:'.04em', padding:'0 8px 8px 0', borderBottom:'1px solid var(--border)' }}>{h}</th>
                       ))}
                     </tr>
                   </thead>
                   <tbody>
                     {filteredGold.slice(goldPage * PAGE_SIZE, (goldPage+1) * PAGE_SIZE).map((a, i) => (
-                      <tr key={i} style={{ borderBottom: i < Math.min(filteredGold.length, PAGE_SIZE)-1 ? '1px solid var(--border)' : 'none' }}>
+                      <tr key={i} style={{ borderBottom: i < Math.min(filteredGold.length, PAGE_SIZE)-1 ? '1px solid var(--border)' : 'none', verticalAlign:'top' }}>
                         <td style={{ padding:'9px 8px 9px 0' }}>
                           <div style={{ display:'flex', alignItems:'center', gap:6 }}>
-                            <span onClick={() => openHubSpotContact(a.id)}
-                              style={{ fontWeight:500, color:'var(--accent)', cursor:'pointer' }}>
-                              {a.name}
-                            </span>
-                            <button onClick={e => openHubSpotContact(a.id, e)} title="Open in HubSpot"
-                              style={{ background:'none', border:'none', cursor:'pointer', padding:0, color:'var(--text-tertiary)', lineHeight:1 }}>
-                              <HsIcon />
-                            </button>
+                            <a href={a.url} target="_blank" rel="noopener noreferrer"
+                              style={{ fontWeight:500, color:'var(--accent)', textDecoration:'none' }}>
+                              {a.name || '—'}
+                            </a>
                           </div>
-                          {a.title && <div style={{ fontSize:11, color:'var(--text-tertiary)' }}>{a.title}</div>}
+                          {a.territory && <div style={{ fontSize:11, color:'var(--text-tertiary)' }}>{a.territory}</div>}
                         </td>
-                        <td style={{ padding:'9px 8px 9px 0', color:'var(--text-secondary)', fontSize:12 }}>{a.company || '—'}</td>
                         <td style={{ padding:'9px 8px 9px 0' }}>
-                          <span style={{ fontSize:11, fontWeight:500, padding:'2px 8px', borderRadius:20, background:'#FEF3C7', color:'#92400E' }}>
-                            {a.tier}
+                          {(a.contacts || []).length === 0 && <span style={{ color:'var(--text-tertiary)', fontSize:12 }}>None</span>}
+                          {(a.contacts || []).slice(0, 3).map((c, ci) => (
+                            <div key={ci} style={{ display:'flex', alignItems:'center', gap:4, marginBottom:2 }}>
+                              <span onClick={() => openHubSpotContact(c.id)}
+                                style={{ fontSize:12, color:'var(--accent)', cursor:'pointer' }}>
+                                {c.name}
+                              </span>
+                              {c.title && <span style={{ fontSize:11, color:'var(--text-tertiary)' }}>{c.title}</span>}
+                            </div>
+                          ))}
+                        </td>
+                        <td style={{ padding:'9px 8px 9px 0' }}>
+                          <span style={{ fontSize:11, fontWeight:500, padding:'2px 8px', borderRadius:20, background:'#FEF3C7', color:'#92400E', whiteSpace:'nowrap' }}>
+                            {a.tier.replace('GOLD - ', 'GOLD ')}
                           </span>
                         </td>
                         <td style={{ padding:'9px 8px 9px 0' }}>
@@ -947,16 +1015,21 @@ export default function Dashboard({ user, theme, toggleTheme, getToken }) {
             <Panel style={{ marginBottom:12 }}>
               <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:16, flexWrap:'wrap', gap:8 }}>
                 <SectionTitle style={{ margin:0 }}>Activity summary</SectionTitle>
-                <div style={{ display:'flex', gap:8, alignItems:'center' }}>
-                  {/* Me / Team toggle */}
-                  <div style={{ display:'flex', background:'var(--bg-secondary)', borderRadius:'var(--radius)', padding:3, gap:0 }}>
-                    {['me','team'].map(scope => (
-                      <button key={scope} onClick={() => setActivityScope(scope)}
-                        style={{ fontSize:12, fontWeight: activityScope===scope ? 500 : 400, color: activityScope===scope ? 'var(--text)' : 'var(--text-tertiary)', background: activityScope===scope ? 'var(--bg-panel)' : 'transparent', border:'none', borderRadius:'var(--radius)', padding:'4px 12px', cursor:'pointer', textTransform:'capitalize' }}>
-                        {scope === 'me' ? 'Me' : 'Team'}
-                      </button>
+                <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
+                  {/* Rep selector */}
+                  <select value={activityRep} onChange={e => setActivityRep(e.target.value)}
+                    style={{ fontSize:12, color:'var(--text-secondary)', background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius)', padding:'5px 10px', cursor:'pointer', outline:'none' }}>
+                    <option value="all">All reps</option>
+                    {owners.map(o => (
+                      <option key={o.id} value={o.filterValue || o.name}>{o.name}</option>
                     ))}
-                  </div>
+                  </select>
+                  {/* Include owned toggle */}
+                  <label style={{ display:'flex', alignItems:'center', gap:5, fontSize:12, color:'var(--text-secondary)', cursor:'pointer' }}>
+                    <input type="checkbox" checked={activityIncludeOwned} onChange={e => setActivityIncludeOwned(e.target.checked)}
+                      style={{ cursor:'pointer' }} />
+                    Include AE-owned
+                  </label>
                   <Select value={activityDays} onChange={v => setActivityDays(v)} options={ACTIVITY_DAYS_OPTIONS} />
                 </div>
               </div>
@@ -1019,17 +1092,16 @@ export default function Dashboard({ user, theme, toggleTheme, getToken }) {
                       {activityData.meta?.since && ` Since ${shortDate(activityData.meta.since)}.`}
                     </div>
 
-                    {/* Team breakdown (if team scope and data available) */}
-                    {activityScope === 'team' && activityData.byOwner && (
+                    {/* Per-rep breakdown (when all reps selected) */}
+                    {activityRep === 'all' && activityData.byRep && (
                       <div style={{ marginTop:12 }}>
                         <div style={{ fontSize:11, fontWeight:500, letterSpacing:'.06em', textTransform:'uppercase', color:'var(--text-tertiary)', marginBottom:8 }}>By rep</div>
-                        {Object.entries(activityData.byOwner).map(([ownerId, data]) => {
-                          const owner = owners.find(o => o.id === ownerId) || { name: ownerId }
+                        {Object.entries(activityData.byRep).map(([repName, data]) => {
                           const totalOut = Object.values(data.outbound || {}).reduce((a,b) => a+b, 0)
                           const totalIn  = Object.values(data.inbound  || {}).reduce((a,b) => a+b, 0)
                           return (
-                            <div key={ownerId} style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'6px 0', borderBottom:'1px solid var(--border)', fontSize:12 }}>
-                              <span style={{ color:'var(--text-secondary)' }}>{owner.name}</span>
+                            <div key={repName} style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'6px 0', borderBottom:'1px solid var(--border)', fontSize:12 }}>
+                              <span style={{ color:'var(--text-secondary)' }}>{repName}</span>
                               <div style={{ display:'flex', gap:12 }}>
                                 <span style={{ color:'var(--text-tertiary)' }}>↑ {totalOut}</span>
                                 <span style={{ color:'var(--text-tertiary)' }}>↓ {totalIn}</span>
@@ -1144,6 +1216,36 @@ export default function Dashboard({ user, theme, toggleTheme, getToken }) {
             contactSort={contactSort}
             setContactSort={setContactSort}
           />
+        )}
+
+        {/* ── Market Mapper tab ── */}
+        {activeTab === 'map-tool' && (
+          <div style={{ height:'calc(100vh - 52px)', marginTop:'-1.5rem', marginLeft:'-1.5rem', marginRight:'-1.5rem' }}>
+            <iframe
+              src="https://mapping-tool-cc.netlify.app/"
+              title="CarePathIQ Market Mapper"
+              style={{ width:'100%', height:'100%', border:'none', display:'block' }}
+              allow="fullscreen"
+            />
+          </div>
+        )}
+
+        {/* ── CPIQ placeholder tab ── */}
+        {activeTab === 'cpiq' && (
+          <div style={{ display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', height:'calc(100vh - 180px)', gap:16 }}>
+            <div style={{ width:64, height:64, borderRadius:'var(--radius-lg)', background:'var(--bg-panel)', border:'1px solid var(--border)', display:'flex', alignItems:'center', justifyContent:'center' }}>
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="var(--text-tertiary)" strokeWidth="1.5" strokeLinecap="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+            </div>
+            <div style={{ textAlign:'center' }}>
+              <div style={{ fontSize:16, fontWeight:500, color:'var(--text)', marginBottom:6 }}>CPIQ Tool</div>
+              <div style={{ fontSize:13, color:'var(--text-tertiary)', maxWidth:320 }}>
+                This tab will embed the CPIQ tool once it's ready to deploy. Coming soon.
+              </div>
+            </div>
+            <div style={{ fontSize:11, color:'var(--text-tertiary)', background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius)', padding:'6px 14px' }}>
+              In progress — check back once the tool is deployed to Netlify
+            </div>
+          </div>
         )}
       </div>
     </div>
