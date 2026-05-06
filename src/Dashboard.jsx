@@ -985,7 +985,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                 <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
                   <thead>
                     <tr>
-                      {['Company', 'Contacts', 'Tier', 'Signal', 'Last activity'].map(h => (
+                      {['Company', 'Contacts', 'Tier', 'Last sent', 'Best engagement'].map(h => (
                         <th key={h} style={{ textAlign:'left', fontSize:11, fontWeight:500, color:'var(--text-tertiary)', textTransform:'uppercase', letterSpacing:'.04em', padding:'0 8px 8px 0', borderBottom:'1px solid var(--border)' }}>{h}</th>
                       ))}
                     </tr>
@@ -1020,13 +1020,25 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                           </span>
                         </td>
                         <td style={{ padding:'9px 8px 9px 0' }}>
-                          <Badge
-                            label={a.signal?.label || 'No activity'}
-                            type={a.signal?.status === 'replied' ? 'reply' : a.signal?.status === 'clicked' ? 'click' : a.signal?.status === 'opened' ? 'hot' : 'default'}
-                          />
+                          {a.lastSent ? (
+                            <div>
+                              <div style={{ fontSize:12, color:'var(--text)', fontWeight:500 }}>{timeAgo(a.lastSent.date)}</div>
+                              {a.lastSent.subject && <div style={{ fontSize:11, color:'var(--text-tertiary)', maxWidth:160, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{a.lastSent.subject}</div>}
+                              {a.lastSent.contact && <div style={{ fontSize:11, color:'var(--text-tertiary)' }}>to {a.lastSent.contact}</div>}
+                            </div>
+                          ) : <span style={{ color:'var(--text-tertiary)', fontSize:12 }}>—</span>}
                         </td>
-                        <td style={{ padding:'9px 0', color:'var(--text-tertiary)', fontSize:12, whiteSpace:'nowrap' }}>
-                          {a.lastActivityDate ? timeAgo(a.lastActivityDate) : '—'}
+                        <td style={{ padding:'9px 0' }}>
+                          {a.bestEngagement ? (
+                            <div>
+                              <Badge
+                                label={a.bestEngagement.label}
+                                type={a.bestEngagement.type === 'replied' ? 'reply' : a.bestEngagement.type === 'clicked' ? 'click' : 'hot'}
+                              />
+                              <div style={{ fontSize:11, color:'var(--text-tertiary)', marginTop:2 }}>{timeAgo(a.bestEngagement.date)}</div>
+                              <div style={{ fontSize:11, color:'var(--text-tertiary)' }}>{a.bestEngagement.contact}</div>
+                            </div>
+                          ) : <span style={{ color:'var(--text-tertiary)', fontSize:12 }}>No engagement yet</span>}
                         </td>
                       </tr>
                     ))}
