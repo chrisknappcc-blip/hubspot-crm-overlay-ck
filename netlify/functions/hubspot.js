@@ -1093,19 +1093,10 @@ export const handler = async (event, context) => {
           return ok({ accounts: [], meta: { total: 0, byTier: {}, filters: { assigned_bdr: qp.assigned_bdr || null } } });
         }
 
-        // Build domain → company AND name → company maps for contact matching.
-        const domainToCompany = {};
-        const nameToCompany   = {};
-        goldCompanies.forEach(company => {
-          const domain = (company.properties?.domain || "").toLowerCase().trim();
-          const name   = (company.properties?.name   || "").toLowerCase().trim();
-          if (domain) domainToCompany[domain] = company.id;
-          if (name)   nameToCompany[name]     = company.id;
-        });
-
-        // Single contact search -- no per-company association lookups.
-        // Fetch up to 500 contacts sorted by most recent send date.
-        // Match contacts to companies by email domain first, company name text field as fallback.
+        // Fetch contacts via batch associations API.
+        // POST /crm/v3/associations/companies/contacts/batch/read takes up to 100 company IDs
+        // and returns all associated contact IDs -- 1 call instead of 68.
+        // Then one batch contact read for all contact IDs -- 2 total API calls.
         const CONTACT_PROPS = [
           "firstname","lastname","email","jobtitle","company","assigned_bdr",
           "hs_email_last_open_date","hs_email_last_click_date",
@@ -1114,53 +1105,69 @@ export const handler = async (event, context) => {
           "notes_last_contacted",
         ];
 
-        const bdrFilter = qp.assigned_bdr
-          ? [{ propertyName: "assigned_bdr", operator: "EQ", value: decodeURIComponent(qp.assigned_bdr).trim() }]
-          : [{ propertyName: "assigned_bdr", operator: "IN", values: ["Chris Knapp", "Chiara Pate"] }];
+        const bdrFilterValue = qp.assigned_bdr
+          ? decodeURIComponent(qp.assigned_bdr).trim()
+          : null;
 
         const contactsByCompany = {};
         try {
-          // Paginate to get more coverage -- Gold companies can have contacts
-          // across many different email domains
-          let after;
-          let fetched = 0;
-          while (fetched < 500) {
-            const body = {
-              filterGroups: [{ filters: [
-                ...bdrFilter,
-                { propertyName: "hs_email_last_send_date", operator: "HAS_PROPERTY" },
-              ]}],
-              properties: CONTACT_PROPS,
-              sorts:      [{ propertyName: "hs_email_last_send_date", direction: "DESCENDING" }],
-              limit:      100,
-            };
-            if (after) body.after = after;
-            const contactData = await hsPost(user.userId, "/crm/v3/objects/contacts/search", body);
-            const results = contactData.results || [];
+          // Step 1: batch fetch all associations for all Gold companies at once
+          const companyIds = goldCompanies.map(c => c.id);
+          const assocData  = await hsPost(user.userId, "/crm/v3/associations/companies/contacts/batch/read", {
+            inputs: companyIds.map(id => ({ id })),
+          });
 
-            for (const c of results) {
-              const email       = c.properties?.email   || "";
-              const companyName = (c.properties?.company || "").toLowerCase().trim();
-              const domain      = email.includes("@") ? email.split("@")[1].toLowerCase().trim() : "";
+          // Build map: companyId -> [contactId, ...]
+          const companyContactIds = {};
+          for (const result of (assocData.results || [])) {
+            const companyId  = result.from?.id;
+            const contactIds = (result.to || []).map(t => t.id).slice(0, 5);
+            if (companyId && contactIds.length > 0) {
+              companyContactIds[companyId] = contactIds;
+            }
+          }
 
-              // Match by email domain first, company name text field as fallback
-              const companyId = domainToCompany[domain] || nameToCompany[companyName];
-              if (companyId) {
-                if (!contactsByCompany[companyId]) contactsByCompany[companyId] = [];
-                if (contactsByCompany[companyId].length < 5) {
-                  contactsByCompany[companyId].push(c);
-                }
+          // Step 2: collect all unique contact IDs across all companies
+          const allContactIds = [...new Set(Object.values(companyContactIds).flat())];
+          if (allContactIds.length === 0) {
+            console.log("[gold] no associated contacts found");
+          } else {
+            // Step 3: batch read all contacts at once (up to 100 per batch)
+            const allContacts = {};
+            for (let i = 0; i < allContactIds.length; i += 100) {
+              const batchIds = allContactIds.slice(i, i + 100);
+              const batchData = await hsPost(user.userId, "/crm/v3/objects/contacts/batch/read", {
+                properties: CONTACT_PROPS,
+                inputs:     batchIds.map(id => ({ id })),
+              });
+              for (const c of (batchData.results || [])) {
+                allContacts[c.id] = c;
+              }
+              if (i + 100 < allContactIds.length) {
+                await new Promise(r => setTimeout(r, 150));
               }
             }
 
-            fetched += results.length;
-            if (!contactData.paging?.next?.after || results.length < 100) break;
-            after = contactData.paging.next.after;
-            await new Promise(r => setTimeout(r, 150)); // rate limit gap
+            // Assign contacts back to companies, optionally filtering by BDR
+            for (const [companyId, contactIds] of Object.entries(companyContactIds)) {
+              const contacts = contactIds
+                .map(id => allContacts[id])
+                .filter(c => {
+                  if (!c) return false;
+                  if (bdrFilterValue) {
+                    return c.properties?.assigned_bdr === bdrFilterValue;
+                  }
+                  return true; // no BDR filter -- include all contacts
+                });
+              if (contacts.length > 0) {
+                contactsByCompany[companyId] = contacts;
+              }
+            }
+            console.log(`[gold] matched contacts to ${Object.keys(contactsByCompany).length} of ${goldCompanies.length} companies`);
           }
-          console.log(`[gold] matched contacts to ${Object.keys(contactsByCompany).length} of ${goldCompanies.length} companies`);
         } catch (err) {
           console.error("[gold] contact fetch failed:", err.message);
+          // Continue -- companies will show without contact detail
         }
 
         // Extract leading number from tier for numeric sort
