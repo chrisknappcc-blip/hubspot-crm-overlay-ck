@@ -418,7 +418,53 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
       .catch(() => {})
   }, [getToken])
 
-  // Build filter query string
+  // Content Engagement -- contacts with recent clicks, fetched directly (not derived from signals)
+  const [contentEngagement, setContentEngagement] = useState([])
+  const [contentEngagementLoading, setContentEngagementLoading] = useState(false)
+
+  const fetchContentEngagement = useCallback(async () => {
+    setContentEngagementLoading(true)
+    try {
+      // Fetch top 50 contacts by most recent click date, filtered by active BDR
+      const bdrParam = filterBdr ? `&assigned_bdr=${encodeURIComponent(filterBdr)}` : ''
+      const data = await safeFetch(`/api/hubspot/contacts?click_sort=true${bdrParam}`)
+      // contacts endpoint returns all contacts -- filter client-side to those with click dates
+      const clicked = (data.contacts || [])
+        .filter(c => c.properties?.hs_email_last_click_date || c.properties?.hs_sales_email_last_clicked)
+        .sort((a, b) => {
+          const tsA = Math.max(
+            a.properties?.hs_email_last_click_date    ? new Date(a.properties.hs_email_last_click_date).getTime()    : 0,
+            a.properties?.hs_sales_email_last_clicked ? new Date(a.properties.hs_sales_email_last_clicked).getTime() : 0,
+          )
+          const tsB = Math.max(
+            b.properties?.hs_email_last_click_date    ? new Date(b.properties.hs_email_last_click_date).getTime()    : 0,
+            b.properties?.hs_sales_email_last_clicked ? new Date(b.properties.hs_sales_email_last_clicked).getTime() : 0,
+          )
+          return tsB - tsA
+        })
+        .slice(0, 50)
+        .map(c => {
+          const p = c.properties || {}
+          const mktClickTs  = p.hs_email_last_click_date    ? new Date(p.hs_email_last_click_date).getTime()    : 0
+          const salesClickTs= p.hs_sales_email_last_clicked ? new Date(p.hs_sales_email_last_clicked).getTime() : 0
+          const ts = mktClickTs >= salesClickTs ? p.hs_email_last_click_date : p.hs_sales_email_last_clicked
+          return {
+            name:      `${p.firstname||''} ${p.lastname||''}`.trim() || 'Unknown',
+            company:   p.company || '',
+            title:     p.jobtitle || '',
+            action:    'Clicked link',
+            subject:   p.hs_email_last_email_name || '',
+            ts,
+            contactId: c.id,
+          }
+        })
+      setContentEngagement(clicked)
+    } catch (e) {
+      console.error('[contentEngagement]', e)
+    } finally {
+      setContentEngagementLoading(false)
+    }
+  }, [filterBdr, getToken])
   const filterParams = [
     filterBdr       ? `assigned_bdr=${encodeURIComponent(filterBdr)}`             : '',
     filterTerritory ? `territory=${encodeURIComponent(filterTerritory)}`           : '',
@@ -627,15 +673,11 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
     }
   })
 
-  const contentEngagement = signals.filter(s => s.label?.toLowerCase().includes('click')).map(s => ({
-    name:      s.contact?.name || 'Unknown',
-    company:   s.contact?.company || '',
-    title:     s.contact?.title || '',
-    action:    s.label,
-    subject:   cleanSubject(s.subject),
-    ts:        s.timestamp,
-    contactId: s.contactId,
-  }))
+  // Fetch content engagement separately -- derived from contacts with click dates, not from signals
+  useEffect(() => {
+    const t = setTimeout(() => fetchContentEngagement(), 3000) // stagger 3s after mount
+    return () => clearTimeout(t)
+  }, [fetchContentEngagement])
 
   const openHubSpotContact = (contactId, e) => {
     if (e) e.stopPropagation()
@@ -1237,22 +1279,30 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
 
             {/* Content Engagement */}
             <Panel style={{ marginBottom:12 }}>
-              <SectionTitle>Content engagement &mdash; links clicked &amp; documents viewed</SectionTitle>
-              {contentEngagement.length === 0 && !loading && (
-                <div style={{ color:'var(--text-tertiary)', fontSize:13 }}>No link clicks or document views in this time range.</div>
+              <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:8 }}>
+                <SectionTitle style={{ margin:0 }}>Content engagement &mdash; links clicked</SectionTitle>
+                <button onClick={fetchContentEngagement} style={{ fontSize:11, color:'var(--text-tertiary)', background:'none', border:'none', cursor:'pointer', padding:0 }}>
+                  Refresh
+                </button>
+              </div>
+              {contentEngagementLoading && (
+                <div style={{ color:'var(--text-tertiary)', fontSize:13 }}>Loading…</div>
               )}
-              {contentEngagement.length > 0 && (
+              {!contentEngagementLoading && contentEngagement.length === 0 && (
+                <div style={{ color:'var(--text-tertiary)', fontSize:13 }}>No link clicks found for the current filter.</div>
+              )}
+              {!contentEngagementLoading && contentEngagement.length > 0 && (
                 <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
                   <thead>
                     <tr>
-                      {['Contact','Title / Company','Action','Content','Time'].map(h => (
+                      {['Contact','Title / Company','Email','Time'].map(h => (
                         <th key={h} style={{ textAlign:'left', fontSize:11, fontWeight:500, color:'var(--text-tertiary)', textTransform:'uppercase', letterSpacing:'.04em', padding:'0 8px 8px 0', borderBottom:'1px solid var(--border)' }}>{h}</th>
                       ))}
                     </tr>
                   </thead>
                   <tbody>
-                    {contentEngagement.slice(0,10).map((c, i) => (
-                      <tr key={i} style={{ borderBottom: i < Math.min(contentEngagement.length,10)-1 ? '1px solid var(--border)' : 'none' }}>
+                    {contentEngagement.slice(0,15).map((c, i) => (
+                      <tr key={i} style={{ borderBottom: i < Math.min(contentEngagement.length,15)-1 ? '1px solid var(--border)' : 'none' }}>
                         <td style={{ padding:'9px 8px 9px 0' }}>
                           <div style={{ display:'flex', alignItems:'center', gap:6 }}>
                             <span style={{ fontWeight:500, color:'var(--text)' }}>{c.name}</span>
@@ -1266,8 +1316,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                           </div>
                         </td>
                         <td style={{ padding:'9px 8px 9px 0', color:'var(--text-secondary)', fontSize:12 }}>{c.title}{c.company ? ` · ${c.company}` : ''}</td>
-                        <td style={{ padding:'9px 8px 9px 0' }}><Badge label={c.action} type="click" /></td>
-                        <td style={{ padding:'9px 8px 9px 0', color:'var(--text-secondary)', fontSize:12, maxWidth:180, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{c.subject}</td>
+                        <td style={{ padding:'9px 8px 9px 0', color:'var(--text-secondary)', fontSize:12, maxWidth:200, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{c.subject || '—'}</td>
                         <td style={{ padding:'9px 0', color:'var(--text-tertiary)', fontSize:12, whiteSpace:'nowrap' }}>{timeAgo(c.ts)}</td>
                       </tr>
                     ))}
