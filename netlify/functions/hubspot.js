@@ -876,41 +876,82 @@ export const handler = async (event, context) => {
           limit:  200,
         }).catch(() => ({ results: [] }));
 
-        const repliesAwaitingResponse = (repliesData.results || [])
-          .map(c => {
-            const p = c.properties || {};
+        const repliesAwaitingResponse = await (async () => {
+          const candidates = (repliesData.results || [])
+            .map(c => {
+              const p = c.properties || {};
+              const salesReplyTs = p.hs_sales_email_last_replied ? new Date(p.hs_sales_email_last_replied).getTime() : 0;
+              const mktReplyTs   = p.hs_email_last_reply_date    ? new Date(p.hs_email_last_reply_date).getTime()    : 0;
+              const replyTs      = Math.max(salesReplyTs, mktReplyTs);
+              if (replyTs === 0) return null;
+              const replyDate = replyTs === salesReplyTs ? p.hs_sales_email_last_replied : p.hs_email_last_reply_date;
 
-            // Most recent reply across both email types
-            const salesReplyTs = p.hs_sales_email_last_replied ? new Date(p.hs_sales_email_last_replied).getTime() : 0;
-            const mktReplyTs   = p.hs_email_last_reply_date    ? new Date(p.hs_email_last_reply_date).getTime()    : 0;
-            const replyTs      = Math.max(salesReplyTs, mktReplyTs);
-            const replyDate    = replyTs === salesReplyTs
-              ? p.hs_sales_email_last_replied
-              : p.hs_email_last_reply_date;
+              // Use contact-level timestamps as a quick pre-filter only
+              const lastOutboundTs = Math.max(
+                p.hs_last_sales_activity_timestamp ? new Date(p.hs_last_sales_activity_timestamp).getTime() : 0,
+                p.hs_email_last_send_date           ? new Date(p.hs_email_last_send_date).getTime()           : 0,
+              );
+              // Don't pre-filter here -- we'll do a more accurate check via meetings below
+              const info = normalizeContact(c);
+              return {
+                contactId: c.id,
+                contact: info,
+                replyDate,
+                replyTs,
+                lastOutboundTs,
+                waitingHours: Math.round((now - replyTs) / (1000 * 60 * 60)),
+                subject: p.hs_email_last_email_name || null,
+                url: `https://app.hubspot.com/contacts/39921549/record/0-1/${c.id}`,
+              };
+            })
+            .filter(Boolean)
+            .sort((a, b) => b.replyTs - a.replyTs)
+            .slice(0, 30); // check top 30 candidates
 
-            // Most recent outbound activity -- use both activity timestamp and last send date
-            const lastOutboundTs = Math.max(
-              p.hs_last_sales_activity_timestamp ? new Date(p.hs_last_sales_activity_timestamp).getTime() : 0,
-              p.hs_email_last_send_date           ? new Date(p.hs_email_last_send_date).getTime()           : 0,
-            );
+          // For each candidate, check if any meeting/note was logged AFTER their reply
+          // This catches cases where an AE logged activity that didn't update the contact property
+          const filtered = await Promise.all(candidates.map(async (item) => {
+            try {
+              const meetings = await hsPost(user.userId, "/crm/v3/objects/meetings/search", {
+                filterGroups: [{
+                  filters: [
+                    { propertyName: "hs_createdate", operator: "GT", value: new Date(item.replyTs).toISOString() },
+                  ],
+                  associatedWith: [{ objectType: "contacts", operator: "EQUAL", objectIdValues: [item.contactId] }],
+                }],
+                properties: ["hs_meeting_title", "hs_createdate", "hubspot_owner_id"],
+                limit: 1,
+              }).catch(() => ({ results: [] }));
 
-            // Only include if reply is more recent than last outbound
-            if (replyTs <= lastOutboundTs) return null;
+              if ((meetings.results || []).length > 0) return null; // already followed up
 
-            const info = normalizeContact(c);
-            return {
-              contactId:      c.id,
-              contact:        info,
-              replyDate,
-              replySource:    salesReplyTs >= mktReplyTs ? "sales" : "marketing",
-              lastOutboundDate: lastOutboundTs > 0 ? new Date(lastOutboundTs).toISOString() : null,
-              waitingHours:   Math.round((now - replyTs) / (1000 * 60 * 60)),
-              subject:        p.hs_email_last_email_name || null,
-              url: `https://app.hubspot.com/contacts/39921549/record/0-1/${c.id}`,
-            };
-          })
-          .filter(Boolean)
-          .sort((a, b) => new Date(b.replyDate) - new Date(a.replyDate));
+              // Also check notes
+              const notes = await hsPost(user.userId, "/crm/v3/objects/notes/search", {
+                filterGroups: [{
+                  filters: [
+                    { propertyName: "hs_createdate", operator: "GT", value: new Date(item.replyTs).toISOString() },
+                  ],
+                  associatedWith: [{ objectType: "contacts", operator: "EQUAL", objectIdValues: [item.contactId] }],
+                }],
+                properties: ["hs_note_body"],
+                limit: 1,
+              }).catch(() => ({ results: [] }));
+
+              if ((notes.results || []).length > 0) return null; // note logged after reply
+
+              return item;
+            } catch {
+              return item; // include if check fails
+            }
+          }));
+
+          return filtered
+            .filter(Boolean)
+            .map(item => ({
+              ...item,
+              lastOutboundDate: item.lastOutboundTs > 0 ? new Date(item.lastOutboundTs).toISOString() : null,
+            }));
+        })();
 
         // ── Section 2: Upcoming sequences (currently enrolled) ────────────────
         const sequencesData = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
@@ -2394,6 +2435,27 @@ export const handler = async (event, context) => {
           const clickRate = totalReached > 0 ? +((totalClicked / totalReached) * 100).toFixed(1) : 0;
           const replyRate = totalReached > 0 ? +((totalReplied / totalReached) * 100).toFixed(1) : 0;
 
+          // Per-rep breakdown
+          const repData = [];
+          for (const repName of targetReps) {
+            const rf = [{ propertyName: "assigned_bdr", operator: "EQ", value: repName }];
+            const mf = (prop) => [...rf, ...df(prop)];
+            const [rReached, rOpened, rClicked, rReplied] = await Promise.all([
+              count1(mf("hs_email_last_send_date")),
+              count1(mf("hs_email_last_open_date")),
+              count1(mf("hs_email_last_click_date")),
+              count1(mf("hs_email_last_reply_date")),
+            ]);
+            repData.push({
+              rep: repName,
+              reached: rReached, opened: rOpened, clicked: rClicked, replied: rReplied,
+              openRate:  rReached > 0 ? +((rOpened  / rReached) * 100).toFixed(1) : 0,
+              clickRate: rReached > 0 ? +((rClicked / rReached) * 100).toFixed(1) : 0,
+              replyRate: rReached > 0 ? +((rReplied / rReached) * 100).toFixed(1) : 0,
+            });
+            await new Promise(r => setTimeout(r, 200));
+          }
+
           // Campaign breakdown -- paginate through all contacts with email name set
           const byCampaign = {};
           try {
@@ -2433,8 +2495,9 @@ export const handler = async (event, context) => {
           })).sort((a,b) => b.sent - a.sent).slice(0, 30);
 
           return ok({
-            section: "marketing", period,
+            section: "marketing", period, rep: rep || "all",
             totals: { totalReached, totalOpened, totalClicked, totalReplied, openRate, clickRate, replyRate },
+            byRep: repData,
             campaigns,
             links: { dashboard: DASHBOARD, manage: MKT_EMAIL },
           });
@@ -2486,6 +2549,7 @@ export const handler = async (event, context) => {
                "hs_email_last_open_date","hs_email_last_click_date"],
               "hs_latest_sequence_enrolled_date", 500
             );
+            console.log(`[reports sequences] fetched ${seqContacts.length} contacts`);
             for (const c of seqContacts) {
               const p = c.properties || {};
               const seqId = p.hs_latest_sequence_enrolled || "Unknown";
@@ -2495,24 +2559,33 @@ export const handler = async (event, context) => {
               if (p.hs_email_last_open_date)  bySequence[seqId].opened++;
               if (p.hs_email_last_click_date) bySequence[seqId].clicked++;
             }
+            console.log(`[reports sequences] grouped into ${Object.keys(bySequence).length} sequences`);
           } catch (e) { console.error("[reports sequences]", e.message); }
 
-          // Resolve sequence IDs to names via batch lookup
+          // Resolve sequence IDs to names
+          // Try the sequences object API; fall back to showing IDs if unavailable
           const seqIds = [...new Set(Object.keys(bySequence))].filter(id => id !== "Unknown");
           const seqNames = {};
           if (seqIds.length > 0) {
             try {
-              // HubSpot sequences are accessible at /crm/v3/objects/sequences
+              // Try batch read first
               const seqBatch = await hsPost(user.userId, "/crm/v3/objects/sequences/batch/read", {
                 properties: ["hs_name"],
                 inputs: seqIds.slice(0, 50).map(id => ({ id })),
               });
               for (const s of (seqBatch.results || [])) {
-                seqNames[s.id] = s.properties?.hs_name || `Sequence ${s.id}`;
+                seqNames[s.id] = s.properties?.hs_name || null;
               }
             } catch (e) {
-              console.error("[reports] sequence name lookup failed:", e.message);
-              // Fall back to showing IDs
+              console.log("[reports] sequences batch/read not available, trying individual reads");
+              // Fall back: try fetching a few individually
+              for (const id of seqIds.slice(0, 10)) {
+                try {
+                  const s = await hsGet(user.userId, `/crm/v3/objects/sequences/${id}`, { properties: "hs_name" });
+                  if (s.properties?.hs_name) seqNames[id] = s.properties.hs_name;
+                } catch { /* not available */ }
+                await new Promise(r => setTimeout(r, 100));
+              }
             }
           }
 
@@ -2631,7 +2704,8 @@ export const handler = async (event, context) => {
             byPipeline: Object.entries(byPipeline).map(([pipeId, p]) => ({
               ...p,
               pipelineId: pipeId,
-              url: `${DEALS_LIST}?pipeline=${pipeId}`,
+              // HubSpot deal board filtered by pipeline
+              url: `${HS_BASE}/contacts/${PORTAL}/deals/board/view/${pipeId}`,
             })).sort((a,b)=>b.count-a.count),
             byStage:    Object.values(byStage).sort((a,b)=>b.count-a.count),
             lostReasons: Object.entries(lostReasons).map(([reason,count])=>({reason,count})).sort((a,b)=>b.count-a.count),
