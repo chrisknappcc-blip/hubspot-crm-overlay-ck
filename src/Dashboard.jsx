@@ -400,6 +400,8 @@ export default function Dashboard({ user, theme, toggleTheme, getToken }) {
       setBotSignals(sigData.suspectedBotSignals || [])
       setContacts(contactData.contacts || [])
       setSignalsHasMore(sigData.meta?.hasMore || false)
+      // Debug: log signals meta so we can diagnose filter issues in browser console
+      console.log('[signals] meta:', sigData.meta)
 
       // Fire tier-2 fetch in the background if more results exist
       if (sigData.meta?.hasMore) {
