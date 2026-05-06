@@ -69,8 +69,8 @@ const BASE_CONTACT_PROPS = [
   "firstname", "lastname", "email", "company", "jobtitle", "phone",
   "hs_lead_status", "lifecyclestage", "hubspot_owner_id",
   "notes_last_contacted", "num_contacted_notes",
-  "hs_last_email_activity_date",
-  "hs_last_sales_activity_date",
+  "hs_last_sales_activity_timestamp",
+  "hs_last_sales_activity_timestamp",
   // Marketing email timestamps (hs_email_* prefix)
   "hs_email_last_open_date",
   "hs_email_last_click_date",
@@ -212,8 +212,8 @@ function normalizeContact(c) {
     territory:           p.territory || "",
     // priorityTier lives on Company object, not contact -- omitted here
     // Marketing email timestamps (hs_email_* -- marketing hub sends)
-    lastEmailActivityDate: p.hs_last_email_activity_date || null,
-    lastSalesActivityDate: p.hs_last_sales_activity_date || null,
+    lastEmailActivityDate: p.hs_last_sales_activity_timestamp || null,
+    lastSalesActivityDate: p.hs_last_sales_activity_timestamp || null,
     lastOpenDate:          p.hs_email_last_open_date     || null,
     lastClickDate:         p.hs_email_last_click_date    || null,
     lastReplyDate:         p.hs_email_last_reply_date    || null,
@@ -821,8 +821,8 @@ export const handler = async (event, context) => {
     //
     //   1. repliesAwaitingResponse -- contacts who replied to any email within the
     //      day window but have had no outbound activity logged since that reply.
-    //      Detection: hs_sales_email_last_replied > hs_last_sales_activity_date
-    //               OR hs_email_last_reply_date   > hs_last_email_activity_date
+    //      Detection: hs_sales_email_last_replied > hs_last_sales_activity_timestamp
+    //               OR hs_email_last_reply_date   > hs_last_sales_activity_timestamp
     //      Filterable by assigned_bdr so each rep sees their own queue.
     //
     //   2. upcomingSequences -- contacts currently enrolled in a sequence
@@ -869,8 +869,8 @@ export const handler = async (event, context) => {
             ...BASE_CONTACT_PROPS,
             "hs_sales_email_last_replied",
             "hs_email_last_reply_date",
-            "hs_last_sales_activity_date",
-            "hs_last_email_activity_date",
+            "hs_last_sales_activity_timestamp",
+            "hs_last_sales_activity_timestamp",
           ],
           sorts:  [{ propertyName: "hs_sales_email_last_replied", direction: "DESCENDING" }],
           limit:  200,
@@ -890,8 +890,8 @@ export const handler = async (event, context) => {
 
             // Most recent outbound activity
             const lastOutboundTs = Math.max(
-              p.hs_last_sales_activity_date  ? new Date(p.hs_last_sales_activity_date).getTime()  : 0,
-              p.hs_last_email_activity_date  ? new Date(p.hs_last_email_activity_date).getTime()  : 0,
+              p.hs_last_sales_activity_timestamp  ? new Date(p.hs_last_sales_activity_timestamp).getTime()  : 0,
+              p.hs_last_sales_activity_timestamp  ? new Date(p.hs_last_sales_activity_timestamp).getTime()  : 0,
             );
 
             // Only include if reply is more recent than last outbound
@@ -1077,7 +1077,7 @@ export const handler = async (event, context) => {
             properties: [
               "name", "domain", "industry", "assigned_bdr", "territory",
               "priority_tier__bdr", "target_account__bdr_led_outreach",
-              "notes_last_contacted", "hs_last_sales_activity_date",
+              "notes_last_contacted", "hs_last_sales_activity_timestamp",
             ],
             sorts:  [{ propertyName: "priority_tier__bdr", direction: "ASCENDING" }],
             limit:  100,
@@ -1093,43 +1093,57 @@ export const handler = async (event, context) => {
           return ok({ accounts: [], meta: { total: 0, byTier: {}, filters: { assigned_bdr: qp.assigned_bdr || null } } });
         }
 
-        // Only fetch contact details when a BDR filter is set.
-        // Without a filter we'd need to fetch contacts for all 68 companies (68+ API calls)
-        // which reliably hits the Netlify 26s timeout. Company-level data loads instantly.
-        const hasBdrFilter = !!qp.assigned_bdr;
+        // Build domain → company map for fast contact matching.
+        // Contacts have email addresses with the company domain embedded,
+        // so we can match contacts to companies without per-company association lookups.
+        const domainToCompany = {};
+        goldCompanies.forEach(company => {
+          const domain = (company.properties?.domain || "").toLowerCase().trim();
+          if (domain) domainToCompany[domain] = company.id;
+        });
+
+        // Single contact search across all BDRs -- no per-company association lookups.
+        // Fetch up to 200 contacts sorted by most recent send date so we get the most active.
         const CONTACT_PROPS = [
-          "firstname","lastname","email","jobtitle",
+          "firstname","lastname","email","jobtitle","company","assigned_bdr",
           "hs_email_last_open_date","hs_email_last_click_date",
           "hs_email_last_reply_date","hs_email_last_send_date","hs_email_last_email_name",
           "hs_sales_email_last_opened","hs_sales_email_last_clicked","hs_sales_email_last_replied",
-          "notes_last_contacted","assigned_bdr",
+          "notes_last_contacted",
         ];
 
-        const contactsByCompany = {};
-        if (hasBdrFilter) {
-          const batchSize = 10;
-          for (let i = 0; i < goldCompanies.length; i += batchSize) {
-            const batch = goldCompanies.slice(i, i + batchSize);
-            await Promise.all(batch.map(async (company) => {
-              try {
-                const assoc = await hsGet(
-                  user.userId,
-                  `/crm/v3/objects/companies/${company.id}/associations/contacts`,
-                  { limit: 5 }
-                );
-                const contactIds = (assoc.results || []).map(r => r.id).slice(0, 5);
-                if (contactIds.length === 0) { contactsByCompany[company.id] = []; return; }
+        const bdrFilter = qp.assigned_bdr
+          ? [{ propertyName: "assigned_bdr", operator: "EQ", value: decodeURIComponent(qp.assigned_bdr).trim() }]
+          : [{ propertyName: "assigned_bdr", operator: "IN", values: ["Chris Knapp", "Chiara Pate"] }];
 
-                const batchRead = await hsPost(user.userId, "/crm/v3/objects/contacts/batch/read", {
-                  properties: CONTACT_PROPS,
-                  inputs:     contactIds.map(id => ({ id })),
-                });
-                contactsByCompany[company.id] = batchRead.results || [];
-              } catch {
-                contactsByCompany[company.id] = [];
+        const contactsByCompany = {};
+        try {
+          const contactData = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
+            filterGroups: [{ filters: [
+              ...bdrFilter,
+              { propertyName: "hs_email_last_send_date", operator: "HAS_PROPERTY" },
+            ]}],
+            properties: CONTACT_PROPS,
+            sorts:      [{ propertyName: "hs_email_last_send_date", direction: "DESCENDING" }],
+            limit:      200,
+          });
+
+          // Match contacts to companies by email domain
+          for (const c of (contactData.results || [])) {
+            const email  = c.properties?.email || "";
+            const domain = email.includes("@") ? email.split("@")[1].toLowerCase().trim() : "";
+            // Also try the company name field as a fallback
+            const companyId = domainToCompany[domain];
+            if (companyId) {
+              if (!contactsByCompany[companyId]) contactsByCompany[companyId] = [];
+              if (contactsByCompany[companyId].length < 5) {
+                contactsByCompany[companyId].push(c);
               }
-            }));
+            }
           }
+        } catch (err) {
+          console.error("[gold] contact fetch failed:", err.message);
+          // Continue -- companies will show without contact detail
         }
 
         // Extract leading number from tier for numeric sort
@@ -1212,7 +1226,7 @@ export const handler = async (event, context) => {
 
           const allDates = [
             p.notes_last_contacted,
-            p.hs_last_sales_activity_date,
+            p.hs_last_sales_activity_timestamp,
             lastSentTs > 0 ? new Date(lastSentTs).toISOString() : null,
             bestEngagement?.date,
           ].filter(Boolean).map(d => new Date(d).getTime());
@@ -1380,7 +1394,7 @@ export const handler = async (event, context) => {
         const repResults = [];
         for (const repName of targetReps) {
           const [emailsSent, sequencesStarted, replies, clicks, opens] = await Promise.all([
-            countEitherByBdr("hs_email_last_send_date", "hs_last_email_activity_date", repName),
+            countEitherByBdr("hs_email_last_send_date", "hs_last_sales_activity_timestamp", repName),
             countByBdr("hs_latest_sequence_enrolled_date", repName),
             countEitherByBdr("hs_email_last_reply_date", "hs_sales_email_last_replied", repName),
             countEitherByBdr("hs_email_last_click_date", "hs_sales_email_last_clicked", repName),
@@ -1639,18 +1653,17 @@ export const handler = async (event, context) => {
 
       // Build filter groups -- use OR logic across multiple date properties
       // so we catch contacts active via marketing emails, sequences, AND 1:1 sales emails.
-      // HubSpot sequences update hs_last_sales_activity_date, not hs_last_email_activity_date.
+      // HubSpot sequences update hs_last_sales_activity_timestamp, not hs_last_sales_activity_timestamp.
       // Marketing emails update hs_email_last_send_date.
       // Sales / 1:1 emails update hs_sales_email_last_opened / clicked / replied.
       // We run one search per date property and merge results.
       const customFilters = buildCustomFilters(qp);
 
       const activityDateProps = [
-        "hs_last_email_activity_date",    // 1:1 sales emails, general activity
         "hs_email_last_send_date",         // marketing + sequence sends
-        "hs_email_last_open_date",         // marketing email opens -- KEY for today's activity
+        "hs_email_last_open_date",         // marketing email opens
         "hs_email_last_click_date",        // marketing email clicks
-        "hs_last_sales_activity_date",     // sequence steps, calls, meetings
+        "hs_last_sales_activity_timestamp",// sequence steps, calls, meetings (valid property)
         "hs_sales_email_last_opened",      // 1:1 sales email opens
         "hs_sales_email_last_replied",     // 1:1 sales email replies
       ];
@@ -1694,18 +1707,18 @@ export const handler = async (event, context) => {
       // Sort merged results by most recent activity across all date props
       allContactResults.sort((a, b) => {
         const dateA = Math.max(
-          new Date(a.properties?.hs_last_email_activity_date  || 0).getTime(),
-          new Date(a.properties?.hs_email_last_send_date      || 0).getTime(),
-          new Date(a.properties?.hs_last_sales_activity_date  || 0).getTime(),
-          new Date(a.properties?.hs_sales_email_last_opened   || 0).getTime(),
-          new Date(a.properties?.hs_sales_email_last_replied  || 0).getTime(),
+          new Date(a.properties?.hs_email_last_send_date           || 0).getTime(),
+          new Date(a.properties?.hs_email_last_open_date           || 0).getTime(),
+          new Date(a.properties?.hs_last_sales_activity_timestamp  || 0).getTime(),
+          new Date(a.properties?.hs_sales_email_last_opened        || 0).getTime(),
+          new Date(a.properties?.hs_sales_email_last_replied       || 0).getTime(),
         );
         const dateB = Math.max(
-          new Date(b.properties?.hs_last_email_activity_date  || 0).getTime(),
-          new Date(b.properties?.hs_email_last_send_date      || 0).getTime(),
-          new Date(b.properties?.hs_last_sales_activity_date  || 0).getTime(),
-          new Date(b.properties?.hs_sales_email_last_opened   || 0).getTime(),
-          new Date(b.properties?.hs_sales_email_last_replied  || 0).getTime(),
+          new Date(b.properties?.hs_email_last_send_date           || 0).getTime(),
+          new Date(b.properties?.hs_email_last_open_date           || 0).getTime(),
+          new Date(b.properties?.hs_last_sales_activity_timestamp  || 0).getTime(),
+          new Date(b.properties?.hs_sales_email_last_opened        || 0).getTime(),
+          new Date(b.properties?.hs_sales_email_last_replied       || 0).getTime(),
         );
         return dateB - dateA;
       });
@@ -1824,7 +1837,7 @@ export const handler = async (event, context) => {
       }).filter(Boolean);
 
       // Supplement with engagements not already covered by contact search
-      // (e.g. calls, meetings, notes which don't affect hs_last_email_activity_date)
+      // (e.g. calls, meetings, notes which don't affect hs_last_sales_activity_timestamp)
       const existingIds = new Set(contactSignals.map(s => s.contactId));
 
       const engItems = (engData.results || [])
