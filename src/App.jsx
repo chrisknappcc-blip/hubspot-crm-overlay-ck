@@ -9,6 +9,8 @@ export default function App() {
   const [theme, setTheme] = useState(() => localStorage.getItem('crm-theme') || 'light')
   const [hsConnected, setHsConnected] = useState(false)
   const [checkingConnection, setCheckingConnection] = useState(true)
+  const [needsReconnect, setNeedsReconnect] = useState(false)
+  const [reconnectReason, setReconnectReason] = useState(null)
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme)
@@ -24,6 +26,12 @@ export default function App() {
       .catch(() => setHsConnected(false))
       .finally(() => setCheckingConnection(false))
   }, [isSignedIn, getToken])
+
+  // Called by Dashboard when any HubSpot API call returns 403 MISSING_SCOPES
+  const onScopeError = (message) => {
+    setNeedsReconnect(true)
+    setReconnectReason(message || 'New permissions are required. Please reconnect HubSpot to continue.')
+  }
 
   if (!isLoaded) return <LoadingScreen />
 
@@ -41,10 +49,11 @@ export default function App() {
 
   if (checkingConnection) return <LoadingScreen />
 
-  if (!hsConnected) return (
+  if (!hsConnected || needsReconnect) return (
     <ConnectHubSpot
       getToken={getToken}
-      onConnected={() => setHsConnected(true)}
+      onConnected={() => { setHsConnected(true); setNeedsReconnect(false); setReconnectReason(null) }}
+      reconnectReason={reconnectReason}
     />
   )
 
@@ -54,6 +63,7 @@ export default function App() {
       theme={theme}
       toggleTheme={toggleTheme}
       getToken={getToken}
+      onScopeError={onScopeError}
     />
   )
 }
@@ -70,9 +80,10 @@ function LoadingScreen() {
   )
 }
 
-function ConnectHubSpot({ getToken, onConnected }) {
+function ConnectHubSpot({ getToken, onConnected, reconnectReason }) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
+  const isReconnect = !!reconnectReason
 
   const handleConnect = async () => {
     setLoading(true)
@@ -94,28 +105,53 @@ function ConnectHubSpot({ getToken, onConnected }) {
 
   return (
     <div style={{ display:'flex', alignItems:'center', justifyContent:'center', minHeight:'100vh', background:'var(--bg)' }}>
-      <div style={{ background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius-lg)', padding:'2.5rem', maxWidth:400, width:'100%', textAlign:'center' }}>
-        <div style={{ width:48, height:48, background:'var(--accent-light)', borderRadius:'50%', display:'flex', alignItems:'center', justifyContent:'center', margin:'0 auto 1.5rem' }}>
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/>
-            <path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/>
-          </svg>
+      <div style={{ background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius-lg)', padding:'2.5rem', maxWidth:420, width:'100%', textAlign:'center' }}>
+
+        <div style={{ width:48, height:48, background: isReconnect ? 'var(--amber-light)' : 'var(--accent-light)', borderRadius:'50%', display:'flex', alignItems:'center', justifyContent:'center', margin:'0 auto 1.5rem' }}>
+          {isReconnect
+            ? <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--amber)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+            : <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/></svg>
+          }
         </div>
-        <h2 style={{ fontSize:18, fontWeight:500, marginBottom:8, color:'var(--text)' }}>Connect HubSpot</h2>
-        <p style={{ fontSize:13, color:'var(--text-secondary)', marginBottom:'1.5rem', lineHeight:1.6 }}>
-          Authorize CarePathIQ to read your contacts, signals, and activity feed from HubSpot.
-        </p>
+
+        <h2 style={{ fontSize:18, fontWeight:500, marginBottom:8, color:'var(--text)' }}>
+          {isReconnect ? 'Reconnect HubSpot' : 'Connect HubSpot'}
+        </h2>
+
+        {isReconnect ? (
+          <>
+            <div style={{ fontSize:13, color:'var(--amber)', background:'var(--amber-light)', borderRadius:'var(--radius)', padding:'10px 14px', marginBottom:'1rem', lineHeight:1.5, textAlign:'left' }}>
+              <strong>New permissions required</strong><br />
+              {reconnectReason}
+            </div>
+            <p style={{ fontSize:13, color:'var(--text-secondary)', marginBottom:'1.5rem', lineHeight:1.6 }}>
+              Click below to re-authorize CarePathIQ with HubSpot. You'll be taken to HubSpot's permissions screen — just approve and you'll be brought right back.
+            </p>
+          </>
+        ) : (
+          <p style={{ fontSize:13, color:'var(--text-secondary)', marginBottom:'1.5rem', lineHeight:1.6 }}>
+            Authorize CarePathIQ to read your contacts, signals, and activity feed from HubSpot.
+          </p>
+        )}
+
         {error && (
           <div style={{ fontSize:12, color:'var(--red)', background:'var(--red-light)', borderRadius:'var(--radius)', padding:'8px 12px', marginBottom:'1rem' }}>
             {error}
           </div>
         )}
+
         <button
           onClick={handleConnect}
           disabled={loading}
           style={{ background:'var(--accent)', color:'#fff', border:'none', borderRadius:'var(--radius)', padding:'10px 24px', fontSize:14, fontWeight:500, cursor: loading ? 'not-allowed' : 'pointer', width:'100%', opacity: loading ? 0.7 : 1 }}>
-          {loading ? 'Connecting...' : 'Connect HubSpot'}
+          {loading ? 'Connecting...' : isReconnect ? 'Reconnect HubSpot' : 'Connect HubSpot'}
         </button>
+
+        {isReconnect && (
+          <div style={{ marginTop:12, fontSize:12, color:'var(--text-tertiary)' }}>
+            This only takes a few seconds and won't affect your existing data.
+          </div>
+        )}
       </div>
     </div>
   )
