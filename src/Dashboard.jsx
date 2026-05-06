@@ -386,7 +386,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
 
   // Load owners once on mount
   useEffect(() => {
-    safeFetch('/api/hubspot/owners', getToken)
+    safeFetch('/api/hubspot/owners')
       .then(d => setOwners(d.owners || []))
       .catch(() => {})
   }, [getToken])
@@ -405,23 +405,25 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
     setSignals([])
     try {
       const params = `hours=${dateRange}&showBots=true&offset=0${filterParams ? '&' + filterParams : ''}`
-      const [sigData, contactData] = await Promise.all([
-        safeFetch(`/api/hubspot/signals?${params}`, getToken),
-        safeFetch(`/api/hubspot/contacts${filterParams ? '?' + filterParams : ''}`, getToken),
-      ])
+      // Fetch signals first -- this fires 7 sequential HubSpot searches internally
+      const sigData = await safeFetch(`/api/hubspot/signals?${params}`)
       const sigs = sigData.signals || []
       setSignals(sigs)
       setBotSignals(sigData.suspectedBotSignals || [])
-      setContacts(contactData.contacts || [])
       setSignalsHasMore(sigData.meta?.hasMore || false)
-      // Debug: log signals meta so we can diagnose filter issues in browser console
       console.log('[signals] meta:', sigData.meta)
 
-      // Fire tier-2 fetch in the background if more results exist
+      // Fetch contacts after signals completes to avoid rate limiting
+      try {
+        const contactData = await safeFetch(`/api/hubspot/contacts${filterParams ? '?' + filterParams : ''}`)
+        setContacts(contactData.contacts || [])
+      } catch (ce) { console.error('[contacts]', ce) }
+
+      // Fire tier-2 background fetch if more results exist
       if (sigData.meta?.hasMore) {
         const nextOffset = sigData.meta?.nextOffset || 100
         setLoadingMore(true)
-        safeFetch(`/api/hubspot/signals?hours=${dateRange}&showBots=true&offset=${nextOffset}${filterParams ? '&' + filterParams : ''}`, getToken)
+        safeFetch(`/api/hubspot/signals?hours=${dateRange}&showBots=true&offset=${nextOffset}${filterParams ? '&' + filterParams : ''}`)
           .then(more => {
             setSignals(prev => {
               const existingIds = new Set(prev.map(s => s.id))
@@ -450,7 +452,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
     setTaskLoading(true)
     try {
       const params = `days=${taskDays}${filterBdr ? `&assigned_bdr=${encodeURIComponent(filterBdr)}` : ''}`
-      const data = await safeFetch(`/api/hubspot/tasks?${params}`, getToken)
+      const data = await safeFetch(`/api/hubspot/tasks?${params}`)
       setTaskData({
         repliesAwaitingResponse: data.repliesAwaitingResponse || [],
         upcomingSequences:       data.upcomingSequences       || [],
@@ -469,7 +471,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
     setGoldLoading(true)
     try {
       const params = filterBdr ? `assigned_bdr=${encodeURIComponent(filterBdr)}` : ''
-      const data = await safeFetch(`/api/hubspot/gold${params ? '?' + params : ''}`, getToken)
+      const data = await safeFetch(`/api/hubspot/gold${params ? '?' + params : ''}`)
       setGoldAccounts(data.accounts || [])
     } catch (e) {
       console.error('[gold]', e)
@@ -487,7 +489,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
         activityRep !== 'all' ? `rep=${encodeURIComponent(activityRep)}` : 'rep=all',
         activityIncludeOwned ? 'include_owned=true' : '',
       ].filter(Boolean).join('&')
-      const data = await safeFetch(`/api/hubspot/activity?${params}`, getToken)
+      const data = await safeFetch(`/api/hubspot/activity?${params}`)
       setActivityData(data)
     } catch (e) {
       console.error('[activity]', e)
@@ -545,7 +547,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
 
   const loadContactFeed = useCallback(async (contactId) => {
     try {
-      const data = await safeFetch(`/api/hubspot/feed/${contactId}`, getToken)
+      const data = await safeFetch(`/api/hubspot/feed/${contactId}`)
       setFeed(data.feed || [])
     } catch { setFeed([]) }
   }, [getToken])
