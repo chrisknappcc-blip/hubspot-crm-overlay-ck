@@ -359,6 +359,10 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
   const [lastPollTime, setLastPollTime]       = useState(null)
   const pollIntervalRef                       = useRef(null)
 
+  // Dynamic tabs from registry
+  const [dynamicTabs, setDynamicTabs]         = useState([])
+  const [isAdmin, setIsAdmin]                 = useState(false)
+
   // UI
   const [activeTab, setActiveTab]         = useState('dashboard')
   const [selectedContact, setSelectedContact] = useState(null)
@@ -388,6 +392,13 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
   useEffect(() => {
     safeFetch('/api/hubspot/owners')
       .then(d => setOwners(d.owners || []))
+      .catch(() => {})
+  }, [getToken])
+
+  // Load dynamic tabs on mount
+  useEffect(() => {
+    safeFetch('/api/hubspot/tabs')
+      .then(d => { setDynamicTabs(d.tabs || []); setIsAdmin(d.isAdmin || false) })
       .catch(() => {})
   }, [getToken])
 
@@ -647,19 +658,23 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
           { key:'dashboard', label:'Dashboard' },
           { key:'contacts',  label:'Contacts' },
           { key:'map-tool',  label:'Market Mapper' },
-          { key:'cpiq',      label:'CPIQ' },
+          { key:'cpiq',      label:'CPIQ', badge:'SOON' },
+          // Dynamic tabs from registry
+          ...dynamicTabs.map(t => ({ key:`dyn-${t.id}`, label:t.label, badge:t.badge, url:t.url })),
+          // Add App tab (admin only)
+          ...(isAdmin ? [{ key:'add-app', label:'+ Add App', isAddApp:true }] : []),
         ].map(tab => (
           <button key={tab.key} onClick={() => { setActiveTab(tab.key); if (tab.key === 'dashboard') setNewSignalCount(0) }}
-            style={{ fontSize:13, fontWeight:activeTab===tab.key?500:400, color:activeTab===tab.key?'var(--text)':'var(--text-secondary)', padding:'0 2px', height:52, background:'none', border:'none', borderBottom:activeTab===tab.key?'2px solid var(--accent)':'2px solid transparent', cursor:'pointer', display:'flex', alignItems:'center', gap:6 }}>
+            style={{ fontSize:13, fontWeight:activeTab===tab.key?500:400, color: tab.isAddApp ? 'var(--text-tertiary)' : activeTab===tab.key?'var(--text)':'var(--text-secondary)', padding:'0 2px', height:52, background:'none', border:'none', borderBottom:activeTab===tab.key?'2px solid var(--accent)':'2px solid transparent', cursor:'pointer', display:'flex', alignItems:'center', gap:6 }}>
             {tab.label}
             {tab.key === 'dashboard' && newSignalCount > 0 && (
               <span style={{ fontSize:10, fontWeight:600, background:'var(--red)', color:'#fff', borderRadius:10, padding:'1px 6px', minWidth:16, textAlign:'center' }}>
                 {newSignalCount}
               </span>
             )}
-            {tab.key === 'cpiq' && (
+            {tab.badge && (
               <span style={{ fontSize:9, fontWeight:600, background:'var(--amber-light)', color:'var(--amber)', borderRadius:4, padding:'1px 5px', letterSpacing:'.03em' }}>
-                SOON
+                {tab.badge}
               </span>
             )}
           </button>
@@ -1284,7 +1299,187 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
             </div>
           </div>
         )}
+
+        {/* ── Dynamic tabs (from registry) ── */}
+        {dynamicTabs.map(tab => activeTab === `dyn-${tab.id}` && (
+          <div key={tab.id} style={{ height:'calc(100vh - 52px)', marginTop:'-1.5rem', marginLeft:'-1.5rem', marginRight:'-1.5rem' }}>
+            <iframe
+              src={tab.url}
+              title={tab.label}
+              style={{ width:'100%', height:'100%', border:'none', display:'block' }}
+              allow="fullscreen"
+            />
+          </div>
+        ))}
+
+        {/* ── Add App tab ── */}
+        {activeTab === 'add-app' && isAdmin && (
+          <AddAppTab
+            getToken={getToken}
+            safeFetch={safeFetch}
+            onSaved={(newTab) => {
+              setDynamicTabs(prev => {
+                const existing = prev.findIndex(t => t.id === newTab.id)
+                if (existing >= 0) {
+                  const updated = [...prev]
+                  updated[existing] = newTab
+                  return updated
+                }
+                return [...prev, newTab]
+              })
+              setActiveTab(`dyn-${newTab.id}`)
+            }}
+            existingTabs={dynamicTabs}
+            onDelete={(tabId) => {
+              setDynamicTabs(prev => prev.filter(t => t.id !== tabId))
+              setActiveTab('dashboard')
+            }}
+          />
+        )}
       </div>
+    </div>
+  )
+}
+
+// ─── Add App tab ──────────────────────────────────────────────────────────────
+function AddAppTab({ safeFetch, onSaved, existingTabs, onDelete }) {
+  const [url, setUrl]               = useState('')
+  const [label, setLabel]           = useState('')
+  const [badge, setBadge]           = useState('')
+  const [previewing, setPreviewing] = useState(false)
+  const [saving, setSaving]         = useState(false)
+  const [message, setMessage]       = useState(null)
+  const [deleteConfirm, setDeleteConfirm] = useState(null)
+
+  const handleUrlBlur = async () => {
+    if (!url.trim() || label) return
+    setPreviewing(true)
+    try {
+      const data = await safeFetch(`/api/hubspot/tabs/preview?url=${encodeURIComponent(url.trim())}`)
+      if (data.suggestedLabel) setLabel(data.suggestedLabel)
+    } catch { /* silent */ }
+    finally { setPreviewing(false) }
+  }
+
+  const handleSave = async () => {
+    if (!url.trim() || !label.trim()) {
+      setMessage({ type:'error', text:'URL and name are both required.' })
+      return
+    }
+    setSaving(true)
+    setMessage(null)
+    try {
+      const data = await safeFetch('/api/hubspot/tabs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: url.trim(), label: label.trim(), badge: badge.trim() || null }),
+      })
+      onSaved(data.tab)
+      setUrl('')
+      setLabel('')
+      setBadge('')
+      setMessage({ type:'success', text:`"${data.tab.label}" added. Taking you there now.` })
+    } catch (err) {
+      setMessage({ type:'error', text: err.message || 'Something went wrong.' })
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleDelete = async (tabId, tabLabel) => {
+    if (deleteConfirm !== tabId) { setDeleteConfirm(tabId); return; }
+    try {
+      await safeFetch(`/api/hubspot/tabs/${tabId}`, { method: 'DELETE' })
+      onDelete(tabId)
+      setDeleteConfirm(null)
+    } catch (err) {
+      setMessage({ type:'error', text: err.message || 'Delete failed.' })
+      setDeleteConfirm(null)
+    }
+  }
+
+  return (
+    <div style={{ maxWidth:560, margin:'0 auto', paddingTop:'2rem' }}>
+      <div style={{ marginBottom:'2rem' }}>
+        <h2 style={{ fontSize:18, fontWeight:500, color:'var(--text)', marginBottom:6 }}>Add an app</h2>
+        <p style={{ fontSize:13, color:'var(--text-secondary)', lineHeight:1.6 }}>
+          Paste any URL and it'll appear as a tab. The name is auto-detected from the page — just confirm or change it.
+        </p>
+      </div>
+
+      <Panel>
+        <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
+          <div>
+            <label style={{ fontSize:12, fontWeight:500, color:'var(--text-secondary)', display:'block', marginBottom:5 }}>App URL</label>
+            <input
+              value={url}
+              onChange={e => setUrl(e.target.value)}
+              onBlur={handleUrlBlur}
+              placeholder="https://your-app.netlify.app/"
+              style={{ width:'100%', background:'var(--bg-secondary)', border:'1px solid var(--border)', borderRadius:'var(--radius)', padding:'9px 12px', fontSize:13, color:'var(--text)', outline:'none', boxSizing:'border-box' }}
+            />
+          </div>
+
+          <div>
+            <label style={{ fontSize:12, fontWeight:500, color:'var(--text-secondary)', display:'block', marginBottom:5 }}>
+              Tab name {previewing && <span style={{ color:'var(--text-tertiary)', fontWeight:400 }}>— detecting…</span>}
+            </label>
+            <input
+              value={label}
+              onChange={e => setLabel(e.target.value)}
+              placeholder="Auto-detected from the page, or type your own"
+              style={{ width:'100%', background:'var(--bg-secondary)', border:'1px solid var(--border)', borderRadius:'var(--radius)', padding:'9px 12px', fontSize:13, color:'var(--text)', outline:'none', boxSizing:'border-box' }}
+            />
+          </div>
+
+          <div>
+            <label style={{ fontSize:12, fontWeight:500, color:'var(--text-secondary)', display:'block', marginBottom:5 }}>
+              Badge <span style={{ fontWeight:400, color:'var(--text-tertiary)' }}>(optional — e.g. BETA, NEW, SOON)</span>
+            </label>
+            <input
+              value={badge}
+              onChange={e => setBadge(e.target.value.toUpperCase().slice(0,8))}
+              placeholder="BETA"
+              style={{ width:120, background:'var(--bg-secondary)', border:'1px solid var(--border)', borderRadius:'var(--radius)', padding:'9px 12px', fontSize:13, color:'var(--text)', outline:'none' }}
+            />
+          </div>
+
+          {message && (
+            <div style={{ fontSize:12, padding:'8px 12px', borderRadius:'var(--radius)', background: message.type === 'error' ? 'var(--red-light)' : 'var(--accent-light)', color: message.type === 'error' ? 'var(--red)' : 'var(--accent-text)' }}>
+              {message.text}
+            </div>
+          )}
+
+          <button onClick={handleSave} disabled={saving || !url.trim() || !label.trim()}
+            style={{ background:'var(--accent)', color:'#fff', border:'none', borderRadius:'var(--radius)', padding:'10px 20px', fontSize:13, fontWeight:500, cursor: saving || !url.trim() || !label.trim() ? 'not-allowed' : 'pointer', opacity: saving || !url.trim() || !label.trim() ? 0.6 : 1, alignSelf:'flex-start' }}>
+            {saving ? 'Saving…' : 'Add tab'}
+          </button>
+        </div>
+      </Panel>
+
+      {existingTabs.length > 0 && (
+        <div style={{ marginTop:'2rem' }}>
+          <SectionTitle>Existing custom tabs</SectionTitle>
+          <Panel>
+            {existingTabs.map((tab, i) => (
+              <div key={tab.id} style={{ display:'flex', alignItems:'center', gap:12, padding:'10px 0', borderBottom: i < existingTabs.length - 1 ? '1px solid var(--border)' : 'none' }}>
+                <div style={{ flex:1, minWidth:0 }}>
+                  <div style={{ fontSize:13, fontWeight:500, color:'var(--text)', display:'flex', alignItems:'center', gap:6 }}>
+                    {tab.label}
+                    {tab.badge && <span style={{ fontSize:9, fontWeight:600, background:'var(--amber-light)', color:'var(--amber)', borderRadius:4, padding:'1px 5px' }}>{tab.badge}</span>}
+                  </div>
+                  <div style={{ fontSize:11, color:'var(--text-tertiary)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{tab.url}</div>
+                </div>
+                <button
+                  onClick={() => handleDelete(tab.id, tab.label)}
+                  style={{ fontSize:12, color: deleteConfirm === tab.id ? 'var(--red)' : 'var(--text-tertiary)', background:'none', border:'1px solid var(--border)', borderRadius:'var(--radius)', padding:'4px 10px', cursor:'pointer', whiteSpace:'nowrap', flexShrink:0 }}>
+                  {deleteConfirm === tab.id ? 'Confirm remove' : 'Remove'}
+                </button>
+              </div>
+            ))}
+          </Panel>
+        </div>
+      )}
     </div>
   )
 }
