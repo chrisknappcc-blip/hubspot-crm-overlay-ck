@@ -2093,10 +2093,11 @@ export const handler = async (event, context) => {
       if (!ADMIN_USER_IDS.has(user.userId)) return error(403, "Admin only");
       try {
         const body = JSON.parse(event.body || "{}");
-        const { url, label, badge, allowedUsers, enabled = true } = body;
+        const { url, label, badge, allowedUsers, enabled = true, type = "iframe" } = body;
 
         if (!url)   return error(400, "url is required");
         if (!label) return error(400, "label is required");
+        if (!["iframe","link"].includes(type)) return error(400, "type must be iframe or link");
 
         // Validate URL
         try { new URL(url); } catch { return error(400, "Invalid URL"); }
@@ -2110,7 +2111,7 @@ export const handler = async (event, context) => {
           id,
           label:        label.trim().slice(0, 40),
           url:          url.trim(),
-          type:         "iframe",
+          type,
           enabled,
           allowedUsers: allowedUsers || [],
           badge:        badge || null,
