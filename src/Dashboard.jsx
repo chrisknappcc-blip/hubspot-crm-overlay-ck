@@ -660,11 +660,18 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
           { key:'map-tool',  label:'Market Mapper' },
           { key:'cpiq',      label:'CPIQ', badge:'SOON' },
           // Dynamic tabs from registry
-          ...dynamicTabs.map(t => ({ key:`dyn-${t.id}`, label:t.label, badge:t.badge, url:t.url })),
+          ...dynamicTabs.map(t => ({ key:`dyn-${t.id}`, label:t.label, badge:t.badge, url:t.url, tabType:t.type })),
           // Add App tab (admin only)
           ...(isAdmin ? [{ key:'add-app', label:'+ Add App', isAddApp:true }] : []),
         ].map(tab => (
-          <button key={tab.key} onClick={() => { setActiveTab(tab.key); if (tab.key === 'dashboard') setNewSignalCount(0) }}
+          <button key={tab.key} onClick={() => {
+            if (tab.tabType === 'link' && tab.url) {
+              window.open(tab.url, '_blank', 'noopener,noreferrer')
+              return
+            }
+            setActiveTab(tab.key)
+            if (tab.key === 'dashboard') setNewSignalCount(0)
+          }}
             style={{ fontSize:13, fontWeight:activeTab===tab.key?500:400, color: tab.isAddApp ? 'var(--text-tertiary)' : activeTab===tab.key?'var(--text)':'var(--text-secondary)', padding:'0 2px', height:52, background:'none', border:'none', borderBottom:activeTab===tab.key?'2px solid var(--accent)':'2px solid transparent', cursor:'pointer', display:'flex', alignItems:'center', gap:6 }}>
             {tab.label}
             {tab.key === 'dashboard' && newSignalCount > 0 && (
@@ -1346,6 +1353,7 @@ function AddAppTab({ safeFetch, onSaved, existingTabs, onDelete }) {
   const [url, setUrl]               = useState('')
   const [label, setLabel]           = useState('')
   const [badge, setBadge]           = useState('')
+  const [tabType, setTabType]       = useState('iframe') // 'iframe' | 'link'
   const [previewing, setPreviewing] = useState(false)
   const [saving, setSaving]         = useState(false)
   const [message, setMessage]       = useState(null)
@@ -1354,6 +1362,18 @@ function AddAppTab({ safeFetch, onSaved, existingTabs, onDelete }) {
   const handleUrlBlur = async () => {
     if (!url.trim() || label) return
     setPreviewing(true)
+    // Auto-detect type based on URL patterns that are known to block iframes
+    const lower = url.toLowerCase()
+    if (
+      lower.includes('sharepoint.com') ||
+      lower.includes('onedrive.live.com') ||
+      lower.includes('docs.google.com') ||
+      lower.includes('sheets.google.com') ||
+      lower.includes('.xlsx') || lower.includes('.xls') ||
+      lower.includes('.pdf') || lower.includes('.docx')
+    ) {
+      setTabType('link')
+    }
     try {
       const data = await safeFetch(`/api/hubspot/tabs/preview?url=${encodeURIComponent(url.trim())}`)
       if (data.suggestedLabel) setLabel(data.suggestedLabel)
@@ -1372,13 +1392,15 @@ function AddAppTab({ safeFetch, onSaved, existingTabs, onDelete }) {
       const data = await safeFetch('/api/hubspot/tabs', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: url.trim(), label: label.trim(), badge: badge.trim() || null }),
+        body: JSON.stringify({ url: url.trim(), label: label.trim(), badge: badge.trim() || null, type: tabType }),
       })
       onSaved(data.tab)
       setUrl('')
       setLabel('')
       setBadge('')
-      setMessage({ type:'success', text:`"${data.tab.label}" added. Taking you there now.` })
+      setTabType('iframe')
+      const action = tabType === 'link' ? 'Added as an external link — clicking the tab will open it in a new window.' : 'Taking you there now.'
+      setMessage({ type:'success', text:`"${data.tab.label}" added. ${action}` })
     } catch (err) {
       setMessage({ type:'error', text: err.message || 'Something went wrong.' })
     } finally {
@@ -1442,6 +1464,27 @@ function AddAppTab({ safeFetch, onSaved, existingTabs, onDelete }) {
               placeholder="BETA"
               style={{ width:120, background:'var(--bg-secondary)', border:'1px solid var(--border)', borderRadius:'var(--radius)', padding:'9px 12px', fontSize:13, color:'var(--text)', outline:'none' }}
             />
+          </div>
+
+          <div>
+            <label style={{ fontSize:12, fontWeight:500, color:'var(--text-secondary)', display:'block', marginBottom:8 }}>How to open</label>
+            <div style={{ display:'flex', gap:8 }}>
+              {[
+                { value:'iframe', label:'Embed in dashboard', desc:'Works for web apps, HTML files, most public sites' },
+                { value:'link',   label:'Open in new tab',    desc:'Better for SharePoint, Office docs, Google Docs, PDFs' },
+              ].map(opt => (
+                <div key={opt.value} onClick={() => setTabType(opt.value)}
+                  style={{ flex:1, padding:'10px 12px', borderRadius:'var(--radius)', border:`1px solid ${tabType === opt.value ? 'var(--accent)' : 'var(--border)'}`, background: tabType === opt.value ? 'var(--accent-light)' : 'var(--bg-secondary)', cursor:'pointer' }}>
+                  <div style={{ fontSize:12, fontWeight:500, color: tabType === opt.value ? 'var(--accent-text)' : 'var(--text)', marginBottom:3 }}>{opt.label}</div>
+                  <div style={{ fontSize:11, color:'var(--text-tertiary)', lineHeight:1.4 }}>{opt.desc}</div>
+                </div>
+              ))}
+            </div>
+            {tabType === 'link' && (
+              <div style={{ marginTop:6, fontSize:11, color:'var(--text-tertiary)' }}>
+                The tab will appear in the nav — clicking it opens the URL in a new browser window instead of embedding it.
+              </div>
+            )}
           </div>
 
           {message && (
