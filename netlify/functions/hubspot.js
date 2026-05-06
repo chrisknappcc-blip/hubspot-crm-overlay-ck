@@ -8,6 +8,9 @@
 //   GET  /hubspot/contacts/:id            -> single contact detail + engagements
 //   GET  /hubspot/signals                 -> ranked intent signals with custom property filters
 //   GET  /hubspot/feed/:contactId         -> full merged activity feed for a contact
+//   GET  /hubspot/tasks                   -> open tasks in a rolling date window (?days=7|14|21|30)
+//   GET  /hubspot/gold                    -> Gold-tier contacts sorted by tier + activity (?assigned_bdr=)
+//   GET  /hubspot/activity                -> outbound + inbound activity counts (?days=7|14|30|90&scope=me|team)
 //   POST /hubspot/activity                -> log a note/call/meeting to a contact
 //
 // Custom filter query params (all optional, stackable):
@@ -996,6 +999,191 @@ export const handler = async (event, context) => {
       } catch (err) {
         console.error("[gold] Error:", err.message);
         return error(500, `Gold accounts error: ${err.message}`);
+      }
+    }
+
+    // ── Activity summary ──────────────────────────────────────────────────────
+    // Returns outbound + inbound activity counts for a rolling date window.
+    //
+    // Query params:
+    //   days=7|14|30|90    (default: 7)
+    //   scope=me|team      (default: me)
+    //
+    // IMPORTANT -- what these counts mean:
+    //   Counts are UNIQUE CONTACTS TOUCHED in each category within the window,
+    //   not raw send/event volume. HubSpot's per-event email API 504s at high
+    //   send volume so we derive counts from contact properties and engagements.
+    //
+    // Outbound: emailsSent, sequencesStarted, callsLogged, meetingsLogged, notesLogged
+    // Inbound:  repliesReceived, linksClicked, emailsOpened
+    //
+    // Team scope: fans out contact-property queries across all owner IDs and sums counts.
+    if (method === "GET" && path === "/activity") {
+      try {
+        const days  = [7, 14, 30, 90].includes(parseInt(qp.days, 10))
+          ? parseInt(qp.days, 10)
+          : 7;
+        const scope    = qp.scope === "team" ? "team" : "me";
+        const since    = Date.now() - days * 24 * 60 * 60 * 1000;
+        const sinceISO = new Date(since).toISOString();
+
+        // Resolve owner IDs for the scope
+        let ownerIds = [String(user.ownerId || user.userId)];
+        if (scope === "team") {
+          try {
+            const ownersData = await hsGet(user.userId, "/crm/v3/owners", { limit: 100 });
+            ownerIds = (ownersData.results || []).map(o => String(o.id)).filter(Boolean);
+          } catch { /* fall back to current user */ }
+        }
+
+        // Count contacts matching a date property filter for a given owner.
+        // Uses limit:1 and reads data.total -- no need to fetch actual records.
+        async function countContactsByProp(dateProp, ownerId) {
+          try {
+            const data = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
+              filterGroups: [{
+                filters: [
+                  { propertyName: "hubspot_owner_id", operator: "EQ",  value: ownerId },
+                  { propertyName: dateProp,           operator: "GTE", value: sinceISO },
+                ],
+              }],
+              properties: ["hubspot_owner_id"],
+              limit: 1,
+            });
+            return data.total || 0;
+          } catch {
+            return 0;
+          }
+        }
+
+        // Count contacts where EITHER of two date props falls in the window (OR logic).
+        async function countContactsEitherProp(propA, propB, ownerId) {
+          try {
+            const data = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
+              filterGroups: [
+                { filters: [
+                  { propertyName: "hubspot_owner_id", operator: "EQ",  value: ownerId },
+                  { propertyName: propA,              operator: "GTE", value: sinceISO },
+                ]},
+                { filters: [
+                  { propertyName: "hubspot_owner_id", operator: "EQ",  value: ownerId },
+                  { propertyName: propB,              operator: "GTE", value: sinceISO },
+                ]},
+              ],
+              properties: ["hubspot_owner_id"],
+              limit: 1,
+            });
+            return data.total || 0;
+          } catch {
+            return 0;
+          }
+        }
+
+        // Fan out all contact-property counts across all owners in parallel
+        const ownerResults = await Promise.all(ownerIds.map(async (ownerId) => {
+          const [emailsSent, sequencesStarted, replies, clicks, opens] = await Promise.all([
+            countContactsEitherProp("hs_email_last_send_date", "hs_last_email_activity_date", ownerId),
+            countContactsByProp("hs_latest_sequence_enrolled_date", ownerId),
+            countContactsEitherProp("hs_email_last_reply_date", "hs_sales_email_last_replied", ownerId),
+            countContactsEitherProp("hs_email_last_click_date", "hs_sales_email_last_clicked", ownerId),
+            countContactsEitherProp("hs_email_last_open_date",  "hs_sales_email_last_opened",  ownerId),
+          ]);
+          return { ownerId, emailsSent, sequencesStarted, replies, clicks, opens };
+        }));
+
+        // Engagements: calls, meetings, notes -- one paginated fetch, grouped by owner
+        const engByOwner = {};
+        ownerIds.forEach(id => { engByOwner[id] = { calls: 0, meetings: 0, notes: 0 }; });
+        const engTotals = { calls: 0, meetings: 0, notes: 0 };
+        const ownerSet  = new Set(ownerIds);
+
+        try {
+          let hasMore = true;
+          let offset  = 0;
+          while (hasMore && offset < 2000) { // cap at 2000 to stay within Netlify timeout
+            const engData = await hsGet(user.userId, "/engagements/v1/engagements/paged", {
+              limit: 250, offset, since,
+            }).catch(() => ({ results: [], hasMore: false }));
+
+            for (const eng of (engData.results || [])) {
+              const ts      = eng.engagement?.createdAt || 0;
+              const ownerId = String(eng.engagement?.ownerId || "");
+              const type    = eng.engagement?.type || "";
+              if (ts < since) continue;
+              if (scope === "me" && !ownerSet.has(ownerId)) continue;
+
+              const bucket = engByOwner[ownerId] || (engByOwner[ownerId] = { calls: 0, meetings: 0, notes: 0 });
+              if (type === "CALL")    { engTotals.calls++;    bucket.calls++;    }
+              if (type === "MEETING") { engTotals.meetings++; bucket.meetings++; }
+              if (type === "NOTE")    { engTotals.notes++;    bucket.notes++;    }
+            }
+
+            hasMore = engData.hasMore && (engData.results || []).length === 250;
+            offset += (engData.results || []).length;
+          }
+        } catch { /* engagement counts fall back to 0 */ }
+
+        // Sum totals across all owners
+        const totals = ownerResults.reduce((acc, r) => {
+          acc.emailsSent       += r.emailsSent;
+          acc.sequencesStarted += r.sequencesStarted;
+          acc.replies          += r.replies;
+          acc.clicks           += r.clicks;
+          acc.opens            += r.opens;
+          return acc;
+        }, { emailsSent: 0, sequencesStarted: 0, replies: 0, clicks: 0, opens: 0 });
+
+        const summary = {
+          outbound: {
+            emailsSent:       totals.emailsSent,
+            sequencesStarted: totals.sequencesStarted,
+            callsLogged:      engTotals.calls,
+            meetingsLogged:   engTotals.meetings,
+            notesLogged:      engTotals.notes,
+          },
+          inbound: {
+            repliesReceived: totals.replies,
+            linksClicked:    totals.clicks,
+            emailsOpened:    totals.opens,
+          },
+        };
+
+        // Per-owner breakdown for team scope
+        const byOwner = scope === "team"
+          ? Object.fromEntries(ownerIds.map(id => {
+              const r = ownerResults.find(x => x.ownerId === id) || {};
+              return [id, {
+                outbound: {
+                  emailsSent:       r.emailsSent       || 0,
+                  sequencesStarted: r.sequencesStarted || 0,
+                  callsLogged:      engByOwner[id]?.calls    || 0,
+                  meetingsLogged:   engByOwner[id]?.meetings || 0,
+                  notesLogged:      engByOwner[id]?.notes    || 0,
+                },
+                inbound: {
+                  repliesReceived: r.replies || 0,
+                  linksClicked:    r.clicks  || 0,
+                  emailsOpened:    r.opens   || 0,
+                },
+              }];
+            }))
+          : null;
+
+        return ok({
+          summary,
+          byOwner,
+          meta: {
+            days,
+            scope,
+            since:    sinceISO,
+            ownerIds,
+            note: "Counts represent unique contacts touched, not total send or event volume.",
+          },
+        });
+
+      } catch (err) {
+        console.error("[activity] Error:", err.message);
+        return error(500, `Activity error: ${err.message}`);
       }
     }
 
