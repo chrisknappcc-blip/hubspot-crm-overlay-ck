@@ -329,8 +329,10 @@ function EmailSourcePill({ source }) {
 export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeError }) {
   const { signOut } = useClerk()
 
-  // Wrap apiFetch to intercept 403 MISSING_SCOPES and trigger reconnect flow
-  const safeFetch = async (url, ...args) => {
+  // Wrap apiFetch to intercept 403 MISSING_SCOPES and trigger reconnect flow.
+  // Must be useCallback so its reference is stable -- unstable safeFetch causes
+  // downstream useCallbacks to re-create on every render, triggering fetch loops.
+  const safeFetch = useCallback(async (url, ...args) => {
     try {
       return await apiFetch(url, getToken, ...args)
     } catch (err) {
@@ -341,7 +343,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
       }
       throw err
     }
-  }
+  }, [getToken, onScopeError])
 
   // Core data
   const [signals, setSignals]         = useState([])
@@ -464,7 +466,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
     } finally {
       setContentEngagementLoading(false)
     }
-  }, [filterBdr, getToken])
+  }, [filterBdr])
   const filterParams = [
     filterBdr       ? `assigned_bdr=${encodeURIComponent(filterBdr)}`             : '',
     filterTerritory ? `territory=${encodeURIComponent(filterTerritory)}`           : '',
@@ -518,7 +520,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
     } finally {
       setLoading(false)
     }
-  }, [getToken, dateRange, filterParams])
+  }, [dateRange, filterParams])
 
   // ── Task queue fetch ──────────────────────────────────────────────────────
   const fetchTasks = useCallback(async () => {
@@ -537,7 +539,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
     } finally {
       setTaskLoading(false)
     }
-  }, [getToken, taskDays, filterBdr])
+  }, [taskDays, filterBdr])
 
   // ── Gold accounts fetch ───────────────────────────────────────────────────
   const fetchGold = useCallback(async () => {
@@ -551,7 +553,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
     } finally {
       setGoldLoading(false)
     }
-  }, [getToken, filterBdr])
+  }, [filterBdr])
 
   // ── Activity summary fetch ────────────────────────────────────────────────
   const fetchActivity = useCallback(async () => {
@@ -569,7 +571,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
     } finally {
       setActivityLoading(false)
     }
-  }, [getToken, activityDays, activityRep, activityIncludeOwned])
+  }, [activityDays, activityRep, activityIncludeOwned])
 
   // ── Real-time polling (every 3 minutes) ──────────────────────────────────
   const fetchRecentSignals = useCallback(async () => {
@@ -591,7 +593,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
       }
       setLastPollTime(Date.now())
     } catch { /* polling errors are silent */ }
-  }, [getToken, lastPollTime, filterBdr])
+  }, [lastPollTime, filterBdr])
 
   useEffect(() => { fetchData() }, [fetchData])
   useEffect(() => { fetchTasks() }, [fetchTasks])
@@ -1280,7 +1282,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
             {/* Content Engagement */}
             <Panel style={{ marginBottom:12 }}>
               <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:8 }}>
-                <SectionTitle style={{ margin:0 }}>Content engagement &mdash; links clicked</SectionTitle>
+                <SectionTitle style={{ margin:0 }}>Content engagement &mdash; link clicks</SectionTitle>
                 <button onClick={fetchContentEngagement} style={{ fontSize:11, color:'var(--text-tertiary)', background:'none', border:'none', cursor:'pointer', padding:0 }}>
                   Refresh
                 </button>
@@ -1295,7 +1297,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                 <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
                   <thead>
                     <tr>
-                      {['Contact','Title / Company','Email','Time'].map(h => (
+                      {['Contact','Company / Title','Email clicked from','Clicked'].map(h => (
                         <th key={h} style={{ textAlign:'left', fontSize:11, fontWeight:500, color:'var(--text-tertiary)', textTransform:'uppercase', letterSpacing:'.04em', padding:'0 8px 8px 0', borderBottom:'1px solid var(--border)' }}>{h}</th>
                       ))}
                     </tr>
@@ -1315,8 +1317,12 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                             )}
                           </div>
                         </td>
-                        <td style={{ padding:'9px 8px 9px 0', color:'var(--text-secondary)', fontSize:12 }}>{c.title}{c.company ? ` · ${c.company}` : ''}</td>
-                        <td style={{ padding:'9px 8px 9px 0', color:'var(--text-secondary)', fontSize:12, maxWidth:200, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{c.subject || '—'}</td>
+                        <td style={{ padding:'9px 8px 9px 0', color:'var(--text-secondary)', fontSize:12 }}>
+                          {c.company || '—'}{c.title ? ` · ${c.title}` : ''}
+                        </td>
+                        <td style={{ padding:'9px 8px 9px 0', color:'var(--text-secondary)', fontSize:12, maxWidth:220, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                          {c.subject || <span style={{ color:'var(--text-tertiary)' }}>Unknown email</span>}
+                        </td>
                         <td style={{ padding:'9px 0', color:'var(--text-tertiary)', fontSize:12, whiteSpace:'nowrap' }}>{timeAgo(c.ts)}</td>
                       </tr>
                     ))}
