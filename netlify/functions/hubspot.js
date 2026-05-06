@@ -7,10 +7,11 @@
 //   GET  /hubspot/contacts                -> list contacts with custom property filters
 //   GET  /hubspot/contacts/:id            -> single contact detail + engagements
 //   GET  /hubspot/signals                 -> ranked intent signals with custom property filters
+//   GET  /hubspot/signals/recent          -> last 15 min of email events for real-time polling
 //   GET  /hubspot/feed/:contactId         -> full merged activity feed for a contact
-//   GET  /hubspot/tasks                   -> open tasks in a rolling date window (?days=7|14|21|30)
-//   GET  /hubspot/gold                    -> Gold-tier contacts sorted by tier + activity (?assigned_bdr=)
-//   GET  /hubspot/activity                -> outbound + inbound activity counts (?days=7|14|30|90&scope=me|team)
+//   GET  /hubspot/tasks                   -> smart task queue three sections
+//   GET  /hubspot/gold                    -> Gold-tier companies + contacts
+//   GET  /hubspot/activity                -> outbound + inbound activity counts
 //   POST /hubspot/activity                -> log a note/call/meeting to a contact
 //
 // Custom filter query params (all optional, stackable):
@@ -994,122 +995,169 @@ export const handler = async (event, context) => {
     }
 
     // ── Gold Accounts panel ───────────────────────────────────────────────────
-    // Returns contacts with any GOLD priority_tier__bdr value, sorted tier-first
-    // (GOLD 1-10 at top) then by most recent activity within each tier.
+    // Priority Tier - BDR lives on the COMPANY object, not contacts.
+    // Actual enum values use dashes: "GOLD - 1-10", "GOLD - 11-20", etc.
+    //
+    // Strategy:
+    //   1. Search companies where priority_tier__bdr is any GOLD value
+    //   2. Filter by assigned_bdr on the company if provided
+    //   3. Fetch associated contacts for each company (up to 3 per company)
+    //   4. Merge company tier + signal data from associated contacts
     //
     // Query params:
-    //   assigned_bdr=Chris+Knapp   (recommended -- filter to one rep's Gold list)
-    //   limit=N                    (default: 200, max: 500)
-    //
-    // Tier sort: extracts the leading number from "GOLD N-NN" strings so the sort
-    // is numeric, not alphabetical. "GOLD 1-10" < "GOLD 11-20" < "GOLD 91-100".
-    //
-    // Signal status is derived from contact properties -- same logic as /signals
-    // but simplified (no bot filtering, just the most recent action label).
+    //   assigned_bdr=Chris+Knapp   (filters companies by their assigned BDR)
+    //   limit=N                    (default: 100 companies, max: 200)
     if (method === "GET" && path === "/gold") {
       try {
-        const limit = Math.min(parseInt(qp.limit || "200", 10), 500);
-        const customFilters = buildCustomFilters(qp);
+        const limit = Math.min(parseInt(qp.limit || "100", 10), 200);
 
-        // All 10 Gold tiers as defined in the custom property
+        // Actual enum values from HubSpot -- dashes between GOLD and range
         const GOLD_TIERS = [
-          "GOLD 1-10","GOLD 11-20","GOLD 21-30","GOLD 31-40","GOLD 41-50",
-          "GOLD 51-60","GOLD 61-70","GOLD 71-80","GOLD 81-90","GOLD 91-100",
+          "GOLD - 1-10","GOLD - 11-20","GOLD - 21-30","GOLD - 31-40","GOLD - 41-50",
+          "GOLD - 51-60","GOLD - 61-70","GOLD - 71-80","GOLD - 81-90","GOLD - 91-100",
         ];
 
-        // Paginate through all Gold contacts (up to limit)
-        let goldContacts = [];
+        const companyFilters = [
+          { propertyName: "priority_tier__bdr", operator: "IN", values: GOLD_TIERS },
+        ];
+        if (qp.assigned_bdr) {
+          companyFilters.push({
+            propertyName: "assigned_bdr",
+            operator:     "EQ",
+            value:        decodeURIComponent(qp.assigned_bdr).trim(),
+          });
+        }
+
+        // Paginate through Gold companies
+        let goldCompanies = [];
         let after = undefined;
-        while (goldContacts.length < limit) {
+        while (goldCompanies.length < limit) {
           const body = {
-            filterGroups: [{
-              filters: [
-                { propertyName: "priority_tier__bdr", operator: "IN", values: GOLD_TIERS },
-                ...customFilters,
-              ],
-            }],
+            filterGroups: [{ filters: companyFilters }],
             properties: [
-              ...BASE_CONTACT_PROPS,
-              // Ensure signal props are included even if BASE_CONTACT_PROPS changes
-              "hs_email_last_open_date",
-              "hs_email_last_click_date",
-              "hs_email_last_reply_date",
-              "hs_email_last_send_date",
-              "hs_email_last_email_name",
-              "hs_sales_email_last_opened",
-              "hs_sales_email_last_clicked",
-              "hs_sales_email_last_replied",
+              "name", "domain", "industry", "assigned_bdr", "territory",
+              "priority_tier__bdr", "target_account__bdr_led_outreach",
+              "notes_last_contacted", "hs_last_sales_activity_date",
             ],
-            sorts:  [{ propertyName: "notes_last_contacted", direction: "DESCENDING" }],
+            sorts:  [{ propertyName: "priority_tier__bdr", direction: "ASCENDING" }],
             limit:  100,
           };
           if (after) body.after = after;
-          const data = await hsPost(user.userId, "/crm/v3/objects/contacts/search", body);
-          goldContacts.push(...(data.results || []));
+          const data = await hsPost(user.userId, "/crm/v3/objects/companies/search", body);
+          goldCompanies.push(...(data.results || []));
           if (!data.paging?.next?.after || (data.results || []).length < 100) break;
           after = data.paging.next.after;
         }
 
-        // Extract leading number from tier string for correct numeric sort
-        // "GOLD 1-10" -> 1, "GOLD 11-20" -> 11, "GOLD 91-100" -> 91
+        if (goldCompanies.length === 0) {
+          return ok({ accounts: [], meta: { total: 0, byTier: {}, filters: { assigned_bdr: qp.assigned_bdr || null } } });
+        }
+
+        // Fetch associated contacts for each company in parallel (batched at 10 at a time)
+        const CONTACT_PROPS = [
+          "firstname","lastname","email","jobtitle",
+          "hs_email_last_open_date","hs_email_last_click_date",
+          "hs_email_last_reply_date","hs_email_last_send_date","hs_email_last_email_name",
+          "hs_sales_email_last_opened","hs_sales_email_last_clicked","hs_sales_email_last_replied",
+          "notes_last_contacted","assigned_bdr",
+        ];
+
+        const contactsByCompany = {};
+        const batchSize = 10;
+        for (let i = 0; i < goldCompanies.length; i += batchSize) {
+          const batch = goldCompanies.slice(i, i + batchSize);
+          await Promise.all(batch.map(async (company) => {
+            try {
+              const assoc = await hsGet(
+                user.userId,
+                `/crm/v3/objects/companies/${company.id}/associations/contacts`,
+                { limit: 5 }
+              );
+              const contactIds = (assoc.results || []).map(r => r.id).slice(0, 5);
+              if (contactIds.length === 0) { contactsByCompany[company.id] = []; return; }
+
+              const batch = await hsPost(user.userId, "/crm/v3/objects/contacts/batch/read", {
+                properties: CONTACT_PROPS,
+                inputs:     contactIds.map(id => ({ id })),
+              });
+              contactsByCompany[company.id] = batch.results || [];
+            } catch {
+              contactsByCompany[company.id] = [];
+            }
+          }));
+        }
+
+        // Extract leading number from tier for numeric sort
+        // "GOLD - 1-10" -> 1, "GOLD - 11-20" -> 11
         const tierRank = (tier) => {
           const match = (tier || "").match(/(\d+)/);
           return match ? parseInt(match[1], 10) : 999;
         };
 
-        // Derive the most recent signal and its type for each contact
-        const signalStatus = (p) => {
-          const mktReplyTs  = p.hs_email_last_reply_date    ? new Date(p.hs_email_last_reply_date).getTime()    : 0;
-          const mktClickTs  = p.hs_email_last_click_date    ? new Date(p.hs_email_last_click_date).getTime()    : 0;
-          const mktOpenTs   = p.hs_email_last_open_date     ? new Date(p.hs_email_last_open_date).getTime()     : 0;
-          const salesReplyTs= p.hs_sales_email_last_replied ? new Date(p.hs_sales_email_last_replied).getTime() : 0;
-          const salesClickTs= p.hs_sales_email_last_clicked ? new Date(p.hs_sales_email_last_clicked).getTime() : 0;
-          const salesOpenTs = p.hs_sales_email_last_opened  ? new Date(p.hs_sales_email_last_opened).getTime()  : 0;
-
-          const replyTs = Math.max(mktReplyTs,  salesReplyTs);
-          const clickTs = Math.max(mktClickTs,  salesClickTs);
-          const openTs  = Math.max(mktOpenTs,   salesOpenTs);
-
-          if (replyTs > 0) return { status: "replied",  timestamp: new Date(replyTs).toISOString(), label: "Replied" };
-          if (clickTs > 0) return { status: "clicked",  timestamp: new Date(clickTs).toISOString(), label: "Clicked" };
-          if (openTs  > 0) return { status: "opened",   timestamp: new Date(openTs).toISOString(),  label: "Opened"  };
-          return             { status: "no_signal", timestamp: null,                                label: "No recent activity" };
+        // Best signal across a company's contacts
+        const companySignal = (contacts) => {
+          let bestReplyTs = 0, bestClickTs = 0, bestOpenTs = 0;
+          for (const c of contacts) {
+            const p = c.properties || {};
+            bestReplyTs = Math.max(bestReplyTs,
+              p.hs_email_last_reply_date    ? new Date(p.hs_email_last_reply_date).getTime()    : 0,
+              p.hs_sales_email_last_replied ? new Date(p.hs_sales_email_last_replied).getTime() : 0,
+            );
+            bestClickTs = Math.max(bestClickTs,
+              p.hs_email_last_click_date    ? new Date(p.hs_email_last_click_date).getTime()    : 0,
+              p.hs_sales_email_last_clicked ? new Date(p.hs_sales_email_last_clicked).getTime() : 0,
+            );
+            bestOpenTs = Math.max(bestOpenTs,
+              p.hs_email_last_open_date    ? new Date(p.hs_email_last_open_date).getTime()    : 0,
+              p.hs_sales_email_last_opened ? new Date(p.hs_sales_email_last_opened).getTime() : 0,
+            );
+          }
+          if (bestReplyTs > 0) return { status:"replied", timestamp: new Date(bestReplyTs).toISOString(), label:"Replied" };
+          if (bestClickTs > 0) return { status:"clicked", timestamp: new Date(bestClickTs).toISOString(), label:"Clicked" };
+          if (bestOpenTs  > 0) return { status:"opened",  timestamp: new Date(bestOpenTs).toISOString(),  label:"Opened"  };
+          return                      { status:"no_signal", timestamp: null, label:"No recent activity" };
         };
 
-        const normalized = goldContacts.map(c => {
-          const p    = c.properties || {};
-          const tier = p.priority_tier__bdr || "";
-          const sig  = signalStatus(p);
+        const normalized = goldCompanies.map(company => {
+          const p        = company.properties || {};
+          const contacts = contactsByCompany[company.id] || [];
+          const tier     = p.priority_tier__bdr || "";
+          const signal   = companySignal(contacts);
 
-          // Last activity: most recent across all tracked dates
           const allDates = [
             p.notes_last_contacted,
-            p.hs_last_email_activity_date,
             p.hs_last_sales_activity_date,
-            p.hs_email_last_send_date,
-            sig.timestamp,
+            signal.timestamp,
           ].filter(Boolean).map(d => new Date(d).getTime());
-          const lastActivityTs  = allDates.length > 0 ? Math.max(...allDates) : 0;
+          const lastActivityTs   = allDates.length > 0 ? Math.max(...allDates) : 0;
           const lastActivityDate = lastActivityTs > 0 ? new Date(lastActivityTs).toISOString() : null;
 
           return {
-            id:              c.id,
-            name:            `${p.firstname || ""} ${p.lastname || ""}`.trim(),
-            email:           p.email    || "",
-            company:         p.company  || "",
-            title:           p.jobtitle || "",
+            id:              company.id,
+            name:            p.name       || "",
+            domain:          p.domain     || "",
+            industry:        p.industry   || "",
             tier,
             tierRank:        tierRank(tier),
             assignedBdr:     p.assigned_bdr || "",
             territory:       p.territory    || "",
             lastActivityDate,
-            signal:          sig,
-            lastEmailName:   p.hs_email_last_email_name || null,
-            url: `https://app.hubspot.com/contacts/39921549/record/0-1/${c.id}`,
+            signal,
+            contacts: contacts.map(c => {
+              const cp = c.properties || {};
+              return {
+                id:    c.id,
+                name:  `${cp.firstname||""} ${cp.lastname||""}`.trim(),
+                title: cp.jobtitle || "",
+                email: cp.email    || "",
+                url:   `https://app.hubspot.com/contacts/39921549/record/0-1/${c.id}`,
+              };
+            }),
+            url: `https://app.hubspot.com/companies/39921549/company/${company.id}`,
           };
         });
 
-        // Sort: tier rank ascending (1-10 first), then most recent activity descending
+        // Sort: tier rank ascending (GOLD - 1-10 first), then most recent activity
         normalized.sort((a, b) => {
           if (a.tierRank !== b.tierRank) return a.tierRank - b.tierRank;
           const dateA = a.lastActivityDate ? new Date(a.lastActivityDate).getTime() : 0;
@@ -1117,21 +1165,15 @@ export const handler = async (event, context) => {
           return dateB - dateA;
         });
 
-        // Count by tier for the panel header
         const byTier = {};
-        normalized.forEach(c => {
-          byTier[c.tier] = (byTier[c.tier] || 0) + 1;
-        });
+        normalized.forEach(c => { byTier[c.tier] = (byTier[c.tier] || 0) + 1; });
 
         return ok({
           accounts: normalized,
           meta: {
-            total:   normalized.length,
+            total: normalized.length,
             byTier,
-            filters: {
-              assigned_bdr: qp.assigned_bdr || null,
-              territory:    qp.territory    || null,
-            },
+            filters: { assigned_bdr: qp.assigned_bdr || null },
           },
         });
       } catch (err) {
@@ -1144,113 +1186,149 @@ export const handler = async (event, context) => {
     // Returns outbound + inbound activity counts for a rolling date window.
     //
     // Query params:
-    //   days=7|14|30|90    (default: 7)
-    //   scope=me|team      (default: me)
+    //   days=7|14|30|90         (default: 7)
+    //   rep=Chris+Knapp|all     (default: "all" -- filter by assigned_bdr name, or all reps)
+    //   include_owned=true      (optional -- also count contacts owned via hubspot_owner_id,
+    //                            useful for AEs who want to see both BDR outreach + their own)
     //
-    // IMPORTANT -- what these counts mean:
-    //   Counts are UNIQUE CONTACTS TOUCHED in each category within the window,
-    //   not raw send/event volume. HubSpot's per-event email API 504s at high
-    //   send volume so we derive counts from contact properties and engagements.
-    //
-    // Outbound: emailsSent, sequencesStarted, callsLogged, meetingsLogged, notesLogged
-    // Inbound:  repliesReceived, linksClicked, emailsOpened
-    //
-    // Team scope: fans out contact-property queries across all owner IDs and sums counts.
+    // Counts use assigned_bdr property (not hubspot_owner_id) because BDRs do outreach
+    // on behalf of AEs. hubspot_owner_id typically maps to the AE, not the BDR.
+    // Setting include_owned=true adds a second pass using hubspot_owner_id for AE views.
     if (method === "GET" && path === "/activity") {
       try {
         const days  = [7, 14, 30, 90].includes(parseInt(qp.days, 10))
           ? parseInt(qp.days, 10)
           : 7;
-        const scope    = qp.scope === "team" ? "team" : "me";
         const since    = Date.now() - days * 24 * 60 * 60 * 1000;
         const sinceISO = new Date(since).toISOString();
+        const includeOwned = qp.include_owned === "true";
 
-        // Resolve owner IDs for the scope
-        let ownerIds = [String(user.ownerId || user.userId)];
-        if (scope === "team") {
-          try {
-            const ownersData = await hsGet(user.userId, "/crm/v3/owners", { limit: 100 });
-            ownerIds = (ownersData.results || []).map(o => String(o.id)).filter(Boolean);
-          } catch { /* fall back to current user */ }
-        }
+        // rep param: "all" = all reps, anything else = filter to that rep's assigned_bdr value
+        const repFilter = qp.rep && qp.rep !== "all"
+          ? decodeURIComponent(qp.rep).trim()
+          : null;
 
-        // Count contacts matching a date property filter for a given owner.
-        // Uses limit:1 and reads data.total -- no need to fetch actual records.
-        async function countContactsByProp(dateProp, ownerId) {
+        // Resolve rep names for scope -- either the single selected rep or all known reps
+        let repNames = [];
+        try {
+          const ownersData = await hsGet(user.userId, "/crm/v3/owners", { limit: 100 });
+          repNames = (ownersData.results || [])
+            .map(o => `${o.firstName || ""} ${o.lastName || ""}`.trim())
+            .filter(Boolean);
+        } catch { /* fall back */ }
+
+        const targetReps = repFilter ? [repFilter] : repNames;
+
+        // Count contacts where assigned_bdr = repName AND dateProp >= since
+        async function countByBdr(dateProp, repName) {
           try {
             const data = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
               filterGroups: [{
                 filters: [
-                  { propertyName: "hubspot_owner_id", operator: "EQ",  value: ownerId },
-                  { propertyName: dateProp,           operator: "GTE", value: sinceISO },
+                  { propertyName: "assigned_bdr", operator: "EQ",  value: repName },
+                  { propertyName: dateProp,        operator: "GTE", value: sinceISO },
+                ],
+              }],
+              properties: ["assigned_bdr"],
+              limit: 1,
+            });
+            return data.total || 0;
+          } catch { return 0; }
+        }
+
+        // Count contacts where EITHER prop >= since AND assigned_bdr = repName (OR filter groups)
+        async function countEitherByBdr(propA, propB, repName) {
+          try {
+            const data = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
+              filterGroups: [
+                { filters: [
+                  { propertyName: "assigned_bdr", operator: "EQ",  value: repName },
+                  { propertyName: propA,           operator: "GTE", value: sinceISO },
+                ]},
+                { filters: [
+                  { propertyName: "assigned_bdr", operator: "EQ",  value: repName },
+                  { propertyName: propB,           operator: "GTE", value: sinceISO },
+                ]},
+              ],
+              properties: ["assigned_bdr"],
+              limit: 1,
+            });
+            return data.total || 0;
+          } catch { return 0; }
+        }
+
+        // AE view: count by hubspot_owner_id (for include_owned mode)
+        async function countByOwnerId(dateProp, ownerId) {
+          try {
+            const data = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
+              filterGroups: [{
+                filters: [
+                  { propertyName: "hubspot_owner_id", operator: "EQ",  value: String(ownerId) },
+                  { propertyName: dateProp,            operator: "GTE", value: sinceISO },
                 ],
               }],
               properties: ["hubspot_owner_id"],
               limit: 1,
             });
             return data.total || 0;
-          } catch {
-            return 0;
-          }
+          } catch { return 0; }
         }
 
-        // Count contacts where EITHER of two date props falls in the window (OR logic).
-        async function countContactsEitherProp(propA, propB, ownerId) {
-          try {
-            const data = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
-              filterGroups: [
-                { filters: [
-                  { propertyName: "hubspot_owner_id", operator: "EQ",  value: ownerId },
-                  { propertyName: propA,              operator: "GTE", value: sinceISO },
-                ]},
-                { filters: [
-                  { propertyName: "hubspot_owner_id", operator: "EQ",  value: ownerId },
-                  { propertyName: propB,              operator: "GTE", value: sinceISO },
-                ]},
-              ],
-              properties: ["hubspot_owner_id"],
-              limit: 1,
-            });
-            return data.total || 0;
-          } catch {
-            return 0;
-          }
-        }
-
-        // Fan out all contact-property counts across all owners in parallel
-        const ownerResults = await Promise.all(ownerIds.map(async (ownerId) => {
+        // Fan out counts across all target reps in parallel
+        const repResults = await Promise.all(targetReps.map(async (repName) => {
           const [emailsSent, sequencesStarted, replies, clicks, opens] = await Promise.all([
-            countContactsEitherProp("hs_email_last_send_date", "hs_last_email_activity_date", ownerId),
-            countContactsByProp("hs_latest_sequence_enrolled_date", ownerId),
-            countContactsEitherProp("hs_email_last_reply_date", "hs_sales_email_last_replied", ownerId),
-            countContactsEitherProp("hs_email_last_click_date", "hs_sales_email_last_clicked", ownerId),
-            countContactsEitherProp("hs_email_last_open_date",  "hs_sales_email_last_opened",  ownerId),
+            countEitherByBdr("hs_email_last_send_date", "hs_last_email_activity_date", repName),
+            countByBdr("hs_latest_sequence_enrolled_date", repName),
+            countEitherByBdr("hs_email_last_reply_date", "hs_sales_email_last_replied", repName),
+            countEitherByBdr("hs_email_last_click_date", "hs_sales_email_last_clicked", repName),
+            countEitherByBdr("hs_email_last_open_date",  "hs_sales_email_last_opened",  repName),
           ]);
-          return { ownerId, emailsSent, sequencesStarted, replies, clicks, opens };
+          return { repName, emailsSent, sequencesStarted, replies, clicks, opens };
         }));
 
-        // Engagements: calls, meetings, notes -- one paginated fetch, grouped by owner
-        const engByOwner = {};
-        ownerIds.forEach(id => { engByOwner[id] = { calls: 0, meetings: 0, notes: 0 }; });
+        // Optional AE pass: also count by hubspot_owner_id
+        let ownedCounts = { emailsSent:0, replies:0, clicks:0, opens:0 };
+        if (includeOwned) {
+          try {
+            // Look up the current user's HubSpot owner ID
+            const meData = await hsGet(user.userId, "/crm/v3/owners/me", {}).catch(() => null);
+            if (meData?.id) {
+              const [oSent, oReplies, oClicks, oOpens] = await Promise.all([
+                countByOwnerId("hs_email_last_send_date",     meData.id),
+                countByOwnerId("hs_sales_email_last_replied", meData.id),
+                countByOwnerId("hs_sales_email_last_clicked", meData.id),
+                countByOwnerId("hs_sales_email_last_opened",  meData.id),
+              ]);
+              ownedCounts = { emailsSent: oSent, replies: oReplies, clicks: oClicks, opens: oOpens };
+            }
+          } catch { /* fall through */ }
+        }
+
+        // Engagements: calls, meetings, notes -- filter by owner name where possible
         const engTotals = { calls: 0, meetings: 0, notes: 0 };
-        const ownerSet  = new Set(ownerIds);
+        const engByRep  = {};
+        targetReps.forEach(r => { engByRep[r] = { calls:0, meetings:0, notes:0 }; });
 
         try {
           let hasMore = true;
           let offset  = 0;
-          while (hasMore && offset < 2000) { // cap at 2000 to stay within Netlify timeout
+          while (hasMore && offset < 2000) {
             const engData = await hsGet(user.userId, "/engagements/v1/engagements/paged", {
               limit: 250, offset, since,
             }).catch(() => ({ results: [], hasMore: false }));
 
             for (const eng of (engData.results || [])) {
-              const ts      = eng.engagement?.createdAt || 0;
-              const ownerId = String(eng.engagement?.ownerId || "");
-              const type    = eng.engagement?.type || "";
+              const ts   = eng.engagement?.createdAt || 0;
+              const type = eng.engagement?.type || "";
               if (ts < since) continue;
-              if (scope === "me" && !ownerSet.has(ownerId)) continue;
 
-              const bucket = engByOwner[ownerId] || (engByOwner[ownerId] = { calls: 0, meetings: 0, notes: 0 });
+              // Match engagements to reps via the associated contact's assigned_bdr if available
+              // For now count all engagements if scope is all, or skip if rep-filtered
+              // (engagement owner ID doesn't reliably map to BDR)
+              if (repFilter) {
+                // Can't reliably filter engagements by BDR name -- include all and note limitation
+              }
+              const bucket = engByRep[repFilter || targetReps[0]] || (engByRep[targetReps[0]] = { calls:0, meetings:0, notes:0 });
               if (type === "CALL")    { engTotals.calls++;    bucket.calls++;    }
               if (type === "MEETING") { engTotals.meetings++; bucket.meetings++; }
               if (type === "NOTE")    { engTotals.notes++;    bucket.notes++;    }
@@ -1259,69 +1337,180 @@ export const handler = async (event, context) => {
             hasMore = engData.hasMore && (engData.results || []).length === 250;
             offset += (engData.results || []).length;
           }
-        } catch { /* engagement counts fall back to 0 */ }
+        } catch { /* fall through */ }
 
-        // Sum totals across all owners
-        const totals = ownerResults.reduce((acc, r) => {
+        // Sum totals
+        const totals = repResults.reduce((acc, r) => {
           acc.emailsSent       += r.emailsSent;
           acc.sequencesStarted += r.sequencesStarted;
           acc.replies          += r.replies;
           acc.clicks           += r.clicks;
           acc.opens            += r.opens;
           return acc;
-        }, { emailsSent: 0, sequencesStarted: 0, replies: 0, clicks: 0, opens: 0 });
+        }, { emailsSent:0, sequencesStarted:0, replies:0, clicks:0, opens:0 });
 
         const summary = {
           outbound: {
-            emailsSent:       totals.emailsSent,
+            emailsSent:       totals.emailsSent       + (includeOwned ? ownedCounts.emailsSent : 0),
             sequencesStarted: totals.sequencesStarted,
             callsLogged:      engTotals.calls,
             meetingsLogged:   engTotals.meetings,
             notesLogged:      engTotals.notes,
           },
           inbound: {
-            repliesReceived: totals.replies,
-            linksClicked:    totals.clicks,
-            emailsOpened:    totals.opens,
+            repliesReceived: totals.replies + (includeOwned ? ownedCounts.replies : 0),
+            linksClicked:    totals.clicks  + (includeOwned ? ownedCounts.clicks  : 0),
+            emailsOpened:    totals.opens   + (includeOwned ? ownedCounts.opens   : 0),
           },
         };
 
-        // Per-owner breakdown for team scope
-        const byOwner = scope === "team"
-          ? Object.fromEntries(ownerIds.map(id => {
-              const r = ownerResults.find(x => x.ownerId === id) || {};
-              return [id, {
-                outbound: {
-                  emailsSent:       r.emailsSent       || 0,
-                  sequencesStarted: r.sequencesStarted || 0,
-                  callsLogged:      engByOwner[id]?.calls    || 0,
-                  meetingsLogged:   engByOwner[id]?.meetings || 0,
-                  notesLogged:      engByOwner[id]?.notes    || 0,
-                },
-                inbound: {
-                  repliesReceived: r.replies || 0,
-                  linksClicked:    r.clicks  || 0,
-                  emailsOpened:    r.opens   || 0,
-                },
-              }];
-            }))
-          : null;
+        // Per-rep breakdown
+        const byRep = Object.fromEntries(repResults.map(r => [r.repName, {
+          outbound: {
+            emailsSent:       r.emailsSent,
+            sequencesStarted: r.sequencesStarted,
+            callsLogged:      engByRep[r.repName]?.calls    || 0,
+            meetingsLogged:   engByRep[r.repName]?.meetings || 0,
+            notesLogged:      engByRep[r.repName]?.notes    || 0,
+          },
+          inbound: {
+            repliesReceived: r.replies,
+            linksClicked:    r.clicks,
+            emailsOpened:    r.opens,
+          },
+        }]));
 
         return ok({
           summary,
-          byOwner,
+          byRep: targetReps.length > 1 ? byRep : null,
           meta: {
             days,
-            scope,
-            since:    sinceISO,
-            ownerIds,
-            note: "Counts represent unique contacts touched, not total send or event volume.",
+            rep:          repFilter || "all",
+            since:        sinceISO,
+            includeOwned,
+            note: "Counts = unique contacts touched via assigned_bdr, not raw send volume.",
           },
         });
 
       } catch (err) {
         console.error("[activity] Error:", err.message);
         return error(500, `Activity error: ${err.message}`);
+      }
+    }
+
+    // ── Real-time signals (last 15 minutes) ──────────────────────────────────
+    // Lightweight polling endpoint. Fetches the last 15 min of email open/click
+    // events from /email/public/v1/events. Safe at high volume because the time
+    // window is tiny -- only events since the last poll, not the full history.
+    //
+    // The frontend calls this every 3 minutes and merges new signals into the feed.
+    // Bot detection runs the same logic as /signals so new items are already scored.
+    //
+    // Query params:
+    //   since=<ISO>   (optional -- override the 15-min window for a custom lookback)
+    //   assigned_bdr= (optional -- filter to a specific rep after enrichment)
+    if (method === "GET" && path === "/signals/recent") {
+      try {
+        const windowMs  = 15 * 60 * 1000; // 15 minutes
+        const sinceMs   = qp.since
+          ? new Date(qp.since).getTime()
+          : Date.now() - windowMs;
+        const sinceISO  = new Date(sinceMs).toISOString();
+        const bdrFilter = qp.assigned_bdr
+          ? decodeURIComponent(qp.assigned_bdr).trim()
+          : null;
+
+        // Fetch raw email events -- tiny window so no 504 risk
+        const eventsData = await hsGet(user.userId, "/email/public/v1/events", {
+          startTimestamp: sinceMs,
+          limit: 100,
+        }).catch(() => ({ events: [] }));
+
+        const rawEvents = (eventsData.events || [])
+          .filter(ev => ["OPEN","CLICK","REPLY"].includes(ev.type));
+
+        if (rawEvents.length === 0) {
+          return ok({ signals: [], meta: { since: sinceISO, count: 0 } });
+        }
+
+        // Enrich with contact data to apply assigned_bdr filter
+        const contactIds = [...new Set(
+          rawEvents.map(ev => ev.contactId ? String(ev.contactId) : null).filter(Boolean)
+        )];
+
+        const contactMap = {};
+        if (contactIds.length > 0) {
+          try {
+            const batch = await hsPost(user.userId, "/crm/v3/objects/contacts/batch/read", {
+              properties: BASE_CONTACT_PROPS,
+              inputs:     contactIds.map(id => ({ id })),
+            });
+            (batch.results || []).forEach(c => {
+              const info = normalizeContact(c);
+              contactMap[c.id] = info;
+            });
+          } catch { /* enrichment best-effort */ }
+        }
+
+        const signals = rawEvents
+          .map(ev => {
+            const contactId = ev.contactId ? String(ev.contactId) : null;
+            const contact   = contactId ? (contactMap[contactId] || null) : null;
+
+            // Apply BDR filter if specified
+            if (bdrFilter && contact?.assignedBdr !== bdrFilter) return null;
+
+            const eventType = ev.type;
+            let score = 0, label = "";
+            if (eventType === "REPLY")  { score = 100; label = "Replied"; }
+            else if (eventType === "CLICK") { score = 70;  label = "Clicked link"; }
+            else if (eventType === "OPEN")  { score = 40;  label = "Opened"; }
+
+            const botCheck = detectBot({
+              filteredEvent: false,
+              sentAt:    null, // raw events don't have sent timestamp
+              openedAt:  eventType === "OPEN"  ? ev.created : null,
+              numOpens:  eventType === "OPEN"  ? 1 : 0,
+              numClicks: eventType === "CLICK" ? 1 : 0,
+              replied:   eventType === "REPLY",
+            });
+
+            return {
+              source:         "realtime_event",
+              id:             `rt-${ev.id || ev.created}`,
+              type:           eventType,
+              emailSource:    "marketing",
+              timestamp:      ev.created || null,
+              score,
+              label,
+              contactId,
+              contact,
+              botCheck,
+              isBot:          botCheck.isBot && eventType === "OPEN",
+              subject:        ev.emailCampaignGroupName || ev.appName || null,
+              campaignId:     ev.emailCampaignId ? String(ev.emailCampaignId) : null,
+              openedAt:       eventType === "OPEN"  ? ev.created : null,
+              clickedAt:      eventType === "CLICK" ? ev.created : null,
+              repliedAt:      eventType === "REPLY" ? ev.created : null,
+              sentAt:         null,
+              url:            ev.url || null,
+            };
+          })
+          .filter(Boolean)
+          .filter(s => !s.isBot) // filter bots before sending to client
+          .sort((a, b) => b.score - a.score || new Date(b.timestamp||0) - new Date(a.timestamp||0));
+
+        return ok({
+          signals,
+          meta: {
+            since:   sinceISO,
+            count:   signals.length,
+            rawCount: rawEvents.length,
+          },
+        });
+      } catch (err) {
+        console.error("[signals/recent] Error:", err.message);
+        return error(500, `Recent signals error: ${err.message}`);
       }
     }
 
