@@ -1153,10 +1153,52 @@ export const handler = async (event, context) => {
           const tier     = p.priority_tier__bdr || "";
           const signal   = companySignal(contacts);
 
+          // Last sent: most recent send date across all contacts (no time window)
+          let lastSentTs = 0, lastSentName = null, lastSentContact = null;
+          for (const c of contacts) {
+            const cp = c.properties || {};
+            const ts = cp.hs_email_last_send_date ? new Date(cp.hs_email_last_send_date).getTime() : 0;
+            if (ts > lastSentTs) {
+              lastSentTs      = ts;
+              lastSentName    = cp.hs_email_last_email_name || null;
+              lastSentContact = `${cp.firstname||""} ${cp.lastname||""}`.trim();
+            }
+          }
+
+          // Best engagement across all contacts (most recent reply > click > open)
+          let bestEngagement = null;
+          for (const c of contacts) {
+            const cp = c.properties || {};
+            const replyTs = Math.max(
+              cp.hs_email_last_reply_date    ? new Date(cp.hs_email_last_reply_date).getTime()    : 0,
+              cp.hs_sales_email_last_replied ? new Date(cp.hs_sales_email_last_replied).getTime() : 0,
+            );
+            const clickTs = Math.max(
+              cp.hs_email_last_click_date    ? new Date(cp.hs_email_last_click_date).getTime()    : 0,
+              cp.hs_sales_email_last_clicked ? new Date(cp.hs_sales_email_last_clicked).getTime() : 0,
+            );
+            const openTs = Math.max(
+              cp.hs_email_last_open_date    ? new Date(cp.hs_email_last_open_date).getTime()    : 0,
+              cp.hs_sales_email_last_opened ? new Date(cp.hs_sales_email_last_opened).getTime() : 0,
+            );
+            const contactName = `${cp.firstname||""} ${cp.lastname||""}`.trim();
+            const best = replyTs > 0
+              ? { type:"replied",  ts: replyTs,  label:"Replied",      date: new Date(replyTs).toISOString(),  contact: contactName }
+              : clickTs > 0
+              ? { type:"clicked",  ts: clickTs,  label:"Clicked link", date: new Date(clickTs).toISOString(),  contact: contactName }
+              : openTs  > 0
+              ? { type:"opened",   ts: openTs,   label:"Opened",       date: new Date(openTs).toISOString(),   contact: contactName }
+              : null;
+            if (best && (!bestEngagement || best.ts > bestEngagement.ts)) {
+              bestEngagement = best;
+            }
+          }
+
           const allDates = [
             p.notes_last_contacted,
             p.hs_last_sales_activity_date,
-            signal.timestamp,
+            lastSentTs > 0 ? new Date(lastSentTs).toISOString() : null,
+            bestEngagement?.date,
           ].filter(Boolean).map(d => new Date(d).getTime());
           const lastActivityTs   = allDates.length > 0 ? Math.max(...allDates) : 0;
           const lastActivityDate = lastActivityTs > 0 ? new Date(lastActivityTs).toISOString() : null;
@@ -1172,14 +1214,27 @@ export const handler = async (event, context) => {
             territory:       p.territory    || "",
             lastActivityDate,
             signal,
+            // Last send across all contacts
+            lastSent: lastSentTs > 0 ? {
+              date:    new Date(lastSentTs).toISOString(),
+              subject: lastSentName,
+              contact: lastSentContact,
+            } : null,
+            // Best engagement across all contacts (no time window)
+            bestEngagement,
             contacts: contacts.map(c => {
               const cp = c.properties || {};
               return {
-                id:    c.id,
-                name:  `${cp.firstname||""} ${cp.lastname||""}`.trim(),
-                title: cp.jobtitle || "",
-                email: cp.email    || "",
-                url:   `https://app.hubspot.com/contacts/39921549/record/0-1/${c.id}`,
+                id:       c.id,
+                name:     `${cp.firstname||""} ${cp.lastname||""}`.trim(),
+                title:    cp.jobtitle || "",
+                email:    cp.email    || "",
+                lastSent: cp.hs_email_last_send_date || null,
+                lastOpen: cp.hs_email_last_open_date || cp.hs_sales_email_last_opened || null,
+                lastReply:cp.hs_email_last_reply_date || cp.hs_sales_email_last_replied || null,
+                lastClick:cp.hs_email_last_click_date || cp.hs_sales_email_last_clicked || null,
+                emailName:cp.hs_email_last_email_name || null,
+                url:      `https://app.hubspot.com/contacts/39921549/record/0-1/${c.id}`,
               };
             }),
             url: `https://app.hubspot.com/companies/39921549/company/${company.id}`,
@@ -1232,21 +1287,16 @@ export const handler = async (event, context) => {
         const sinceISO = new Date(since).toISOString();
         const includeOwned = qp.include_owned === "true";
 
-        // rep param: "all" = all reps, anything else = filter to that rep's assigned_bdr value
+        // rep param: "all" = both BDRs, anything else = filter to that rep's assigned_bdr value
         const repFilter = qp.rep && qp.rep !== "all"
           ? decodeURIComponent(qp.rep).trim()
           : null;
 
-        // Resolve rep names for scope -- either the single selected rep or all known reps
-        let repNames = [];
-        try {
-          const ownersData = await hsGet(user.userId, "/crm/v3/owners", { limit: 100 });
-          repNames = (ownersData.results || [])
-            .map(o => `${o.firstName || ""} ${o.lastName || ""}`.trim())
-            .filter(Boolean);
-        } catch { /* fall back */ }
-
-        const targetReps = repFilter ? [repFilter] : repNames;
+        // Known BDR names -- these are the only values used in the assigned_bdr property.
+        // We hardcode these rather than fetching all 25 HubSpot owners (most of which
+        // have zero contacts with their name as assigned_bdr, causing 25x unnecessary API calls).
+        const KNOWN_BDRS = ["Chris Knapp", "Chiara Pate"];
+        const targetReps = repFilter ? [repFilter] : KNOWN_BDRS;
 
         // Count contacts where assigned_bdr = repName AND dateProp >= since
         async function countByBdr(dateProp, repName) {
