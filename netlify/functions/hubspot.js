@@ -1093,17 +1093,19 @@ export const handler = async (event, context) => {
           return ok({ accounts: [], meta: { total: 0, byTier: {}, filters: { assigned_bdr: qp.assigned_bdr || null } } });
         }
 
-        // Build domain → company map for fast contact matching.
-        // Contacts have email addresses with the company domain embedded,
-        // so we can match contacts to companies without per-company association lookups.
+        // Build domain → company AND name → company maps for contact matching.
         const domainToCompany = {};
+        const nameToCompany   = {};
         goldCompanies.forEach(company => {
           const domain = (company.properties?.domain || "").toLowerCase().trim();
+          const name   = (company.properties?.name   || "").toLowerCase().trim();
           if (domain) domainToCompany[domain] = company.id;
+          if (name)   nameToCompany[name]     = company.id;
         });
 
-        // Single contact search across all BDRs -- no per-company association lookups.
-        // Fetch up to 200 contacts sorted by most recent send date so we get the most active.
+        // Single contact search -- no per-company association lookups.
+        // Fetch up to 500 contacts sorted by most recent send date.
+        // Match contacts to companies by email domain first, company name text field as fallback.
         const CONTACT_PROPS = [
           "firstname","lastname","email","jobtitle","company","assigned_bdr",
           "hs_email_last_open_date","hs_email_last_click_date",
@@ -1118,32 +1120,47 @@ export const handler = async (event, context) => {
 
         const contactsByCompany = {};
         try {
-          const contactData = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
-            filterGroups: [{ filters: [
-              ...bdrFilter,
-              { propertyName: "hs_email_last_send_date", operator: "HAS_PROPERTY" },
-            ]}],
-            properties: CONTACT_PROPS,
-            sorts:      [{ propertyName: "hs_email_last_send_date", direction: "DESCENDING" }],
-            limit:      200,
-          });
+          // Paginate to get more coverage -- Gold companies can have contacts
+          // across many different email domains
+          let after;
+          let fetched = 0;
+          while (fetched < 500) {
+            const body = {
+              filterGroups: [{ filters: [
+                ...bdrFilter,
+                { propertyName: "hs_email_last_send_date", operator: "HAS_PROPERTY" },
+              ]}],
+              properties: CONTACT_PROPS,
+              sorts:      [{ propertyName: "hs_email_last_send_date", direction: "DESCENDING" }],
+              limit:      100,
+            };
+            if (after) body.after = after;
+            const contactData = await hsPost(user.userId, "/crm/v3/objects/contacts/search", body);
+            const results = contactData.results || [];
 
-          // Match contacts to companies by email domain
-          for (const c of (contactData.results || [])) {
-            const email  = c.properties?.email || "";
-            const domain = email.includes("@") ? email.split("@")[1].toLowerCase().trim() : "";
-            // Also try the company name field as a fallback
-            const companyId = domainToCompany[domain];
-            if (companyId) {
-              if (!contactsByCompany[companyId]) contactsByCompany[companyId] = [];
-              if (contactsByCompany[companyId].length < 5) {
-                contactsByCompany[companyId].push(c);
+            for (const c of results) {
+              const email       = c.properties?.email   || "";
+              const companyName = (c.properties?.company || "").toLowerCase().trim();
+              const domain      = email.includes("@") ? email.split("@")[1].toLowerCase().trim() : "";
+
+              // Match by email domain first, company name text field as fallback
+              const companyId = domainToCompany[domain] || nameToCompany[companyName];
+              if (companyId) {
+                if (!contactsByCompany[companyId]) contactsByCompany[companyId] = [];
+                if (contactsByCompany[companyId].length < 5) {
+                  contactsByCompany[companyId].push(c);
+                }
               }
             }
+
+            fetched += results.length;
+            if (!contactData.paging?.next?.after || results.length < 100) break;
+            after = contactData.paging.next.after;
+            await new Promise(r => setTimeout(r, 150)); // rate limit gap
           }
+          console.log(`[gold] matched contacts to ${Object.keys(contactsByCompany).length} of ${goldCompanies.length} companies`);
         } catch (err) {
           console.error("[gold] contact fetch failed:", err.message);
-          // Continue -- companies will show without contact detail
         }
 
         // Extract leading number from tier for numeric sort
@@ -1196,7 +1213,7 @@ export const handler = async (event, context) => {
           }
 
           // Best engagement across all contacts (most recent reply > click > open)
-          let bestEngagement = null;
+          let lastEngagement = null;
           for (const c of contacts) {
             const cp = c.properties || {};
             const replyTs = Math.max(
@@ -1219,8 +1236,8 @@ export const handler = async (event, context) => {
               : openTs  > 0
               ? { type:"opened",   ts: openTs,   label:"Opened",       date: new Date(openTs).toISOString(),   contact: contactName }
               : null;
-            if (best && (!bestEngagement || best.ts > bestEngagement.ts)) {
-              bestEngagement = best;
+            if (best && (!lastEngagement || best.ts > lastEngagement.ts)) {
+              lastEngagement = best;
             }
           }
 
@@ -1228,7 +1245,7 @@ export const handler = async (event, context) => {
             p.notes_last_contacted,
             p.hs_last_sales_activity_timestamp,
             lastSentTs > 0 ? new Date(lastSentTs).toISOString() : null,
-            bestEngagement?.date,
+            lastEngagement?.date,
           ].filter(Boolean).map(d => new Date(d).getTime());
           const lastActivityTs   = allDates.length > 0 ? Math.max(...allDates) : 0;
           const lastActivityDate = lastActivityTs > 0 ? new Date(lastActivityTs).toISOString() : null;
@@ -1251,7 +1268,7 @@ export const handler = async (event, context) => {
               contact: lastSentContact,
             } : null,
             // Best engagement across all contacts (no time window)
-            bestEngagement,
+            lastEngagement,
             contacts: contacts.map(c => {
               const cp = c.properties || {};
               return {
