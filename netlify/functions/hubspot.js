@@ -32,6 +32,7 @@ const HS_SCOPES = [
   "crm.objects.contacts.read",
   "crm.objects.contacts.write",
   "crm.objects.deals.read",
+  "crm.objects.companies.read",   // required for gold accounts panel
   "timeline",
   "sales-email-read",
   "crm.lists.read",
@@ -44,11 +45,12 @@ const HS_SCOPES = [
 ].join(" ");
 
 // All custom properties to include in every contact fetch
+// NOTE: priority_tier__bdr lives on the COMPANY object, not contacts.
+// Do not add it here -- it will cause HubSpot to 400 on every contact search.
 const CUSTOM_PROPS = [
   "assigned_bdr",
   "target_account__bdr_led_outreach",
   "territory",
-  "priority_tier__bdr",
 ];
 
 // Standard contact properties always fetched
@@ -158,13 +160,13 @@ function buildCustomFilters(qp, baseFilters = []) {
   const FILTER_MAP = {
     assigned_bdr:                    "assigned_bdr",
     territory:                       "territory",
-    priority_tier__bdr:              "priority_tier__bdr",
+    // NOTE: priority_tier__bdr is a COMPANY property, not a contact property.
+    // It cannot be used to filter contacts directly. Omitted intentionally.
     target_account__bdr_led_outreach:"target_account__bdr_led_outreach",
   };
 
   Object.entries(FILTER_MAP).forEach(([param, prop]) => {
     if (qp[param]) {
-      // Decode URI encoding and trim whitespace to ensure clean filter values
       const val = decodeURIComponent(qp[param]).trim();
       if (val) {
         filters.push({
@@ -197,7 +199,7 @@ function normalizeContact(c) {
     assignedBdr:         p.assigned_bdr || "",
     targetAccount:       p.target_account__bdr_led_outreach || "",
     territory:           p.territory || "",
-    priorityTier:        p.priority_tier__bdr || "",
+    // priorityTier lives on Company object, not contact -- omitted here
     // Marketing email timestamps (hs_email_* -- marketing hub sends)
     lastEmailActivityDate: p.hs_last_email_activity_date || null,
     lastSalesActivityDate: p.hs_last_sales_activity_date || null,
@@ -695,42 +697,45 @@ export const handler = async (event, context) => {
 
     // ── Contacts list (with custom property filters, paginated up to 500) ───────
     if (method === "GET" && path === "/contacts") {
-      const baseFilters = buildCustomFilters(qp);
-      let contacts = [];
+      try {
+        const baseFilters = buildCustomFilters(qp);
+        let contacts = [];
 
-      if (baseFilters.length > 0) {
-        // Paginate through search API -- up to 500 contacts
-        let after = undefined;
-        while (contacts.length < 500) {
-          const body = {
-            filterGroups: [{ filters: baseFilters }],
-            properties:   BASE_CONTACT_PROPS,
-            sorts:        [{ propertyName: "lastname", direction: "ASCENDING" }],
-            limit:        100,
-          };
-          if (after) body.after = after;
-          const data = await hsPost(user.userId, "/crm/v3/objects/contacts/search", body);
-          contacts.push(...(data.results || []));
-          if (!data.paging?.next?.after || (data.results || []).length < 100) break;
-          after = data.paging.next.after;
+        if (baseFilters.length > 0) {
+          let after = undefined;
+          while (contacts.length < 500) {
+            const body = {
+              filterGroups: [{ filters: baseFilters }],
+              properties:   BASE_CONTACT_PROPS,
+              sorts:        [{ propertyName: "lastname", direction: "ASCENDING" }],
+              limit:        100,
+            };
+            if (after) body.after = after;
+            const data = await hsPost(user.userId, "/crm/v3/objects/contacts/search", body);
+            contacts.push(...(data.results || []));
+            if (!data.paging?.next?.after || (data.results || []).length < 100) break;
+            after = data.paging.next.after;
+          }
+        } else {
+          let after = undefined;
+          while (contacts.length < 500) {
+            const params = {
+              limit:      100,
+              properties: BASE_CONTACT_PROPS.join(","),
+            };
+            if (after) params.after = after;
+            const data = await hsGet(user.userId, "/crm/v3/objects/contacts", params);
+            contacts.push(...(data.results || []));
+            if (!data.paging?.next?.after || (data.results || []).length < 100) break;
+            after = data.paging.next.after;
+          }
         }
-      } else {
-        // Paginate through list API -- up to 500 contacts
-        let after = undefined;
-        while (contacts.length < 500) {
-          const params = {
-            limit:      100,
-            properties: BASE_CONTACT_PROPS.join(","),
-          };
-          if (after) params.after = after;
-          const data = await hsGet(user.userId, "/crm/v3/objects/contacts", params);
-          contacts.push(...(data.results || []));
-          if (!data.paging?.next?.after || (data.results || []).length < 100) break;
-          after = data.paging.next.after;
-        }
+
+        return ok({ contacts, total: contacts.length });
+      } catch (err) {
+        console.error("[contacts] Error:", err.message);
+        return error(500, `Contacts error: ${err.message}`);
       }
-
-      return ok({ contacts, total: contacts.length });
     }
 
     // ── Single contact ───────────────────────────────────────────────────────
