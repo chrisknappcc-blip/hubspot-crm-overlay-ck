@@ -2359,11 +2359,11 @@ export const handler = async (event, context) => {
             }
           } catch {}
 
-          // Recent activity list for drill-down (last 50 contacts with send date)
+          // Recent activity list for drill-down (last 300 contacts with send date)
           const recentContacts = await fetchContacts(
             [...bdrFilters, ...dateFilter.length ? dateFilter : [{ propertyName: "hs_email_last_send_date", operator: "HAS_PROPERTY" }]],
             ["firstname","lastname","email","company","assigned_bdr","hs_email_last_send_date","hs_email_last_email_name","hs_latest_sequence_enrolled_date"],
-            "hs_email_last_send_date", 50
+            "hs_email_last_send_date", 300
           );
 
           const totals = repData.reduce((a, r) => ({
@@ -2429,12 +2429,51 @@ export const handler = async (event, context) => {
             };
           }));
 
-          // Recent replies for drill-down
-          const recentReplies = await fetchContacts(
-            [...bdrFilters, ...(sinceISO ? [{ propertyName: "hs_email_last_reply_date", operator: "GTE", value: sinceISO }] : [{ propertyName: "hs_email_last_reply_date", operator: "HAS_PROPERTY" }])],
-            ["firstname","lastname","email","company","assigned_bdr","hs_email_last_reply_date","hs_email_last_email_name","hs_sales_email_last_replied"],
-            "hs_email_last_reply_date", 50
-          );
+          // Recent replies -- use OR across marketing + sales reply props.
+          // Only 8 contacts total have hs_email_last_reply_date so don't restrict by period --
+          // show all available replies sorted by most recent.
+          let recentReplies = [];
+          try {
+            const [mktReplies, salesReplies] = await Promise.all([
+              hsPost(user.userId, "/crm/v3/objects/contacts/search", {
+                filterGroups: [{ filters: [
+                  ...bdrFilters,
+                  { propertyName: "hs_email_last_reply_date", operator: "HAS_PROPERTY" },
+                ]}],
+                properties: ["firstname","lastname","email","company","assigned_bdr","hs_email_last_reply_date","hs_email_last_email_name"],
+                sorts: [{ propertyName: "hs_email_last_reply_date", direction: "DESCENDING" }],
+                limit: 100,
+              }).then(d => d.results || []),
+              hsPost(user.userId, "/crm/v3/objects/contacts/search", {
+                filterGroups: [{ filters: [
+                  ...bdrFilters,
+                  { propertyName: "hs_sales_email_last_replied", operator: "HAS_PROPERTY" },
+                ]}],
+                properties: ["firstname","lastname","email","company","assigned_bdr","hs_sales_email_last_replied","hs_email_last_email_name"],
+                sorts: [{ propertyName: "hs_sales_email_last_replied", direction: "DESCENDING" }],
+                limit: 100,
+              }).then(d => d.results || []),
+            ]);
+            // Merge and dedup by contact ID, pick best reply date
+            const seen = {};
+            for (const c of [...mktReplies, ...salesReplies]) {
+              const existing = seen[c.id];
+              const ts = Math.max(
+                c.properties?.hs_email_last_reply_date    ? new Date(c.properties.hs_email_last_reply_date).getTime()    : 0,
+                c.properties?.hs_sales_email_last_replied ? new Date(c.properties.hs_sales_email_last_replied).getTime() : 0,
+              );
+              if (!existing || ts > existing._ts) {
+                seen[c.id] = { ...c, _ts: ts,
+                  properties: { ...c.properties,
+                    _bestReplyDate: ts > 0 ? new Date(ts).toISOString() : null,
+                  }
+                };
+              }
+            }
+            recentReplies = Object.values(seen).sort((a,b) => b._ts - a._ts).slice(0, 100);
+          } catch (err) {
+            console.error("[reports] replies fetch error:", err.message);
+          }
 
           return ok({
             section: "inbound",
@@ -2447,7 +2486,7 @@ export const handler = async (event, context) => {
               name:       `${c.properties?.firstname||""} ${c.properties?.lastname||""}`.trim(),
               company:    c.properties?.company || "",
               assignedBdr:c.properties?.assigned_bdr || "",
-              replyDate:  c.properties?.hs_email_last_reply_date || c.properties?.hs_sales_email_last_replied || null,
+              replyDate:  c.properties?._bestReplyDate || c.properties?.hs_email_last_reply_date || c.properties?.hs_sales_email_last_replied || null,
               emailName:  c.properties?.hs_email_last_email_name || null,
               url: `https://app.hubspot.com/contacts/39921549/record/0-1/${c.id}`,
             })),
@@ -2572,25 +2611,44 @@ export const handler = async (event, context) => {
           const clickRate = totalReached > 0 ? ((totalClicked / totalReached) * 100).toFixed(1) : "0.0";
           const replyRate = totalReached > 0 ? ((totalReplied / totalReached) * 100).toFixed(1) : "0.0";
 
-          // Top email names in the period
-          const recentSends = await fetchContacts(
-            makeFilter("hs_email_last_send_date"),
-            ["hs_email_last_send_date","hs_email_last_email_name","hs_email_last_open_date","assigned_bdr"],
-            "hs_email_last_send_date", 200
-          );
-
-          // Group by email name for campaign-level summary
+          // Campaign grouping: paginate through all contacts with email_last_email_name set
+          // to capture all campaigns, not just the most recently sent one.
+          // Sort by email name (stable) so pagination is consistent.
           const byCampaign = {};
-          for (const c of recentSends) {
-            const name = c.properties?.hs_email_last_email_name || "Unknown";
-            if (!byCampaign[name]) byCampaign[name] = { name, sent:0, opened:0 };
-            byCampaign[name].sent++;
-            if (c.properties?.hs_email_last_open_date) byCampaign[name].opened++;
+          try {
+            let camAfter, camFetched = 0;
+            while (camFetched < 2000) {
+              const camFilters = [
+                { propertyName: "hs_email_last_email_name", operator: "HAS_PROPERTY" },
+                ...(sinceISO ? [{ propertyName: "hs_email_last_send_date", operator: "GTE", value: sinceISO }] : []),
+              ];
+              const camBody = {
+                filterGroups: [{ filters: camFilters }],
+                properties: ["hs_email_last_email_name","hs_email_last_open_date","hs_email_last_send_date"],
+                sorts: [{ propertyName: "hs_email_last_email_name", direction: "ASCENDING" }],
+                limit: 100,
+              };
+              if (camAfter) camBody.after = camAfter;
+              const camData = await hsPost(user.userId, "/crm/v3/objects/contacts/search", camBody);
+              for (const c of (camData.results || [])) {
+                const name = c.properties?.hs_email_last_email_name || "Unknown";
+                if (!byCampaign[name]) byCampaign[name] = { name, sent:0, opened:0 };
+                byCampaign[name].sent++;
+                if (c.properties?.hs_email_last_open_date) byCampaign[name].opened++;
+              }
+              camFetched += (camData.results || []).length;
+              if (!camData.paging?.next?.after || (camData.results||[]).length < 100) break;
+              camAfter = camData.paging.next.after;
+              await new Promise(r => setTimeout(r, 150));
+            }
+          } catch (err) {
+            console.error("[reports] campaign fetch error:", err.message);
           }
+
           const campaigns = Object.values(byCampaign)
             .map(c => ({ ...c, openRate: c.sent > 0 ? ((c.opened/c.sent)*100).toFixed(1) : "0.0" }))
             .sort((a,b) => b.sent - a.sent)
-            .slice(0, 20);
+            .slice(0, 30);
 
           return ok({
             section: "marketing",
