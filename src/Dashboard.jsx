@@ -217,6 +217,22 @@ const ACTIVITY_DAYS_OPTIONS = [
   { value:'90', label:'Last 90 days' },
 ]
 
+const REPORT_PERIOD_OPTIONS = [
+  { value:'today',    label:'Today' },
+  { value:'week',     label:'Last 7 days' },
+  { value:'month',    label:'Last 30 days' },
+  { value:'quarter',  label:'Last 90 days' },
+  { value:'6months',  label:'Last 6 months' },
+  { value:'year',     label:'Last year' },
+  { value:'alltime',  label:'All time' },
+]
+
+const REPORT_REP_OPTIONS = [
+  { value:'all',          label:'All reps' },
+  { value:'Chris Knapp',  label:'Chris Knapp' },
+  { value:'Chiara Pate',  label:'Chiara Pate' },
+]
+
 // ─── Sort options ─────────────────────────────────────────────────────────────
 const SIGNAL_SORT_OPTIONS = [
   { value:'score_desc',  label:'Priority (high to low)' },
@@ -657,6 +673,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
         {[
           { key:'dashboard', label:'Dashboard' },
           { key:'contacts',  label:'Contacts' },
+          { key:'reports',   label:'Reports' },
           { key:'map-tool',  label:'Market Mapper' },
           { key:'cpiq',      label:'CPIQ', badge:'SOON' },
           // Dynamic tabs from registry
@@ -1289,6 +1306,11 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
           </div>
         )}
 
+        {/* ── Reports tab ── */}
+        {activeTab === 'reports' && (
+          <ReportsTab safeFetch={safeFetch} owners={owners} />
+        )}
+
         {/* ── CPIQ placeholder tab ── */}
         {activeTab === 'cpiq' && (
           <div style={{ display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', height:'calc(100vh - 180px)', gap:16 }}>
@@ -1344,6 +1366,412 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
           />
         )}
       </div>
+    </div>
+  )
+}
+
+// ─── Reports Tab ─────────────────────────────────────────────────────────────
+function ReportsTab({ safeFetch, owners }) {
+  const [section, setSection]   = useState('outbound')
+  const [period, setPeriod]     = useState('month')
+  const [rep, setRep]           = useState('all')
+  const [data, setData]         = useState(null)
+  const [loading, setLoading]   = useState(false)
+  const [drillDown, setDrillDown] = useState(null) // 'activity' | 'replies' | 'deals'
+
+  const ownerMap = {}
+  owners.forEach(o => { ownerMap[o.id] = o.name })
+
+  const fetchReport = useCallback(async () => {
+    setLoading(true)
+    setData(null)
+    setDrillDown(null)
+    try {
+      const params = `section=${section}&period=${period}&rep=${encodeURIComponent(rep)}`
+      const result = await safeFetch(`/api/hubspot/reports?${params}`)
+      setData(result)
+    } catch (e) {
+      console.error('[reports]', e)
+    } finally {
+      setLoading(false)
+    }
+  }, [safeFetch, section, period, rep])
+
+  useEffect(() => { fetchReport() }, [fetchReport])
+
+  const fmt = (n) => typeof n === 'number' ? n.toLocaleString() : (n ?? '—')
+  const fmtMoney = (n) => n ? `$${Math.round(n).toLocaleString()}` : '$0'
+  const fmtPct = (n) => n != null ? `${n}%` : '—'
+
+  const SECTIONS = [
+    { key:'outbound',  label:'Outbound' },
+    { key:'inbound',   label:'Inbound' },
+    { key:'deals',     label:'Deals' },
+    { key:'marketing', label:'Marketing' },
+  ]
+
+  return (
+    <div>
+      {/* Controls */}
+      <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:'1.5rem', flexWrap:'wrap' }}>
+        {/* Section tabs */}
+        <div style={{ display:'flex', background:'var(--bg-panel)', borderRadius:'var(--radius-lg)', padding:4, border:'1px solid var(--border)', gap:2 }}>
+          {SECTIONS.map(s => (
+            <button key={s.key} onClick={() => setSection(s.key)}
+              style={{ fontSize:13, fontWeight: section===s.key ? 500 : 400, color: section===s.key ? 'var(--text)' : 'var(--text-secondary)', background: section===s.key ? 'var(--bg-secondary)' : 'transparent', border:'none', borderRadius:'var(--radius)', padding:'6px 16px', cursor:'pointer' }}>
+              {s.label}
+            </button>
+          ))}
+        </div>
+        <div style={{ marginLeft:'auto', display:'flex', gap:8, alignItems:'center' }}>
+          <Select value={period} onChange={setPeriod} options={REPORT_PERIOD_OPTIONS} />
+          {section !== 'deals' && section !== 'marketing' && (
+            <Select value={rep} onChange={setRep} options={REPORT_REP_OPTIONS} />
+          )}
+          <button onClick={fetchReport} style={{ fontSize:12, color:'var(--text-secondary)', background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius)', padding:'6px 14px', cursor:'pointer' }}>
+            Refresh
+          </button>
+        </div>
+      </div>
+
+      {loading && (
+        <div style={{ display:'flex', alignItems:'center', gap:10, color:'var(--text-tertiary)', fontSize:13, padding:'3rem', justifyContent:'center' }}>
+          <div style={{ width:18, height:18, border:'2px solid var(--border)', borderTopColor:'var(--accent)', borderRadius:'50%', animation:'spin 0.8s linear infinite' }} />
+          Loading report...
+        </div>
+      )}
+
+      {/* ── Outbound ── */}
+      {!loading && data && section === 'outbound' && (
+        <div>
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(6, minmax(0,1fr))', gap:10, marginBottom:'1.5rem' }}>
+            {[
+              { label:'Emails sent',       value: fmt(data.totals?.emailsSent),       sub:'Unique contacts' },
+              { label:'Sequences started', value: fmt(data.totals?.sequencesStarted), sub:'New enrollments' },
+              { label:'Contacts reached',  value: fmt(data.totals?.contactsReached),  sub:'Via any channel' },
+              { label:'Calls logged',      value: fmt(data.totals?.calls),            sub:'Logged activities' },
+              { label:'Meetings logged',   value: fmt(data.totals?.meetings),         sub:'Logged activities' },
+              { label:'Notes logged',      value: fmt(data.totals?.notes),            sub:'Logged activities' },
+            ].map(({ label, value, sub }) => (
+              <div key={label} style={{ background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius-lg)', padding:'14px 16px' }}>
+                <div style={{ fontSize:12, color:'var(--text-tertiary)', marginBottom:4 }}>{label}</div>
+                <div style={{ fontSize:26, fontWeight:500, color:'var(--text)' }}>{value}</div>
+                <div style={{ fontSize:11, color:'var(--text-tertiary)', marginTop:3 }}>{sub}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* Rep breakdown */}
+          {data.byRep?.length > 1 && (
+            <Panel style={{ marginBottom:12 }}>
+              <SectionTitle>By rep</SectionTitle>
+              <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
+                <thead>
+                  <tr>{['Rep','Emails sent','Sequences','Contacts reached'].map(h => (
+                    <th key={h} style={{ textAlign:'left', fontSize:11, fontWeight:500, color:'var(--text-tertiary)', textTransform:'uppercase', letterSpacing:'.04em', padding:'0 12px 8px 0', borderBottom:'1px solid var(--border)' }}>{h}</th>
+                  ))}</tr>
+                </thead>
+                <tbody>
+                  {data.byRep.map((r, i) => (
+                    <tr key={i} style={{ borderBottom: i < data.byRep.length-1 ? '1px solid var(--border)' : 'none' }}>
+                      <td style={{ padding:'9px 12px 9px 0', fontWeight:500, color:'var(--text)' }}>{r.rep}</td>
+                      <td style={{ padding:'9px 12px 9px 0', color:'var(--text-secondary)' }}>{fmt(r.emailsSent)}</td>
+                      <td style={{ padding:'9px 12px 9px 0', color:'var(--text-secondary)' }}>{fmt(r.sequencesStarted)}</td>
+                      <td style={{ padding:'9px 0', color:'var(--text-secondary)' }}>{fmt(r.contactsReached)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </Panel>
+          )}
+
+          {/* Recent activity drill-down */}
+          <Panel>
+            <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:12 }}>
+              <SectionTitle style={{ margin:0 }}>Recent outbound activity</SectionTitle>
+              <span style={{ fontSize:11, color:'var(--text-tertiary)' }}>{data.recentActivity?.length || 0} contacts shown</span>
+            </div>
+            {(data.recentActivity || []).length === 0 && <div style={{ fontSize:13, color:'var(--text-tertiary)' }}>No activity in this period.</div>}
+            <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
+              <thead>
+                <tr>{['Contact','Company','BDR','Last email','Sent'].map(h => (
+                  <th key={h} style={{ textAlign:'left', fontSize:11, fontWeight:500, color:'var(--text-tertiary)', textTransform:'uppercase', letterSpacing:'.04em', padding:'0 10px 8px 0', borderBottom:'1px solid var(--border)' }}>{h}</th>
+                ))}</tr>
+              </thead>
+              <tbody>
+                {(data.recentActivity || []).map((c, i) => (
+                  <tr key={i} style={{ borderBottom: i < data.recentActivity.length-1 ? '1px solid var(--border)' : 'none' }}>
+                    <td style={{ padding:'8px 10px 8px 0' }}>
+                      <a href={c.url} target="_blank" rel="noopener noreferrer" style={{ color:'var(--accent)', textDecoration:'none', fontWeight:500 }}>{c.name || '—'}</a>
+                    </td>
+                    <td style={{ padding:'8px 10px 8px 0', color:'var(--text-secondary)', fontSize:12 }}>{c.company || '—'}</td>
+                    <td style={{ padding:'8px 10px 8px 0', color:'var(--text-secondary)', fontSize:12 }}>{c.assignedBdr || '—'}</td>
+                    <td style={{ padding:'8px 10px 8px 0', color:'var(--text-secondary)', fontSize:12, maxWidth:200, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{c.emailName || '—'}</td>
+                    <td style={{ padding:'8px 0', color:'var(--text-tertiary)', fontSize:12, whiteSpace:'nowrap' }}>{c.lastSent ? new Date(c.lastSent).toLocaleDateString('en-US', { month:'short', day:'numeric', year:'numeric' }) : '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </Panel>
+        </div>
+      )}
+
+      {/* ── Inbound ── */}
+      {!loading && data && section === 'inbound' && (
+        <div>
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(7, minmax(0,1fr))', gap:10, marginBottom:'1.5rem' }}>
+            {[
+              { label:'Emails sent',    value: fmt(data.totals?.sent),         sub:'Unique contacts' },
+              { label:'Opens',          value: fmt(data.totals?.opens),         sub: fmtPct(data.totals?.openRate) + ' open rate' },
+              { label:'Clicks',         value: fmt(data.totals?.clicks),        sub: fmtPct(data.totals?.clickRate) + ' click rate' },
+              { label:'Replies',        value: fmt(data.totals?.replies),       sub: fmtPct(data.totals?.replyRate) + ' reply rate' },
+              { label:'Open rate',      value: fmtPct(data.totals?.openRate),   sub:'Of sends' },
+              { label:'Click rate',     value: fmtPct(data.totals?.clickRate),  sub:'Of sends' },
+              { label:'Reply rate',     value: fmtPct(data.totals?.replyRate),  sub:'Of sends' },
+            ].map(({ label, value, sub }) => (
+              <div key={label} style={{ background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius-lg)', padding:'14px 16px' }}>
+                <div style={{ fontSize:12, color:'var(--text-tertiary)', marginBottom:4 }}>{label}</div>
+                <div style={{ fontSize:22, fontWeight:500, color:'var(--text)' }}>{value}</div>
+                <div style={{ fontSize:11, color:'var(--text-tertiary)', marginTop:3 }}>{sub}</div>
+              </div>
+            ))}
+          </div>
+
+          {data.byRep?.length > 1 && (
+            <Panel style={{ marginBottom:12 }}>
+              <SectionTitle>By rep</SectionTitle>
+              <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
+                <thead>
+                  <tr>{['Rep','Sent','Opens','Open %','Clicks','Click %','Replies','Reply %'].map(h => (
+                    <th key={h} style={{ textAlign:'left', fontSize:11, fontWeight:500, color:'var(--text-tertiary)', textTransform:'uppercase', letterSpacing:'.04em', padding:'0 10px 8px 0', borderBottom:'1px solid var(--border)' }}>{h}</th>
+                  ))}</tr>
+                </thead>
+                <tbody>
+                  {data.byRep.map((r, i) => (
+                    <tr key={i} style={{ borderBottom: i < data.byRep.length-1 ? '1px solid var(--border)' : 'none' }}>
+                      <td style={{ padding:'9px 10px 9px 0', fontWeight:500, color:'var(--text)' }}>{r.rep}</td>
+                      <td style={{ padding:'9px 10px 9px 0', color:'var(--text-secondary)' }}>{fmt(r.sent)}</td>
+                      <td style={{ padding:'9px 10px 9px 0', color:'var(--text-secondary)' }}>{fmt(r.opens)}</td>
+                      <td style={{ padding:'9px 10px 9px 0', color:'var(--accent)' }}>{fmtPct(r.openRate)}</td>
+                      <td style={{ padding:'9px 10px 9px 0', color:'var(--text-secondary)' }}>{fmt(r.clicks)}</td>
+                      <td style={{ padding:'9px 10px 9px 0', color:'var(--accent)' }}>{fmtPct(r.clickRate)}</td>
+                      <td style={{ padding:'9px 10px 9px 0', color:'var(--text-secondary)' }}>{fmt(r.replies)}</td>
+                      <td style={{ padding:'9px 0', color:'var(--accent)' }}>{fmtPct(r.replyRate)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </Panel>
+          )}
+
+          <Panel>
+            <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:12 }}>
+              <SectionTitle style={{ margin:0 }}>Recent replies</SectionTitle>
+              <span style={{ fontSize:11, color:'var(--text-tertiary)' }}>{data.recentReplies?.length || 0} shown</span>
+            </div>
+            {(data.recentReplies || []).length === 0 && <div style={{ fontSize:13, color:'var(--text-tertiary)' }}>No replies in this period.</div>}
+            <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
+              <thead>
+                <tr>{['Contact','Company','BDR','Email','Replied'].map(h => (
+                  <th key={h} style={{ textAlign:'left', fontSize:11, fontWeight:500, color:'var(--text-tertiary)', textTransform:'uppercase', letterSpacing:'.04em', padding:'0 10px 8px 0', borderBottom:'1px solid var(--border)' }}>{h}</th>
+                ))}</tr>
+              </thead>
+              <tbody>
+                {(data.recentReplies || []).map((c, i) => (
+                  <tr key={i} style={{ borderBottom: i < data.recentReplies.length-1 ? '1px solid var(--border)' : 'none' }}>
+                    <td style={{ padding:'8px 10px 8px 0' }}>
+                      <a href={c.url} target="_blank" rel="noopener noreferrer" style={{ color:'var(--accent)', textDecoration:'none', fontWeight:500 }}>{c.name || '—'}</a>
+                    </td>
+                    <td style={{ padding:'8px 10px 8px 0', color:'var(--text-secondary)', fontSize:12 }}>{c.company || '—'}</td>
+                    <td style={{ padding:'8px 10px 8px 0', color:'var(--text-secondary)', fontSize:12 }}>{c.assignedBdr || '—'}</td>
+                    <td style={{ padding:'8px 10px 8px 0', color:'var(--text-secondary)', fontSize:12, maxWidth:180, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{c.emailName || '—'}</td>
+                    <td style={{ padding:'8px 0', color:'var(--text-tertiary)', fontSize:12, whiteSpace:'nowrap' }}>{c.replyDate ? new Date(c.replyDate).toLocaleDateString('en-US', { month:'short', day:'numeric', year:'numeric' }) : '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </Panel>
+        </div>
+      )}
+
+      {/* ── Deals ── */}
+      {!loading && data && section === 'deals' && (
+        <div>
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(5, minmax(0,1fr))', gap:10, marginBottom:'1.5rem' }}>
+            {[
+              { label:'Total deals',     value: fmt(data.totals?.total),        sub:'In period' },
+              { label:'Total value',     value: fmtMoney(data.totals?.totalValue), sub:'Pipeline value' },
+              { label:'Weighted value',  value: fmtMoney(data.totals?.totalWeighted), sub:'By probability' },
+              { label:'Won',             value: `${fmt(data.totals?.wonCount)} (${fmtPct(data.totals?.winRate)})`, sub: fmtMoney(data.totals?.wonValue) },
+              { label:'Lost',            value: fmt(data.totals?.lostCount),    sub: fmtMoney(data.totals?.lostValue) },
+            ].map(({ label, value, sub }) => (
+              <div key={label} style={{ background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius-lg)', padding:'14px 16px' }}>
+                <div style={{ fontSize:12, color:'var(--text-tertiary)', marginBottom:4 }}>{label}</div>
+                <div style={{ fontSize:22, fontWeight:500, color:'var(--text)' }}>{value}</div>
+                <div style={{ fontSize:11, color:'var(--text-tertiary)', marginTop:3 }}>{sub}</div>
+              </div>
+            ))}
+          </div>
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(2,1fr)', gap:10, marginBottom:12 }}>
+            <div style={{ background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius-lg)', padding:'14px 16px', display:'flex', gap:16 }}>
+              <div>
+                <div style={{ fontSize:12, color:'var(--text-tertiary)', marginBottom:4 }}>Avg deal size (won)</div>
+                <div style={{ fontSize:22, fontWeight:500, color:'var(--text)' }}>{fmtMoney(data.totals?.avgDealSize)}</div>
+              </div>
+              <div>
+                <div style={{ fontSize:12, color:'var(--text-tertiary)', marginBottom:4 }}>Avg days to close</div>
+                <div style={{ fontSize:22, fontWeight:500, color:'var(--text)' }}>{data.totals?.avgVelocity != null ? `${data.totals.avgVelocity}d` : '—'}</div>
+              </div>
+              <div>
+                <div style={{ fontSize:12, color:'var(--text-tertiary)', marginBottom:4 }}>Win rate</div>
+                <div style={{ fontSize:22, fontWeight:500, color:'var(--accent)' }}>{fmtPct(data.totals?.winRate)}</div>
+              </div>
+            </div>
+            {/* Lost reasons */}
+            <Panel>
+              <SectionTitle>Lost reasons</SectionTitle>
+              {(data.lostReasons || []).length === 0 && <div style={{ fontSize:13, color:'var(--text-tertiary)' }}>No closed-lost deals in this period.</div>}
+              {(data.lostReasons || []).slice(0,5).map((r, i) => (
+                <div key={i} style={{ display:'flex', justifyContent:'space-between', padding:'5px 0', borderBottom: i < Math.min(data.lostReasons.length,5)-1 ? '1px solid var(--border)' : 'none', fontSize:12 }}>
+                  <span style={{ color:'var(--text-secondary)' }}>{r.reason}</span>
+                  <span style={{ color:'var(--text)', fontWeight:500 }}>{r.count}</span>
+                </div>
+              ))}
+            </Panel>
+          </div>
+
+          {/* Pipeline breakdown */}
+          <Panel style={{ marginBottom:12 }}>
+            <SectionTitle>By pipeline</SectionTitle>
+            <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
+              <thead>
+                <tr>{['Pipeline','Deals','Total value','Weighted value'].map(h => (
+                  <th key={h} style={{ textAlign:'left', fontSize:11, fontWeight:500, color:'var(--text-tertiary)', textTransform:'uppercase', letterSpacing:'.04em', padding:'0 10px 8px 0', borderBottom:'1px solid var(--border)' }}>{h}</th>
+                ))}</tr>
+              </thead>
+              <tbody>
+                {(data.byPipeline || []).map((p, i) => (
+                  <tr key={i} style={{ borderBottom: i < data.byPipeline.length-1 ? '1px solid var(--border)' : 'none' }}>
+                    <td style={{ padding:'9px 10px 9px 0', fontWeight:500, color:'var(--text)' }}>{p.label}</td>
+                    <td style={{ padding:'9px 10px 9px 0', color:'var(--text-secondary)' }}>{fmt(p.count)}</td>
+                    <td style={{ padding:'9px 10px 9px 0', color:'var(--text-secondary)' }}>{fmtMoney(p.value)}</td>
+                    <td style={{ padding:'9px 0', color:'var(--text-secondary)' }}>{fmtMoney(p.weighted)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </Panel>
+
+          {/* Stage breakdown */}
+          <Panel style={{ marginBottom:12 }}>
+            <SectionTitle>By stage</SectionTitle>
+            <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
+              <thead>
+                <tr>{['Stage','Pipeline','Count','Value'].map(h => (
+                  <th key={h} style={{ textAlign:'left', fontSize:11, fontWeight:500, color:'var(--text-tertiary)', textTransform:'uppercase', letterSpacing:'.04em', padding:'0 10px 8px 0', borderBottom:'1px solid var(--border)' }}>{h}</th>
+                ))}</tr>
+              </thead>
+              <tbody>
+                {(data.byStage || []).map((s, i) => (
+                  <tr key={i} style={{ borderBottom: i < data.byStage.length-1 ? '1px solid var(--border)' : 'none' }}>
+                    <td style={{ padding:'8px 10px 8px 0', color:'var(--text)', fontWeight:500 }}>{s.label}</td>
+                    <td style={{ padding:'8px 10px 8px 0', color:'var(--text-secondary)', fontSize:12 }}>{s.pipeline}</td>
+                    <td style={{ padding:'8px 10px 8px 0', color:'var(--text-secondary)' }}>{s.count}</td>
+                    <td style={{ padding:'8px 0', color:'var(--text-secondary)' }}>{fmtMoney(s.value)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </Panel>
+
+          {/* Recent deals */}
+          <Panel>
+            <SectionTitle>Recent deals</SectionTitle>
+            <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
+              <thead>
+                <tr>{['Deal','Pipeline','Stage','Amount','Close date','Owner'].map(h => (
+                  <th key={h} style={{ textAlign:'left', fontSize:11, fontWeight:500, color:'var(--text-tertiary)', textTransform:'uppercase', letterSpacing:'.04em', padding:'0 10px 8px 0', borderBottom:'1px solid var(--border)' }}>{h}</th>
+                ))}</tr>
+              </thead>
+              <tbody>
+                {(data.recentDeals || []).map((d, i) => (
+                  <tr key={i} style={{ borderBottom: i < data.recentDeals.length-1 ? '1px solid var(--border)' : 'none' }}>
+                    <td style={{ padding:'8px 10px 8px 0' }}>
+                      <a href={d.url} target="_blank" rel="noopener noreferrer" style={{ color:'var(--accent)', textDecoration:'none', fontWeight:500 }}>{d.name}</a>
+                      {d.isWon  && <Badge label="Won"  type="reply"   style={{ marginLeft:6 }} />}
+                      {d.isLost && <Badge label="Lost" type="overdue" style={{ marginLeft:6 }} />}
+                    </td>
+                    <td style={{ padding:'8px 10px 8px 0', color:'var(--text-secondary)', fontSize:12 }}>{d.pipeline}</td>
+                    <td style={{ padding:'8px 10px 8px 0', color:'var(--text-secondary)', fontSize:12 }}>{d.stage}</td>
+                    <td style={{ padding:'8px 10px 8px 0', color:'var(--text-secondary)', fontSize:12 }}>{fmtMoney(d.amount)}</td>
+                    <td style={{ padding:'8px 10px 8px 0', color:'var(--text-tertiary)', fontSize:12, whiteSpace:'nowrap' }}>
+                      {d.closeDate ? new Date(d.closeDate).toLocaleDateString('en-US', { month:'short', day:'numeric', year:'numeric' }) : '—'}
+                    </td>
+                    <td style={{ padding:'8px 0', color:'var(--text-tertiary)', fontSize:12 }}>{ownerMap[d.ownerId] || d.ownerId || '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </Panel>
+        </div>
+      )}
+
+      {/* ── Marketing ── */}
+      {!loading && data && section === 'marketing' && (
+        <div>
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(7, minmax(0,1fr))', gap:10, marginBottom:'1.5rem' }}>
+            {[
+              { label:'Contacts reached', value: fmt(data.totals?.totalReached),  sub:'Total unique recipients' },
+              { label:'Opened',           value: fmt(data.totals?.totalOpened),   sub: fmtPct(data.totals?.openRate) + ' open rate' },
+              { label:'Clicked',          value: fmt(data.totals?.totalClicked),  sub: fmtPct(data.totals?.clickRate) + ' click rate' },
+              { label:'Replied',          value: fmt(data.totals?.totalReplied),  sub: fmtPct(data.totals?.replyRate) + ' reply rate' },
+              { label:'Open rate',        value: fmtPct(data.totals?.openRate),   sub:'Industry avg ~20%' },
+              { label:'Click rate',       value: fmtPct(data.totals?.clickRate),  sub:'Industry avg ~2-3%' },
+              { label:'Reply rate',       value: fmtPct(data.totals?.replyRate),  sub:'Industry avg ~1%' },
+            ].map(({ label, value, sub }) => (
+              <div key={label} style={{ background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius-lg)', padding:'14px 16px' }}>
+                <div style={{ fontSize:12, color:'var(--text-tertiary)', marginBottom:4 }}>{label}</div>
+                <div style={{ fontSize:22, fontWeight:500, color:'var(--text)' }}>{value}</div>
+                <div style={{ fontSize:11, color:'var(--text-tertiary)', marginTop:3 }}>{sub}</div>
+              </div>
+            ))}
+          </div>
+
+          <Panel>
+            <SectionTitle>By campaign / email</SectionTitle>
+            <div style={{ fontSize:11, color:'var(--text-tertiary)', marginBottom:10 }}>
+              Grouped by last marketing email name. Counts = unique contacts, not total sends.
+            </div>
+            {(data.campaigns || []).length === 0 && <div style={{ fontSize:13, color:'var(--text-tertiary)' }}>No campaign data in this period.</div>}
+            <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
+              <thead>
+                <tr>{['Email / Campaign','Contacts','Opened','Open rate'].map(h => (
+                  <th key={h} style={{ textAlign:'left', fontSize:11, fontWeight:500, color:'var(--text-tertiary)', textTransform:'uppercase', letterSpacing:'.04em', padding:'0 10px 8px 0', borderBottom:'1px solid var(--border)' }}>{h}</th>
+                ))}</tr>
+              </thead>
+              <tbody>
+                {(data.campaigns || []).map((c, i) => (
+                  <tr key={i} style={{ borderBottom: i < data.campaigns.length-1 ? '1px solid var(--border)' : 'none' }}>
+                    <td style={{ padding:'8px 10px 8px 0', color:'var(--text)', maxWidth:300, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{c.name}</td>
+                    <td style={{ padding:'8px 10px 8px 0', color:'var(--text-secondary)' }}>{fmt(c.sent)}</td>
+                    <td style={{ padding:'8px 10px 8px 0', color:'var(--text-secondary)' }}>{fmt(c.opened)}</td>
+                    <td style={{ padding:'8px 0' }}>
+                      <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+                        <span style={{ color: parseFloat(c.openRate) >= 20 ? 'var(--accent)' : parseFloat(c.openRate) >= 10 ? 'var(--amber)' : 'var(--text-secondary)' }}>
+                          {fmtPct(c.openRate)}
+                        </span>
+                        <div style={{ flex:1, height:4, background:'var(--bg-secondary)', borderRadius:2, minWidth:60 }}>
+                          <div style={{ width:`${Math.min(parseFloat(c.openRate)||0, 100)}%`, height:'100%', background:'var(--accent)', borderRadius:2 }} />
+                        </div>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </Panel>
+        </div>
+      )}
     </div>
   )
 }
