@@ -852,6 +852,153 @@ export const handler = async (event, context) => {
       }
     }
 
+    // ── Gold Accounts panel ───────────────────────────────────────────────────
+    // Returns contacts with any GOLD priority_tier__bdr value, sorted tier-first
+    // (GOLD 1-10 at top) then by most recent activity within each tier.
+    //
+    // Query params:
+    //   assigned_bdr=Chris+Knapp   (recommended -- filter to one rep's Gold list)
+    //   limit=N                    (default: 200, max: 500)
+    //
+    // Tier sort: extracts the leading number from "GOLD N-NN" strings so the sort
+    // is numeric, not alphabetical. "GOLD 1-10" < "GOLD 11-20" < "GOLD 91-100".
+    //
+    // Signal status is derived from contact properties -- same logic as /signals
+    // but simplified (no bot filtering, just the most recent action label).
+    if (method === "GET" && path === "/gold") {
+      try {
+        const limit = Math.min(parseInt(qp.limit || "200", 10), 500);
+        const customFilters = buildCustomFilters(qp);
+
+        // All 10 Gold tiers as defined in the custom property
+        const GOLD_TIERS = [
+          "GOLD 1-10","GOLD 11-20","GOLD 21-30","GOLD 31-40","GOLD 41-50",
+          "GOLD 51-60","GOLD 61-70","GOLD 71-80","GOLD 81-90","GOLD 91-100",
+        ];
+
+        // Paginate through all Gold contacts (up to limit)
+        let goldContacts = [];
+        let after = undefined;
+        while (goldContacts.length < limit) {
+          const body = {
+            filterGroups: [{
+              filters: [
+                { propertyName: "priority_tier__bdr", operator: "IN", values: GOLD_TIERS },
+                ...customFilters,
+              ],
+            }],
+            properties: [
+              ...BASE_CONTACT_PROPS,
+              // Ensure signal props are included even if BASE_CONTACT_PROPS changes
+              "hs_email_last_open_date",
+              "hs_email_last_click_date",
+              "hs_email_last_reply_date",
+              "hs_email_last_send_date",
+              "hs_email_last_email_name",
+              "hs_sales_email_last_opened",
+              "hs_sales_email_last_clicked",
+              "hs_sales_email_last_replied",
+            ],
+            sorts:  [{ propertyName: "notes_last_contacted", direction: "DESCENDING" }],
+            limit:  100,
+          };
+          if (after) body.after = after;
+          const data = await hsPost(user.userId, "/crm/v3/objects/contacts/search", body);
+          goldContacts.push(...(data.results || []));
+          if (!data.paging?.next?.after || (data.results || []).length < 100) break;
+          after = data.paging.next.after;
+        }
+
+        // Extract leading number from tier string for correct numeric sort
+        // "GOLD 1-10" -> 1, "GOLD 11-20" -> 11, "GOLD 91-100" -> 91
+        const tierRank = (tier) => {
+          const match = (tier || "").match(/(\d+)/);
+          return match ? parseInt(match[1], 10) : 999;
+        };
+
+        // Derive the most recent signal and its type for each contact
+        const signalStatus = (p) => {
+          const mktReplyTs  = p.hs_email_last_reply_date    ? new Date(p.hs_email_last_reply_date).getTime()    : 0;
+          const mktClickTs  = p.hs_email_last_click_date    ? new Date(p.hs_email_last_click_date).getTime()    : 0;
+          const mktOpenTs   = p.hs_email_last_open_date     ? new Date(p.hs_email_last_open_date).getTime()     : 0;
+          const salesReplyTs= p.hs_sales_email_last_replied ? new Date(p.hs_sales_email_last_replied).getTime() : 0;
+          const salesClickTs= p.hs_sales_email_last_clicked ? new Date(p.hs_sales_email_last_clicked).getTime() : 0;
+          const salesOpenTs = p.hs_sales_email_last_opened  ? new Date(p.hs_sales_email_last_opened).getTime()  : 0;
+
+          const replyTs = Math.max(mktReplyTs,  salesReplyTs);
+          const clickTs = Math.max(mktClickTs,  salesClickTs);
+          const openTs  = Math.max(mktOpenTs,   salesOpenTs);
+
+          if (replyTs > 0) return { status: "replied",  timestamp: new Date(replyTs).toISOString(), label: "Replied" };
+          if (clickTs > 0) return { status: "clicked",  timestamp: new Date(clickTs).toISOString(), label: "Clicked" };
+          if (openTs  > 0) return { status: "opened",   timestamp: new Date(openTs).toISOString(),  label: "Opened"  };
+          return             { status: "no_signal", timestamp: null,                                label: "No recent activity" };
+        };
+
+        const normalized = goldContacts.map(c => {
+          const p    = c.properties || {};
+          const tier = p.priority_tier__bdr || "";
+          const sig  = signalStatus(p);
+
+          // Last activity: most recent across all tracked dates
+          const allDates = [
+            p.notes_last_contacted,
+            p.hs_last_email_activity_date,
+            p.hs_last_sales_activity_date,
+            p.hs_email_last_send_date,
+            sig.timestamp,
+          ].filter(Boolean).map(d => new Date(d).getTime());
+          const lastActivityTs  = allDates.length > 0 ? Math.max(...allDates) : 0;
+          const lastActivityDate = lastActivityTs > 0 ? new Date(lastActivityTs).toISOString() : null;
+
+          return {
+            id:              c.id,
+            name:            `${p.firstname || ""} ${p.lastname || ""}`.trim(),
+            email:           p.email    || "",
+            company:         p.company  || "",
+            title:           p.jobtitle || "",
+            tier,
+            tierRank:        tierRank(tier),
+            assignedBdr:     p.assigned_bdr || "",
+            territory:       p.territory    || "",
+            lastActivityDate,
+            signal:          sig,
+            lastEmailName:   p.hs_email_last_email_name || null,
+            url: `https://app.hubspot.com/contacts/39921549/record/0-1/${c.id}`,
+          };
+        });
+
+        // Sort: tier rank ascending (1-10 first), then most recent activity descending
+        normalized.sort((a, b) => {
+          if (a.tierRank !== b.tierRank) return a.tierRank - b.tierRank;
+          const dateA = a.lastActivityDate ? new Date(a.lastActivityDate).getTime() : 0;
+          const dateB = b.lastActivityDate ? new Date(b.lastActivityDate).getTime() : 0;
+          return dateB - dateA;
+        });
+
+        // Count by tier for the panel header
+        const byTier = {};
+        normalized.forEach(c => {
+          byTier[c.tier] = (byTier[c.tier] || 0) + 1;
+        });
+
+        return ok({
+          accounts: normalized,
+          meta: {
+            total:   normalized.length,
+            byTier,
+            filters: {
+              assigned_bdr: qp.assigned_bdr || null,
+              territory:    qp.territory    || null,
+            },
+          },
+        });
+      } catch (err) {
+        console.error("[gold] Error:", err.message);
+        return error(500, `Gold accounts error: ${err.message}`);
+      }
+    }
+
     if (method === "GET" && path === "/signals") {
       try {
       const hours      = Math.min(parseInt(qp.hours || "2880", 10), 2880);
