@@ -1386,6 +1386,13 @@ function ReportsTab({ safeFetch, owners }) {
   const [dealsPage, setDealsPage]       = useState(0)
   const PAGE_SIZE = 25
 
+  // When switching to deals, default to 1 year; switching away, reset to month
+  const handleSetSection = useCallback((s) => {
+    setSection(s)
+    if (s === 'deals') setPeriod('year')
+    else setPeriod('month')
+  }, [])
+
   const ownerMap = useMemo(() => {
     const m = {}
     owners.forEach(o => { m[o.id] = o.name })
@@ -1472,7 +1479,7 @@ function ReportsTab({ safeFetch, owners }) {
       <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:'1.5rem', flexWrap:'wrap' }}>
         <div style={{ display:'flex', background:'var(--bg-panel)', borderRadius:'var(--radius-lg)', padding:4, border:'1px solid var(--border)', gap:2 }}>
           {SECTIONS.map(s => (
-            <button key={s.key} onClick={() => setSection(s.key)}
+            <button key={s.key} onClick={() => handleSetSection(s.key)}
               style={{ fontSize:13, fontWeight:section===s.key?500:400, color:section===s.key?'var(--text)':'var(--text-secondary)', background:section===s.key?'var(--bg-secondary)':'transparent', border:'none', borderRadius:'var(--radius)', padding:'6px 16px', cursor:'pointer', whiteSpace:'nowrap' }}>
               {s.label}
             </button>
@@ -1692,13 +1699,15 @@ function ReportsTab({ safeFetch, owners }) {
               {(data.sequences||[]).length === 0
                 ? <div style={{ fontSize:13, color:'var(--text-tertiary)' }}>No sequence data in this period.</div>
                 : <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
-                    <THead cols={['Sequence ID','Enrolled','Replies','Reply %','Opens','Open %','Clicks','Click %']} />
+                    <THead cols={['Sequence','Enrolled','Replies','Reply %','Opens','Open %','Clicks','Click %']} />
                     <tbody>
                       {(data.sequences||[]).map((s,i) => (
-                        <tr key={i} onClick={() => openHS(L.sequences)} style={{ borderBottom:i<data.sequences.length-1?'1px solid var(--border)':'none', cursor:'pointer' }}
+                        <tr key={i} onClick={() => openHS(s.sequenceUrl || L.sequences)} style={{ borderBottom:i<data.sequences.length-1?'1px solid var(--border)':'none', cursor:'pointer' }}
                           onMouseEnter={e => e.currentTarget.style.background='var(--bg-secondary)'}
                           onMouseLeave={e => e.currentTarget.style.background=''}>
-                          <td style={{ padding:'8px 10px 8px 0', color:'var(--accent)', fontFamily:'monospace', fontSize:12 }}>{s.sequenceId}</td>
+                          <td style={{ padding:'8px 10px 8px 0', color:'var(--accent)', maxWidth:240, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                            {s.sequenceName || s.sequenceId}
+                          </td>
                           <td style={{ padding:'8px 10px 8px 0', color:'var(--text-secondary)' }}>{fmt(s.enrolled)}</td>
                           <td style={{ padding:'8px 10px 8px 0', color:'var(--text-secondary)' }}>{fmt(s.replied)}</td>
                           <td style={{ padding:'8px 10px 8px 0', color:'var(--accent)' }}>{fmtPct(s.replyRate)}</td>
@@ -1742,7 +1751,7 @@ function ReportsTab({ safeFetch, owners }) {
                   <THead cols={['Pipeline','Deals','Value','Weighted']} />
                   <tbody>
                     {(data.byPipeline||[]).map((p,i) => (
-                      <tr key={i} onClick={() => openHS(L.deals)} style={{ borderBottom:i<data.byPipeline.length-1?'1px solid var(--border)':'none', cursor:'pointer' }}
+                      <tr key={i} onClick={() => openHS(p.url || L.deals)} style={{ borderBottom:i<data.byPipeline.length-1?'1px solid var(--border)':'none', cursor:'pointer' }}
                         onMouseEnter={e => e.currentTarget.style.background='var(--bg-secondary)'}
                         onMouseLeave={e => e.currentTarget.style.background=''}>
                         <td style={{ padding:'8px 10px 8px 0', color:'var(--accent)', fontWeight:500 }}>{p.label}</td>
