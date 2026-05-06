@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useClerk } from '@clerk/clerk-react'
 import { apiFetch } from './api'
 
@@ -1377,15 +1377,24 @@ function ReportsTab({ safeFetch, owners }) {
   const [rep, setRep]           = useState('all')
   const [data, setData]         = useState(null)
   const [loading, setLoading]   = useState(false)
-  const [drillDown, setDrillDown] = useState(null) // 'activity' | 'replies' | 'deals'
+  const [drillDown, setDrillDown] = useState(null)
+  const [activityPage, setActivityPage] = useState(0)
+  const [dealsPage, setDealsPage]       = useState(0)
+  const PAGE_SIZE = 25
 
-  const ownerMap = {}
-  owners.forEach(o => { ownerMap[o.id] = o.name })
+  const ownerMap = useMemo(() => {
+    const m = {}
+    owners.forEach(o => { m[o.id] = o.name })
+    return m
+  }, [owners])
 
+  // Only fetch on explicit user action (mount + button clicks)
+  // NOT on safeFetch reference changes which caused the refresh loop
   const fetchReport = useCallback(async () => {
     setLoading(true)
     setData(null)
-    setDrillDown(null)
+    setActivityPage(0)
+    setDealsPage(0)
     try {
       const params = `section=${section}&period=${period}&rep=${encodeURIComponent(rep)}`
       const result = await safeFetch(`/api/hubspot/reports?${params}`)
@@ -1395,13 +1404,28 @@ function ReportsTab({ safeFetch, owners }) {
     } finally {
       setLoading(false)
     }
-  }, [safeFetch, section, period, rep])
+  }, [section, period, rep]) // removed safeFetch from deps -- it changes every render
 
-  useEffect(() => { fetchReport() }, [fetchReport])
+  // Only re-fetch when section/period/rep actually change
+  const prevParams = useRef(null)
+  useEffect(() => {
+    const key = `${section}|${period}|${rep}`
+    if (prevParams.current === key) return
+    prevParams.current = key
+    fetchReport()
+  }, [section, period, rep, fetchReport])
 
   const fmt = (n) => typeof n === 'number' ? n.toLocaleString() : (n ?? '—')
   const fmtMoney = (n) => n ? `$${Math.round(n).toLocaleString()}` : '$0'
   const fmtPct = (n) => n != null ? `${n}%` : '—'
+
+  // HubSpot deep link helper for portal 39921549
+  const HS_BASE = 'https://app.hubspot.com'
+  const hsLink = (path) => `${HS_BASE}${path}`
+  const hsContactsFilter = (prop, label) =>
+    `${HS_BASE}/contacts/39921549/objects/0-1/views/all/list?filters=%5B%7B"property"%3A"${prop}"%2C"operation"%3A%7B"operationType"%3A"HAS_PROPERTY"%7D%7D%5D`
+  const hsDealsLink = () => `${HS_BASE}/contacts/39921549/objects/0-3/views/all/list`
+  const hsMktLink  = () => `${HS_BASE}/contacts/39921549/marketing-emails`
 
   const SECTIONS = [
     { key:'outbound',  label:'Outbound' },
@@ -1410,11 +1434,27 @@ function ReportsTab({ safeFetch, owners }) {
     { key:'marketing', label:'Marketing' },
   ]
 
+  // Pagination helper
+  const Pager = ({ page, setPage, total, pageSize=PAGE_SIZE }) => {
+    const totalPages = Math.ceil(total / pageSize)
+    if (totalPages <= 1) return null
+    return (
+      <div style={{ display:'flex', alignItems:'center', gap:8, marginTop:12, justifyContent:'flex-end' }}>
+        <button onClick={() => setPage(p => Math.max(0, p-1))} disabled={page===0}
+          style={{ fontSize:12, padding:'4px 10px', background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius)', cursor: page===0 ? 'not-allowed' : 'pointer', color: page===0 ? 'var(--text-tertiary)' : 'var(--text)' }}>← Prev</button>
+        <span style={{ fontSize:12, color:'var(--text-tertiary)' }}>
+          {page*pageSize+1}–{Math.min((page+1)*pageSize, total)} of {total}
+        </span>
+        <button onClick={() => setPage(p => Math.min(totalPages-1, p+1))} disabled={page>=totalPages-1}
+          style={{ fontSize:12, padding:'4px 10px', background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius)', cursor: page>=totalPages-1 ? 'not-allowed' : 'pointer', color: page>=totalPages-1 ? 'var(--text-tertiary)' : 'var(--text)' }}>Next →</button>
+      </div>
+    )
+  }
+
   return (
     <div>
       {/* Controls */}
       <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:'1.5rem', flexWrap:'wrap' }}>
-        {/* Section tabs */}
         <div style={{ display:'flex', background:'var(--bg-panel)', borderRadius:'var(--radius-lg)', padding:4, border:'1px solid var(--border)', gap:2 }}>
           {SECTIONS.map(s => (
             <button key={s.key} onClick={() => setSection(s.key)}
@@ -1446,22 +1486,25 @@ function ReportsTab({ safeFetch, owners }) {
         <div>
           <div style={{ display:'grid', gridTemplateColumns:'repeat(6, minmax(0,1fr))', gap:10, marginBottom:'1.5rem' }}>
             {[
-              { label:'Emails sent',       value: fmt(data.totals?.emailsSent),       sub:'Unique contacts' },
-              { label:'Sequences started', value: fmt(data.totals?.sequencesStarted), sub:'New enrollments' },
-              { label:'Contacts reached',  value: fmt(data.totals?.contactsReached),  sub:'Via any channel' },
-              { label:'Calls logged',      value: fmt(data.totals?.calls),            sub:'Logged activities' },
-              { label:'Meetings logged',   value: fmt(data.totals?.meetings),         sub:'Logged activities' },
-              { label:'Notes logged',      value: fmt(data.totals?.notes),            sub:'Logged activities' },
-            ].map(({ label, value, sub }) => (
-              <div key={label} style={{ background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius-lg)', padding:'14px 16px' }}>
-                <div style={{ fontSize:12, color:'var(--text-tertiary)', marginBottom:4 }}>{label}</div>
-                <div style={{ fontSize:26, fontWeight:500, color:'var(--text)' }}>{value}</div>
-                <div style={{ fontSize:11, color:'var(--text-tertiary)', marginTop:3 }}>{sub}</div>
-              </div>
+              { label:'Emails sent',       value: fmt(data.totals?.emailsSent),       sub:'Unique contacts',  href: hsContactsFilter('hs_email_last_send_date') },
+              { label:'Sequences started', value: fmt(data.totals?.sequencesStarted), sub:'New enrollments',   href: hsContactsFilter('hs_latest_sequence_enrolled_date') },
+              { label:'Contacts reached',  value: fmt(data.totals?.contactsReached),  sub:'Via any channel',   href: hsContactsFilter('notes_last_contacted') },
+              { label:'Calls logged',      value: fmt(data.totals?.calls),            sub:'Logged activities', href: `${HS_BASE}/contacts/39921549/activities/` },
+              { label:'Meetings logged',   value: fmt(data.totals?.meetings),         sub:'Logged activities', href: `${HS_BASE}/contacts/39921549/activities/` },
+              { label:'Notes logged',      value: fmt(data.totals?.notes),            sub:'Logged activities', href: `${HS_BASE}/contacts/39921549/activities/` },
+            ].map(({ label, value, sub, href }) => (
+              <a key={label} href={href} target="_blank" rel="noopener noreferrer" style={{ textDecoration:'none' }}>
+                <div style={{ background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius-lg)', padding:'14px 16px', cursor:'pointer', transition:'border-color .15s' }}
+                  onMouseEnter={e => e.currentTarget.style.borderColor='var(--accent)'}
+                  onMouseLeave={e => e.currentTarget.style.borderColor='var(--border)'}>
+                  <div style={{ fontSize:12, color:'var(--text-tertiary)', marginBottom:4 }}>{label}</div>
+                  <div style={{ fontSize:26, fontWeight:500, color:'var(--text)' }}>{value}</div>
+                  <div style={{ fontSize:11, color:'var(--text-tertiary)', marginTop:3 }}>{sub} ↗</div>
+                </div>
+              </a>
             ))}
           </div>
 
-          {/* Rep breakdown */}
           {data.byRep?.length > 1 && (
             <Panel style={{ marginBottom:12 }}>
               <SectionTitle>By rep</SectionTitle>
@@ -1485,11 +1528,10 @@ function ReportsTab({ safeFetch, owners }) {
             </Panel>
           )}
 
-          {/* Recent activity drill-down */}
           <Panel>
             <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:12 }}>
               <SectionTitle style={{ margin:0 }}>Recent outbound activity</SectionTitle>
-              <span style={{ fontSize:11, color:'var(--text-tertiary)' }}>{data.recentActivity?.length || 0} contacts shown</span>
+              <span style={{ fontSize:11, color:'var(--text-tertiary)' }}>{(data.recentActivity || []).length} contacts</span>
             </div>
             {(data.recentActivity || []).length === 0 && <div style={{ fontSize:13, color:'var(--text-tertiary)' }}>No activity in this period.</div>}
             <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
@@ -1499,8 +1541,8 @@ function ReportsTab({ safeFetch, owners }) {
                 ))}</tr>
               </thead>
               <tbody>
-                {(data.recentActivity || []).map((c, i) => (
-                  <tr key={i} style={{ borderBottom: i < data.recentActivity.length-1 ? '1px solid var(--border)' : 'none' }}>
+                {(data.recentActivity || []).slice(activityPage*PAGE_SIZE, (activityPage+1)*PAGE_SIZE).map((c, i) => (
+                  <tr key={i} style={{ borderBottom: i < PAGE_SIZE-1 ? '1px solid var(--border)' : 'none' }}>
                     <td style={{ padding:'8px 10px 8px 0' }}>
                       <a href={c.url} target="_blank" rel="noopener noreferrer" style={{ color:'var(--accent)', textDecoration:'none', fontWeight:500 }}>{c.name || '—'}</a>
                     </td>
@@ -1512,6 +1554,7 @@ function ReportsTab({ safeFetch, owners }) {
                 ))}
               </tbody>
             </table>
+            <Pager page={activityPage} setPage={setActivityPage} total={(data.recentActivity||[]).length} />
           </Panel>
         </div>
       )}
@@ -1521,19 +1564,23 @@ function ReportsTab({ safeFetch, owners }) {
         <div>
           <div style={{ display:'grid', gridTemplateColumns:'repeat(7, minmax(0,1fr))', gap:10, marginBottom:'1.5rem' }}>
             {[
-              { label:'Emails sent',    value: fmt(data.totals?.sent),         sub:'Unique contacts' },
-              { label:'Opens',          value: fmt(data.totals?.opens),         sub: fmtPct(data.totals?.openRate) + ' open rate' },
-              { label:'Clicks',         value: fmt(data.totals?.clicks),        sub: fmtPct(data.totals?.clickRate) + ' click rate' },
-              { label:'Replies',        value: fmt(data.totals?.replies),       sub: fmtPct(data.totals?.replyRate) + ' reply rate' },
-              { label:'Open rate',      value: fmtPct(data.totals?.openRate),   sub:'Of sends' },
-              { label:'Click rate',     value: fmtPct(data.totals?.clickRate),  sub:'Of sends' },
-              { label:'Reply rate',     value: fmtPct(data.totals?.replyRate),  sub:'Of sends' },
-            ].map(({ label, value, sub }) => (
-              <div key={label} style={{ background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius-lg)', padding:'14px 16px' }}>
-                <div style={{ fontSize:12, color:'var(--text-tertiary)', marginBottom:4 }}>{label}</div>
-                <div style={{ fontSize:22, fontWeight:500, color:'var(--text)' }}>{value}</div>
-                <div style={{ fontSize:11, color:'var(--text-tertiary)', marginTop:3 }}>{sub}</div>
-              </div>
+              { label:'Emails sent',  value: fmt(data.totals?.sent),        sub:'Unique contacts',                   href: hsContactsFilter('hs_email_last_send_date') },
+              { label:'Opens',        value: fmt(data.totals?.opens),        sub: fmtPct(data.totals?.openRate)+' rate', href: hsContactsFilter('hs_email_last_open_date') },
+              { label:'Clicks',       value: fmt(data.totals?.clicks),       sub: fmtPct(data.totals?.clickRate)+' rate',href: hsContactsFilter('hs_email_last_click_date') },
+              { label:'Replies',      value: fmt(data.totals?.replies),      sub: fmtPct(data.totals?.replyRate)+' rate',href: hsContactsFilter('hs_email_last_reply_date') },
+              { label:'Open rate',    value: fmtPct(data.totals?.openRate),  sub:'Of sends',  href: hsContactsFilter('hs_email_last_open_date') },
+              { label:'Click rate',   value: fmtPct(data.totals?.clickRate), sub:'Of sends',  href: hsContactsFilter('hs_email_last_click_date') },
+              { label:'Reply rate',   value: fmtPct(data.totals?.replyRate), sub:'Of sends',  href: hsContactsFilter('hs_email_last_reply_date') },
+            ].map(({ label, value, sub, href }) => (
+              <a key={label} href={href} target="_blank" rel="noopener noreferrer" style={{ textDecoration:'none' }}>
+                <div style={{ background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius-lg)', padding:'14px 16px', cursor:'pointer' }}
+                  onMouseEnter={e => e.currentTarget.style.borderColor='var(--accent)'}
+                  onMouseLeave={e => e.currentTarget.style.borderColor='var(--border)'}>
+                  <div style={{ fontSize:12, color:'var(--text-tertiary)', marginBottom:4 }}>{label}</div>
+                  <div style={{ fontSize:22, fontWeight:500, color:'var(--text)' }}>{value}</div>
+                  <div style={{ fontSize:11, color:'var(--text-tertiary)', marginTop:3 }}>{sub} ↗</div>
+                </div>
+              </a>
             ))}
           </div>
 
@@ -1567,29 +1614,31 @@ function ReportsTab({ safeFetch, owners }) {
           <Panel>
             <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:12 }}>
               <SectionTitle style={{ margin:0 }}>Recent replies</SectionTitle>
-              <span style={{ fontSize:11, color:'var(--text-tertiary)' }}>{data.recentReplies?.length || 0} shown</span>
+              <span style={{ fontSize:11, color:'var(--text-tertiary)' }}>{(data.recentReplies||[]).length} shown</span>
             </div>
-            {(data.recentReplies || []).length === 0 && <div style={{ fontSize:13, color:'var(--text-tertiary)' }}>No replies in this period.</div>}
-            <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
-              <thead>
-                <tr>{['Contact','Company','BDR','Email','Replied'].map(h => (
-                  <th key={h} style={{ textAlign:'left', fontSize:11, fontWeight:500, color:'var(--text-tertiary)', textTransform:'uppercase', letterSpacing:'.04em', padding:'0 10px 8px 0', borderBottom:'1px solid var(--border)' }}>{h}</th>
-                ))}</tr>
-              </thead>
-              <tbody>
-                {(data.recentReplies || []).map((c, i) => (
-                  <tr key={i} style={{ borderBottom: i < data.recentReplies.length-1 ? '1px solid var(--border)' : 'none' }}>
-                    <td style={{ padding:'8px 10px 8px 0' }}>
-                      <a href={c.url} target="_blank" rel="noopener noreferrer" style={{ color:'var(--accent)', textDecoration:'none', fontWeight:500 }}>{c.name || '—'}</a>
-                    </td>
-                    <td style={{ padding:'8px 10px 8px 0', color:'var(--text-secondary)', fontSize:12 }}>{c.company || '—'}</td>
-                    <td style={{ padding:'8px 10px 8px 0', color:'var(--text-secondary)', fontSize:12 }}>{c.assignedBdr || '—'}</td>
-                    <td style={{ padding:'8px 10px 8px 0', color:'var(--text-secondary)', fontSize:12, maxWidth:180, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{c.emailName || '—'}</td>
-                    <td style={{ padding:'8px 0', color:'var(--text-tertiary)', fontSize:12, whiteSpace:'nowrap' }}>{c.replyDate ? new Date(c.replyDate).toLocaleDateString('en-US', { month:'short', day:'numeric', year:'numeric' }) : '—'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            {(data.recentReplies || []).length === 0
+              ? <div style={{ fontSize:13, color:'var(--text-tertiary)' }}>No replies found. Replies are stored on contacts that have responded to any email.</div>
+              : <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
+                  <thead>
+                    <tr>{['Contact','Company','BDR','Email','Replied'].map(h => (
+                      <th key={h} style={{ textAlign:'left', fontSize:11, fontWeight:500, color:'var(--text-tertiary)', textTransform:'uppercase', letterSpacing:'.04em', padding:'0 10px 8px 0', borderBottom:'1px solid var(--border)' }}>{h}</th>
+                    ))}</tr>
+                  </thead>
+                  <tbody>
+                    {(data.recentReplies || []).map((c, i) => (
+                      <tr key={i} style={{ borderBottom: i < data.recentReplies.length-1 ? '1px solid var(--border)' : 'none' }}>
+                        <td style={{ padding:'8px 10px 8px 0' }}>
+                          <a href={c.url} target="_blank" rel="noopener noreferrer" style={{ color:'var(--accent)', textDecoration:'none', fontWeight:500 }}>{c.name || '—'}</a>
+                        </td>
+                        <td style={{ padding:'8px 10px 8px 0', color:'var(--text-secondary)', fontSize:12 }}>{c.company || '—'}</td>
+                        <td style={{ padding:'8px 10px 8px 0', color:'var(--text-secondary)', fontSize:12 }}>{c.assignedBdr || '—'}</td>
+                        <td style={{ padding:'8px 10px 8px 0', color:'var(--text-secondary)', fontSize:12, maxWidth:180, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{c.emailName || '—'}</td>
+                        <td style={{ padding:'8px 0', color:'var(--text-tertiary)', fontSize:12, whiteSpace:'nowrap' }}>{c.replyDate ? new Date(c.replyDate).toLocaleDateString('en-US', { month:'short', day:'numeric', year:'numeric' }) : '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+            }
           </Panel>
         </div>
       )}
@@ -1599,35 +1648,42 @@ function ReportsTab({ safeFetch, owners }) {
         <div>
           <div style={{ display:'grid', gridTemplateColumns:'repeat(5, minmax(0,1fr))', gap:10, marginBottom:'1.5rem' }}>
             {[
-              { label:'Total deals',     value: fmt(data.totals?.total),        sub:'In period' },
-              { label:'Total value',     value: fmtMoney(data.totals?.totalValue), sub:'Pipeline value' },
-              { label:'Weighted value',  value: fmtMoney(data.totals?.totalWeighted), sub:'By probability' },
-              { label:'Won',             value: `${fmt(data.totals?.wonCount)} (${fmtPct(data.totals?.winRate)})`, sub: fmtMoney(data.totals?.wonValue) },
-              { label:'Lost',            value: fmt(data.totals?.lostCount),    sub: fmtMoney(data.totals?.lostValue) },
-            ].map(({ label, value, sub }) => (
-              <div key={label} style={{ background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius-lg)', padding:'14px 16px' }}>
-                <div style={{ fontSize:12, color:'var(--text-tertiary)', marginBottom:4 }}>{label}</div>
-                <div style={{ fontSize:22, fontWeight:500, color:'var(--text)' }}>{value}</div>
-                <div style={{ fontSize:11, color:'var(--text-tertiary)', marginTop:3 }}>{sub}</div>
-              </div>
+              { label:'Total deals',    value: fmt(data.totals?.total),       sub:'In period',        href: hsDealsLink() },
+              { label:'Total value',    value: fmtMoney(data.totals?.totalValue),   sub:'Pipeline value',   href: hsDealsLink() },
+              { label:'Weighted value', value: fmtMoney(data.totals?.totalWeighted),sub:'By probability',   href: hsDealsLink() },
+              { label:'Won',            value: `${fmt(data.totals?.wonCount)} (${fmtPct(data.totals?.winRate)})`, sub: fmtMoney(data.totals?.wonValue), href: `${HS_BASE}/contacts/39921549/objects/0-3/views/all/list?filters=%5B%7B"property"%3A"dealstage"%2C"operation"%3A%7B"operationType"%3A"IN"%2C"values"%3A%5B"995739776"%2C"995749999"%5D%7D%7D%5D` },
+              { label:'Lost',           value: fmt(data.totals?.lostCount),   sub: fmtMoney(data.totals?.lostValue), href: `${HS_BASE}/contacts/39921549/objects/0-3/views/all/list?filters=%5B%7B"property"%3A"dealstage"%2C"operation"%3A%7B"operationType"%3A"IN"%2C"values"%3A%5B"1347324753"%2C"995723927"%2C"995756100"%5D%7D%7D%5D` },
+            ].map(({ label, value, sub, href }) => (
+              <a key={label} href={href} target="_blank" rel="noopener noreferrer" style={{ textDecoration:'none' }}>
+                <div style={{ background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius-lg)', padding:'14px 16px', cursor:'pointer' }}
+                  onMouseEnter={e => e.currentTarget.style.borderColor='var(--accent)'}
+                  onMouseLeave={e => e.currentTarget.style.borderColor='var(--border)'}>
+                  <div style={{ fontSize:12, color:'var(--text-tertiary)', marginBottom:4 }}>{label}</div>
+                  <div style={{ fontSize:22, fontWeight:500, color:'var(--text)' }}>{value}</div>
+                  <div style={{ fontSize:11, color:'var(--text-tertiary)', marginTop:3 }}>{sub} ↗</div>
+                </div>
+              </a>
             ))}
           </div>
           <div style={{ display:'grid', gridTemplateColumns:'repeat(2,1fr)', gap:10, marginBottom:12 }}>
-            <div style={{ background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius-lg)', padding:'14px 16px', display:'flex', gap:16 }}>
-              <div>
-                <div style={{ fontSize:12, color:'var(--text-tertiary)', marginBottom:4 }}>Avg deal size (won)</div>
-                <div style={{ fontSize:22, fontWeight:500, color:'var(--text)' }}>{fmtMoney(data.totals?.avgDealSize)}</div>
+            <a href={hsDealsLink()} target="_blank" rel="noopener noreferrer" style={{ textDecoration:'none' }}>
+              <div style={{ background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius-lg)', padding:'14px 16px', display:'flex', gap:16, cursor:'pointer' }}
+                onMouseEnter={e => e.currentTarget.style.borderColor='var(--accent)'}
+                onMouseLeave={e => e.currentTarget.style.borderColor='var(--border)'}>
+                <div>
+                  <div style={{ fontSize:12, color:'var(--text-tertiary)', marginBottom:4 }}>Avg deal size (won)</div>
+                  <div style={{ fontSize:22, fontWeight:500, color:'var(--text)' }}>{fmtMoney(data.totals?.avgDealSize)}</div>
+                </div>
+                <div>
+                  <div style={{ fontSize:12, color:'var(--text-tertiary)', marginBottom:4 }}>Avg days to close</div>
+                  <div style={{ fontSize:22, fontWeight:500, color:'var(--text)' }}>{data.totals?.avgVelocity != null ? `${data.totals.avgVelocity}d` : '—'}</div>
+                </div>
+                <div>
+                  <div style={{ fontSize:12, color:'var(--text-tertiary)', marginBottom:4 }}>Win rate</div>
+                  <div style={{ fontSize:22, fontWeight:500, color:'var(--accent)' }}>{fmtPct(data.totals?.winRate)}</div>
+                </div>
               </div>
-              <div>
-                <div style={{ fontSize:12, color:'var(--text-tertiary)', marginBottom:4 }}>Avg days to close</div>
-                <div style={{ fontSize:22, fontWeight:500, color:'var(--text)' }}>{data.totals?.avgVelocity != null ? `${data.totals.avgVelocity}d` : '—'}</div>
-              </div>
-              <div>
-                <div style={{ fontSize:12, color:'var(--text-tertiary)', marginBottom:4 }}>Win rate</div>
-                <div style={{ fontSize:22, fontWeight:500, color:'var(--accent)' }}>{fmtPct(data.totals?.winRate)}</div>
-              </div>
-            </div>
-            {/* Lost reasons */}
+            </a>
             <Panel>
               <SectionTitle>Lost reasons</SectionTitle>
               {(data.lostReasons || []).length === 0 && <div style={{ fontSize:13, color:'var(--text-tertiary)' }}>No closed-lost deals in this period.</div>}
@@ -1640,7 +1696,6 @@ function ReportsTab({ safeFetch, owners }) {
             </Panel>
           </div>
 
-          {/* Pipeline breakdown */}
           <Panel style={{ marginBottom:12 }}>
             <SectionTitle>By pipeline</SectionTitle>
             <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
@@ -1651,8 +1706,8 @@ function ReportsTab({ safeFetch, owners }) {
               </thead>
               <tbody>
                 {(data.byPipeline || []).map((p, i) => (
-                  <tr key={i} style={{ borderBottom: i < data.byPipeline.length-1 ? '1px solid var(--border)' : 'none' }}>
-                    <td style={{ padding:'9px 10px 9px 0', fontWeight:500, color:'var(--text)' }}>{p.label}</td>
+                  <tr key={i} onClick={() => window.open(hsDealsLink(), '_blank')} style={{ borderBottom: i < data.byPipeline.length-1 ? '1px solid var(--border)' : 'none', cursor:'pointer' }}>
+                    <td style={{ padding:'9px 10px 9px 0', fontWeight:500, color:'var(--accent)' }}>{p.label}</td>
                     <td style={{ padding:'9px 10px 9px 0', color:'var(--text-secondary)' }}>{fmt(p.count)}</td>
                     <td style={{ padding:'9px 10px 9px 0', color:'var(--text-secondary)' }}>{fmtMoney(p.value)}</td>
                     <td style={{ padding:'9px 0', color:'var(--text-secondary)' }}>{fmtMoney(p.weighted)}</td>
@@ -1662,7 +1717,6 @@ function ReportsTab({ safeFetch, owners }) {
             </table>
           </Panel>
 
-          {/* Stage breakdown */}
           <Panel style={{ marginBottom:12 }}>
             <SectionTitle>By stage</SectionTitle>
             <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
@@ -1673,8 +1727,8 @@ function ReportsTab({ safeFetch, owners }) {
               </thead>
               <tbody>
                 {(data.byStage || []).map((s, i) => (
-                  <tr key={i} style={{ borderBottom: i < data.byStage.length-1 ? '1px solid var(--border)' : 'none' }}>
-                    <td style={{ padding:'8px 10px 8px 0', color:'var(--text)', fontWeight:500 }}>{s.label}</td>
+                  <tr key={i} onClick={() => window.open(hsDealsLink(), '_blank')} style={{ borderBottom: i < data.byStage.length-1 ? '1px solid var(--border)' : 'none', cursor:'pointer' }}>
+                    <td style={{ padding:'8px 10px 8px 0', color:'var(--accent)', fontWeight:500 }}>{s.label}</td>
                     <td style={{ padding:'8px 10px 8px 0', color:'var(--text-secondary)', fontSize:12 }}>{s.pipeline}</td>
                     <td style={{ padding:'8px 10px 8px 0', color:'var(--text-secondary)' }}>{s.count}</td>
                     <td style={{ padding:'8px 0', color:'var(--text-secondary)' }}>{fmtMoney(s.value)}</td>
@@ -1684,9 +1738,11 @@ function ReportsTab({ safeFetch, owners }) {
             </table>
           </Panel>
 
-          {/* Recent deals */}
           <Panel>
-            <SectionTitle>Recent deals</SectionTitle>
+            <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:12 }}>
+              <SectionTitle style={{ margin:0 }}>Recent deals</SectionTitle>
+              <span style={{ fontSize:11, color:'var(--text-tertiary)' }}>{(data.recentDeals||[]).length} deals</span>
+            </div>
             <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
               <thead>
                 <tr>{['Deal','Pipeline','Stage','Amount','Close date','Owner'].map(h => (
@@ -1694,8 +1750,8 @@ function ReportsTab({ safeFetch, owners }) {
                 ))}</tr>
               </thead>
               <tbody>
-                {(data.recentDeals || []).map((d, i) => (
-                  <tr key={i} style={{ borderBottom: i < data.recentDeals.length-1 ? '1px solid var(--border)' : 'none' }}>
+                {(data.recentDeals || []).slice(dealsPage*PAGE_SIZE, (dealsPage+1)*PAGE_SIZE).map((d, i) => (
+                  <tr key={i} style={{ borderBottom: i < PAGE_SIZE-1 ? '1px solid var(--border)' : 'none' }}>
                     <td style={{ padding:'8px 10px 8px 0' }}>
                       <a href={d.url} target="_blank" rel="noopener noreferrer" style={{ color:'var(--accent)', textDecoration:'none', fontWeight:500 }}>{d.name}</a>
                       {d.isWon  && <Badge label="Won"  type="reply"   style={{ marginLeft:6 }} />}
@@ -1707,11 +1763,12 @@ function ReportsTab({ safeFetch, owners }) {
                     <td style={{ padding:'8px 10px 8px 0', color:'var(--text-tertiary)', fontSize:12, whiteSpace:'nowrap' }}>
                       {d.closeDate ? new Date(d.closeDate).toLocaleDateString('en-US', { month:'short', day:'numeric', year:'numeric' }) : '—'}
                     </td>
-                    <td style={{ padding:'8px 0', color:'var(--text-tertiary)', fontSize:12 }}>{ownerMap[d.ownerId] || d.ownerId || '—'}</td>
+                    <td style={{ padding:'8px 0', color:'var(--text-tertiary)', fontSize:12 }}>{ownerMap[d.ownerId] || '—'}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
+            <Pager page={dealsPage} setPage={setDealsPage} total={(data.recentDeals||[]).length} />
           </Panel>
         </div>
       )}
@@ -1721,26 +1778,30 @@ function ReportsTab({ safeFetch, owners }) {
         <div>
           <div style={{ display:'grid', gridTemplateColumns:'repeat(7, minmax(0,1fr))', gap:10, marginBottom:'1.5rem' }}>
             {[
-              { label:'Contacts reached', value: fmt(data.totals?.totalReached),  sub:'Total unique recipients' },
-              { label:'Opened',           value: fmt(data.totals?.totalOpened),   sub: fmtPct(data.totals?.openRate) + ' open rate' },
-              { label:'Clicked',          value: fmt(data.totals?.totalClicked),  sub: fmtPct(data.totals?.clickRate) + ' click rate' },
-              { label:'Replied',          value: fmt(data.totals?.totalReplied),  sub: fmtPct(data.totals?.replyRate) + ' reply rate' },
-              { label:'Open rate',        value: fmtPct(data.totals?.openRate),   sub:'Industry avg ~20%' },
-              { label:'Click rate',       value: fmtPct(data.totals?.clickRate),  sub:'Industry avg ~2-3%' },
-              { label:'Reply rate',       value: fmtPct(data.totals?.replyRate),  sub:'Industry avg ~1%' },
-            ].map(({ label, value, sub }) => (
-              <div key={label} style={{ background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius-lg)', padding:'14px 16px' }}>
-                <div style={{ fontSize:12, color:'var(--text-tertiary)', marginBottom:4 }}>{label}</div>
-                <div style={{ fontSize:22, fontWeight:500, color:'var(--text)' }}>{value}</div>
-                <div style={{ fontSize:11, color:'var(--text-tertiary)', marginTop:3 }}>{sub}</div>
-              </div>
+              { label:'Contacts reached', value: fmt(data.totals?.totalReached),  sub:'Total unique recipients',  href: hsContactsFilter('hs_email_last_send_date') },
+              { label:'Opened',           value: fmt(data.totals?.totalOpened),   sub: fmtPct(data.totals?.openRate)+' open rate',   href: hsContactsFilter('hs_email_last_open_date') },
+              { label:'Clicked',          value: fmt(data.totals?.totalClicked),  sub: fmtPct(data.totals?.clickRate)+' click rate', href: hsContactsFilter('hs_email_last_click_date') },
+              { label:'Replied',          value: fmt(data.totals?.totalReplied),  sub: fmtPct(data.totals?.replyRate)+' reply rate', href: hsContactsFilter('hs_email_last_reply_date') },
+              { label:'Open rate',        value: fmtPct(data.totals?.openRate),   sub:'Industry avg ~20%',  href: hsMktLink() },
+              { label:'Click rate',       value: fmtPct(data.totals?.clickRate),  sub:'Industry avg ~2-3%', href: hsMktLink() },
+              { label:'Reply rate',       value: fmtPct(data.totals?.replyRate),  sub:'Industry avg ~1%',   href: hsMktLink() },
+            ].map(({ label, value, sub, href }) => (
+              <a key={label} href={href} target="_blank" rel="noopener noreferrer" style={{ textDecoration:'none' }}>
+                <div style={{ background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius-lg)', padding:'14px 16px', cursor:'pointer' }}
+                  onMouseEnter={e => e.currentTarget.style.borderColor='var(--accent)'}
+                  onMouseLeave={e => e.currentTarget.style.borderColor='var(--border)'}>
+                  <div style={{ fontSize:12, color:'var(--text-tertiary)', marginBottom:4 }}>{label}</div>
+                  <div style={{ fontSize:22, fontWeight:500, color:'var(--text)' }}>{value}</div>
+                  <div style={{ fontSize:11, color:'var(--text-tertiary)', marginTop:3 }}>{sub} ↗</div>
+                </div>
+              </a>
             ))}
           </div>
 
           <Panel>
             <SectionTitle>By campaign / email</SectionTitle>
             <div style={{ fontSize:11, color:'var(--text-tertiary)', marginBottom:10 }}>
-              Grouped by last marketing email name. Counts = unique contacts, not total sends.
+              Grouped by most recent marketing email per contact. Counts = unique contacts, not raw send volume.
             </div>
             {(data.campaigns || []).length === 0 && <div style={{ fontSize:13, color:'var(--text-tertiary)' }}>No campaign data in this period.</div>}
             <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
@@ -1751,13 +1812,13 @@ function ReportsTab({ safeFetch, owners }) {
               </thead>
               <tbody>
                 {(data.campaigns || []).map((c, i) => (
-                  <tr key={i} style={{ borderBottom: i < data.campaigns.length-1 ? '1px solid var(--border)' : 'none' }}>
-                    <td style={{ padding:'8px 10px 8px 0', color:'var(--text)', maxWidth:300, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{c.name}</td>
+                  <tr key={i} onClick={() => window.open(hsMktLink(), '_blank')} style={{ borderBottom: i < data.campaigns.length-1 ? '1px solid var(--border)' : 'none', cursor:'pointer' }}>
+                    <td style={{ padding:'8px 10px 8px 0', color:'var(--accent)', maxWidth:300, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{c.name}</td>
                     <td style={{ padding:'8px 10px 8px 0', color:'var(--text-secondary)' }}>{fmt(c.sent)}</td>
                     <td style={{ padding:'8px 10px 8px 0', color:'var(--text-secondary)' }}>{fmt(c.opened)}</td>
                     <td style={{ padding:'8px 0' }}>
                       <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-                        <span style={{ color: parseFloat(c.openRate) >= 20 ? 'var(--accent)' : parseFloat(c.openRate) >= 10 ? 'var(--amber)' : 'var(--text-secondary)' }}>
+                        <span style={{ color: parseFloat(c.openRate) >= 20 ? 'var(--accent)' : parseFloat(c.openRate) >= 10 ? 'var(--amber)' : 'var(--text-secondary)', minWidth:36 }}>
                           {fmtPct(c.openRate)}
                         </span>
                         <div style={{ flex:1, height:4, background:'var(--bg-secondary)', borderRadius:2, minWidth:60 }}>
