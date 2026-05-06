@@ -775,40 +775,167 @@ export const handler = async (event, context) => {
       });
     }
 
-    // ── Tasks (date-windowed) ─────────────────────────────────────────────────
-    // Returns open tasks assigned to the current user within a rolling date window.
-    // Query params:
-    //   days=7|14|21|30  (default: 14)
-    //   status=NOT_STARTED|IN_PROGRESS|WAITING  (default: NOT_STARTED,IN_PROGRESS,WAITING -- all open)
+    // ── Task Queue (three smart sections) ────────────────────────────────────
+    // Returns a unified smart task queue with three sections:
     //
-    // Tasks are filtered by hs_timestamp (due date) within the window.
-    // We also fetch overdue tasks (due date before today, not completed) separately
-    // so the rep sees everything that needs attention.
+    //   1. repliesAwaitingResponse -- contacts who replied to any email within the
+    //      day window but have had no outbound activity logged since that reply.
+    //      Detection: hs_sales_email_last_replied > hs_last_sales_activity_date
+    //               OR hs_email_last_reply_date   > hs_last_email_activity_date
+    //      Filterable by assigned_bdr so each rep sees their own queue.
+    //
+    //   2. upcomingSequences -- contacts currently enrolled in a sequence
+    //      (hs_sequences_is_enrolled = true), full contact card + sequence info.
+    //      Sorted by sequence enrolled date ascending (oldest enrollment first).
+    //
+    //   3. dueTasks -- open HubSpot tasks within the day window + overdue tasks.
+    //      Same as the previous /tasks implementation.
+    //
+    // Query params:
+    //   days=7|14|21|30     (default: 14) -- applies to all three sections
+    //   assigned_bdr=name   (optional)    -- filters replies and sequences by rep
     if (method === "GET" && path === "/tasks") {
       try {
         const days    = Math.min(parseInt(qp.days || "14", 10), 30);
         const now     = Date.now();
+        const sinceISO    = new Date(now - days * 24 * 60 * 60 * 1000).toISOString();
         const windowEnd   = new Date(now + days * 24 * 60 * 60 * 1000).toISOString();
-        const overdueFrom = new Date(now - 90 * 24 * 60 * 60 * 1000).toISOString(); // up to 90 days back
+        const overdueFrom = new Date(now - 90  * 24 * 60 * 60 * 1000).toISOString();
 
-        // Fetch open tasks in the forward window + overdue in parallel
-        const [upcomingData, overdueData] = await Promise.all([
-          // Tasks due within the next N days
+        const customFilters = buildCustomFilters(qp); // picks up assigned_bdr, territory etc.
+
+        // ── Section 1: Replies awaiting response ───────────────────────────────
+        // Find contacts where the most recent reply timestamp is AFTER the most
+        // recent outbound activity timestamp -- meaning we haven't responded yet.
+        //
+        // Strategy: fetch contacts with a recent reply date, then client-side
+        // filter for those where reply > last outbound. HubSpot search can't do
+        // a cross-property comparison natively.
+        const repliesData = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
+          filterGroups: [
+            // OR: sales email reply in window
+            { filters: [
+              { propertyName: "hs_sales_email_last_replied", operator: "GTE", value: sinceISO },
+              ...customFilters,
+            ]},
+            // OR: marketing email reply in window
+            { filters: [
+              { propertyName: "hs_email_last_reply_date", operator: "GTE", value: sinceISO },
+              ...customFilters,
+            ]},
+          ],
+          properties: [
+            ...BASE_CONTACT_PROPS,
+            "hs_sales_email_last_replied",
+            "hs_email_last_reply_date",
+            "hs_last_sales_activity_date",
+            "hs_last_email_activity_date",
+          ],
+          sorts:  [{ propertyName: "hs_sales_email_last_replied", direction: "DESCENDING" }],
+          limit:  200,
+        }).catch(() => ({ results: [] }));
+
+        const repliesAwaitingResponse = (repliesData.results || [])
+          .map(c => {
+            const p = c.properties || {};
+
+            // Most recent reply across both email types
+            const salesReplyTs = p.hs_sales_email_last_replied ? new Date(p.hs_sales_email_last_replied).getTime() : 0;
+            const mktReplyTs   = p.hs_email_last_reply_date    ? new Date(p.hs_email_last_reply_date).getTime()    : 0;
+            const replyTs      = Math.max(salesReplyTs, mktReplyTs);
+            const replyDate    = replyTs === salesReplyTs
+              ? p.hs_sales_email_last_replied
+              : p.hs_email_last_reply_date;
+
+            // Most recent outbound activity
+            const lastOutboundTs = Math.max(
+              p.hs_last_sales_activity_date  ? new Date(p.hs_last_sales_activity_date).getTime()  : 0,
+              p.hs_last_email_activity_date  ? new Date(p.hs_last_email_activity_date).getTime()  : 0,
+            );
+
+            // Only include if reply is more recent than last outbound
+            if (replyTs <= lastOutboundTs) return null;
+
+            const info = normalizeContact(c);
+            return {
+              contactId:      c.id,
+              contact:        info,
+              replyDate,
+              replySource:    salesReplyTs >= mktReplyTs ? "sales" : "marketing",
+              lastOutboundDate: lastOutboundTs > 0 ? new Date(lastOutboundTs).toISOString() : null,
+              waitingHours:   Math.round((now - replyTs) / (1000 * 60 * 60)),
+              subject:        p.hs_email_last_email_name || null,
+              url: `https://app.hubspot.com/contacts/39921549/record/0-1/${c.id}`,
+            };
+          })
+          .filter(Boolean)
+          .sort((a, b) => new Date(b.replyDate) - new Date(a.replyDate));
+
+        // ── Section 2: Upcoming sequences (currently enrolled) ────────────────
+        const sequencesData = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
+          filterGroups: [{
+            filters: [
+              { propertyName: "hs_sequences_is_enrolled", operator: "EQ", value: "true" },
+              ...customFilters,
+            ],
+          }],
+          properties: BASE_CONTACT_PROPS,
+          sorts:  [{ propertyName: "hs_latest_sequence_enrolled_date", direction: "ASCENDING" }],
+          limit:  200,
+        }).catch(() => ({ results: [] }));
+
+        const upcomingSequences = (sequencesData.results || []).map(c => {
+          const p    = c.properties || {};
+          const info = normalizeContact(c);
+
+          // Best signal state for this contact
+          const salesReplyTs = p.hs_sales_email_last_replied ? new Date(p.hs_sales_email_last_replied).getTime() : 0;
+          const mktReplyTs   = p.hs_email_last_reply_date    ? new Date(p.hs_email_last_reply_date).getTime()    : 0;
+          const clickTs      = Math.max(
+            p.hs_sales_email_last_clicked ? new Date(p.hs_sales_email_last_clicked).getTime() : 0,
+            p.hs_email_last_click_date    ? new Date(p.hs_email_last_click_date).getTime()    : 0,
+          );
+          const openTs = Math.max(
+            p.hs_sales_email_last_opened ? new Date(p.hs_sales_email_last_opened).getTime() : 0,
+            p.hs_email_last_open_date    ? new Date(p.hs_email_last_open_date).getTime()    : 0,
+          );
+          const replyTs = Math.max(salesReplyTs, mktReplyTs);
+
+          let signalLabel = "No recent activity";
+          if (replyTs > 0) signalLabel = "Replied";
+          else if (clickTs > 0) signalLabel = "Clicked link";
+          else if (openTs  > 0) signalLabel = "Opened";
+
+          return {
+            contactId:        c.id,
+            contact:          info,
+            sequenceId:       p.hs_latest_sequence_enrolled      || null,
+            sequenceLabel:    p.hs_latest_sequence_enrolled
+              ? `Sequence #${p.hs_latest_sequence_enrolled}`
+              : "Unknown sequence",
+            enrolledDate:     p.hs_latest_sequence_enrolled_date || null,
+            signal:           signalLabel,
+            lastEmailName:    p.hs_email_last_email_name         || null,
+            url: `https://app.hubspot.com/contacts/39921549/record/0-1/${c.id}`,
+          };
+        });
+
+        // ── Section 3: Due tasks (HubSpot tasks with date window) ─────────────
+        const [upcomingTasksData, overdueTasksData] = await Promise.all([
           hsPost(user.userId, "/crm/v3/objects/tasks/search", {
             filterGroups: [{
               filters: [
-                { propertyName: "hubspot_owner_id",  operator: "EQ",      value: String(user.ownerId || "") },
-                { propertyName: "hs_task_status",    operator: "NOT_IN",  values: ["COMPLETED", "DEFERRED"] },
-                { propertyName: "hs_timestamp",      operator: "GTE",     value: new Date(now).toISOString() },
-                { propertyName: "hs_timestamp",      operator: "LTE",     value: windowEnd },
+                { propertyName: "hubspot_owner_id", operator: "EQ",     value: String(user.ownerId || "") },
+                { propertyName: "hs_task_status",   operator: "NOT_IN", values: ["COMPLETED", "DEFERRED"] },
+                { propertyName: "hs_timestamp",     operator: "GTE",    value: new Date(now).toISOString() },
+                { propertyName: "hs_timestamp",     operator: "LTE",    value: windowEnd },
               ],
             }],
             properties: ["hs_task_subject","hs_task_status","hs_task_type","hs_timestamp","hs_task_priority","hs_task_body","hubspot_owner_id"],
-            sorts:      [{ propertyName: "hs_timestamp", direction: "ASCENDING" }],
-            limit:      200,
+            sorts:  [{ propertyName: "hs_timestamp", direction: "ASCENDING" }],
+            limit:  200,
           }).catch(() => ({ results: [] })),
 
-          // Overdue tasks -- due before today, not completed
           hsPost(user.userId, "/crm/v3/objects/tasks/search", {
             filterGroups: [{
               filters: [
@@ -819,36 +946,47 @@ export const handler = async (event, context) => {
               ],
             }],
             properties: ["hs_task_subject","hs_task_status","hs_task_type","hs_timestamp","hs_task_priority","hs_task_body","hubspot_owner_id"],
-            sorts:      [{ propertyName: "hs_timestamp", direction: "ASCENDING" }],
-            limit:      200,
+            sorts:  [{ propertyName: "hs_timestamp", direction: "ASCENDING" }],
+            limit:  200,
           }).catch(() => ({ results: [] })),
         ]);
 
-        const normalize = (t, overdue = false) => ({
-          id:        t.id,
-          subject:   t.properties?.hs_task_subject  || "Untitled task",
-          status:    t.properties?.hs_task_status   || "NOT_STARTED",
-          type:      t.properties?.hs_task_type     || "TODO",
-          dueDate:   t.properties?.hs_timestamp     || null,
-          priority:  t.properties?.hs_task_priority || "NONE",
-          body:      t.properties?.hs_task_body     || null,
+        const normalizeTask = (t, overdue = false) => ({
+          id:       t.id,
+          subject:  t.properties?.hs_task_subject  || "Untitled task",
+          status:   t.properties?.hs_task_status   || "NOT_STARTED",
+          type:     t.properties?.hs_task_type     || "TODO",
+          dueDate:  t.properties?.hs_timestamp     || null,
+          priority: t.properties?.hs_task_priority || "NONE",
+          body:     t.properties?.hs_task_body     || null,
           overdue,
           url: `https://app.hubspot.com/tasks/39921549/view/all/task/${t.id}`,
         });
 
-        const upcoming = (upcomingData.results || []).map(t => normalize(t, false));
-        const overdue  = (overdueData.results  || []).map(t => normalize(t, true));
+        const dueTasks = [
+          ...(overdueTasksData.results  || []).map(t => normalizeTask(t, true)),
+          ...(upcomingTasksData.results || []).map(t => normalizeTask(t, false)),
+        ];
 
         return ok({
-          tasks: [...overdue, ...upcoming],
+          repliesAwaitingResponse,
+          upcomingSequences,
+          dueTasks,
           meta: {
-            overdue:   overdue.length,
-            upcoming:  upcoming.length,
-            total:     overdue.length + upcoming.length,
             days,
-            windowEnd,
+            counts: {
+              repliesAwaitingResponse: repliesAwaitingResponse.length,
+              upcomingSequences:       upcomingSequences.length,
+              dueTasks:                dueTasks.length,
+              overdueTasks:            (overdueTasksData.results || []).length,
+            },
+            filters: {
+              assigned_bdr: qp.assigned_bdr || null,
+              territory:    qp.territory    || null,
+            },
           },
         });
+
       } catch (err) {
         console.error("[tasks] Error:", err.message);
         return error(500, `Tasks error: ${err.message}`);
@@ -1189,10 +1327,21 @@ export const handler = async (event, context) => {
 
     if (method === "GET" && path === "/signals") {
       try {
-      const hours      = Math.min(parseInt(qp.hours || "2880", 10), 2880);
-      const since      = Date.now() - hours * 60 * 60 * 1000;
-      const sinceISO   = new Date(since).toISOString();
+      const hours       = Math.min(parseInt(qp.hours || "2880", 10), 2880);
+      const since       = Date.now() - hours * 60 * 60 * 1000;
+      const sinceISO    = new Date(since).toISOString();
       const includeBots = qp.includeBots === "true";
+
+      // Tiered pagination for high-volume accuracy without blocking first render.
+      // Frontend calls with offset=0 first (fast), then offset=100 in the background.
+      // Each tier fetches 100 per prop * 5 props = up to 500 contacts before dedup.
+      // Two tiers = up to 1,000 unique contacts total.
+      //
+      // Usage:
+      //   GET /signals              -> tier 1 (offset 0, returns hasMore flag)
+      //   GET /signals?offset=100   -> tier 2 (background fetch, merge into feed)
+      const pageOffset  = Math.max(0, parseInt(qp.offset || "0", 10));
+      const perPropLimit = 100; // per date-prop per page
 
       // Build filter groups -- use OR logic across multiple date properties
       // so we catch contacts active via marketing emails, sequences, AND 1:1 sales emails.
@@ -1210,7 +1359,8 @@ export const handler = async (event, context) => {
         "hs_sales_email_last_replied",     // 1:1 sales email replies
       ];
 
-      // Run all three searches in parallel for maximum coverage
+      // Run all searches in parallel, each with the current page offset.
+      // HubSpot search uses numeric `after` cursor but also accepts integer offset.
       const searchResults = await Promise.all(
         activityDateProps.map(prop =>
           hsPost(user.userId, "/crm/v3/objects/contacts/search", {
@@ -1220,8 +1370,9 @@ export const handler = async (event, context) => {
             ]}],
             properties: BASE_CONTACT_PROPS,
             sorts:      [{ propertyName: prop, direction: "DESCENDING" }],
-            limit:      100,
-          }).catch(() => ({ results: [] }))
+            limit:      perPropLimit,
+            after:      pageOffset > 0 ? pageOffset : undefined,
+          }).catch(() => ({ results: [], total: 0 }))
         )
       );
 
@@ -1531,12 +1682,20 @@ export const handler = async (event, context) => {
 
       const finalBots = [...allBots, ...orgBots];
 
+      // hasMore: true if any of the per-prop searches returned a full page,
+      // meaning there are likely more contacts beyond this offset.
+      const anyFullPage = searchResults.some(r => (r.results || []).length === perPropLimit);
+
       const response = {
         signals: finalReal,
         meta: {
           total:             finalReal.length,
           suspectedBotCount: finalBots.length,
           hoursSearched:     hours,
+          // Pagination
+          offset:    pageOffset,
+          nextOffset: pageOffset + perPropLimit,
+          hasMore:   anyFullPage,
           activeFilters: {
             assigned_bdr:                    qp.assigned_bdr || null,
             territory:                       qp.territory    || null,
