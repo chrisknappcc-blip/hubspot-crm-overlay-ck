@@ -54,13 +54,23 @@ const BASE_CONTACT_PROPS = [
   "notes_last_contacted", "num_contacted_notes",
   "hs_last_email_activity_date",
   "hs_last_sales_activity_date",
+  // Marketing email timestamps (hs_email_* prefix)
   "hs_email_last_open_date",
   "hs_email_last_click_date",
   "hs_email_last_reply_date",
   "hs_email_last_send_date",
-  "hs_email_last_email_name",   // name of the last email sent to this contact
+  "hs_email_last_email_name",        // name of last marketing email sent
+  // Sales / 1:1 email timestamps (hs_sales_email_* prefix)
+  "hs_sales_email_last_opened",      // last 1:1 sales email open date
+  "hs_sales_email_last_clicked",     // last 1:1 sales email click date
+  "hs_sales_email_last_replied",     // last 1:1 sales email reply date
+  // Sequence enrollment -- note: hs_sequence_name does NOT exist on contacts.
+  // hs_latest_sequence_enrolled stores a numeric sequence ID, not the name.
+  // Name resolution requires a separate sequence enrollment lookup (fetchSequenceEnrollments).
   "hs_sequences_actively_enrolled_count",
-  "hs_sequence_name",           // name of active sequence if enrolled
+  "hs_sequences_is_enrolled",
+  "hs_latest_sequence_enrolled",     // numeric sequence ID of last enrollment
+  "hs_latest_sequence_enrolled_date",
   ...CUSTOM_PROPS,
 ];
 
@@ -184,13 +194,22 @@ function normalizeContact(c) {
     targetAccount:       p.target_account__bdr_led_outreach || "",
     territory:           p.territory || "",
     priorityTier:        p.priority_tier__bdr || "",
-    // Email activity timestamps
+    // Marketing email timestamps (hs_email_* -- marketing hub sends)
     lastEmailActivityDate: p.hs_last_email_activity_date || null,
     lastSalesActivityDate: p.hs_last_sales_activity_date || null,
     lastOpenDate:          p.hs_email_last_open_date     || null,
     lastClickDate:         p.hs_email_last_click_date    || null,
     lastReplyDate:         p.hs_email_last_reply_date    || null,
     lastSendDate:          p.hs_email_last_send_date     || null,
+    lastEmailName:         p.hs_email_last_email_name    || null,
+    // Sales / 1:1 email timestamps (hs_sales_email_* -- sequences and manual sends)
+    salesLastOpened:       p.hs_sales_email_last_opened  || null,
+    salesLastClicked:      p.hs_sales_email_last_clicked || null,
+    salesLastReplied:      p.hs_sales_email_last_replied || null,
+    // Sequence enrollment (ID only -- name requires fetchSequenceEnrollments)
+    sequenceId:            p.hs_latest_sequence_enrolled      || null,
+    sequenceEnrolledDate:  p.hs_latest_sequence_enrolled_date || null,
+    inSequence:            p.hs_sequences_is_enrolled === "true",
   };
 }
 
@@ -646,15 +665,26 @@ export const handler = async (event, context) => {
     }
 
     // ── Owners (reps) list ───────────────────────────────────────────────────
-    // Returns all HubSpot users with their owner IDs for the filter dropdown
+    // Returns all HubSpot users with their owner IDs for the filter dropdown.
+    //
+    // IMPORTANT for filter usage: the assigned_bdr contact property stores the
+    // rep's display name as a plain string (e.g. "Chris Knapp"), NOT the numeric
+    // owner ID. When filtering contacts by rep, pass filterValue (the name string)
+    // as the assigned_bdr query param -- NOT the numeric id.
+    //
+    // Example: GET /hubspot/signals?assigned_bdr=Chris+Knapp  ✓
+    //          GET /hubspot/signals?assigned_bdr=78304576     ✗ (will return 0 results)
     if (method === "GET" && path === "/owners") {
       const data = await hsGet(user.userId, "/crm/v3/owners", { limit: 100 });
       const owners = (data.results || []).map(o => ({
-        id:        o.id,
-        firstName: o.firstName || "",
-        lastName:  o.lastName  || "",
-        email:     o.email     || "",
-        name:      `${o.firstName || ""} ${o.lastName || ""}`.trim(),
+        id:          o.id,
+        firstName:   o.firstName || "",
+        lastName:    o.lastName  || "",
+        email:       o.email     || "",
+        name:        `${o.firstName || ""} ${o.lastName || ""}`.trim(),
+        // filterValue is what to send as ?assigned_bdr= when filtering contacts.
+        // It matches the string stored in the assigned_bdr contact property.
+        filterValue: `${o.firstName || ""} ${o.lastName || ""}`.trim(),
       }));
       return ok({ owners });
     }
@@ -742,6 +772,86 @@ export const handler = async (event, context) => {
       });
     }
 
+    // ── Tasks (date-windowed) ─────────────────────────────────────────────────
+    // Returns open tasks assigned to the current user within a rolling date window.
+    // Query params:
+    //   days=7|14|21|30  (default: 14)
+    //   status=NOT_STARTED|IN_PROGRESS|WAITING  (default: NOT_STARTED,IN_PROGRESS,WAITING -- all open)
+    //
+    // Tasks are filtered by hs_timestamp (due date) within the window.
+    // We also fetch overdue tasks (due date before today, not completed) separately
+    // so the rep sees everything that needs attention.
+    if (method === "GET" && path === "/tasks") {
+      try {
+        const days    = Math.min(parseInt(qp.days || "14", 10), 30);
+        const now     = Date.now();
+        const windowEnd   = new Date(now + days * 24 * 60 * 60 * 1000).toISOString();
+        const overdueFrom = new Date(now - 90 * 24 * 60 * 60 * 1000).toISOString(); // up to 90 days back
+
+        // Fetch open tasks in the forward window + overdue in parallel
+        const [upcomingData, overdueData] = await Promise.all([
+          // Tasks due within the next N days
+          hsPost(user.userId, "/crm/v3/objects/tasks/search", {
+            filterGroups: [{
+              filters: [
+                { propertyName: "hubspot_owner_id",  operator: "EQ",      value: String(user.ownerId || "") },
+                { propertyName: "hs_task_status",    operator: "NOT_IN",  values: ["COMPLETED", "DEFERRED"] },
+                { propertyName: "hs_timestamp",      operator: "GTE",     value: new Date(now).toISOString() },
+                { propertyName: "hs_timestamp",      operator: "LTE",     value: windowEnd },
+              ],
+            }],
+            properties: ["hs_task_subject","hs_task_status","hs_task_type","hs_timestamp","hs_task_priority","hs_task_body","hubspot_owner_id"],
+            sorts:      [{ propertyName: "hs_timestamp", direction: "ASCENDING" }],
+            limit:      200,
+          }).catch(() => ({ results: [] })),
+
+          // Overdue tasks -- due before today, not completed
+          hsPost(user.userId, "/crm/v3/objects/tasks/search", {
+            filterGroups: [{
+              filters: [
+                { propertyName: "hubspot_owner_id", operator: "EQ",     value: String(user.ownerId || "") },
+                { propertyName: "hs_task_status",   operator: "NOT_IN", values: ["COMPLETED", "DEFERRED"] },
+                { propertyName: "hs_timestamp",     operator: "GTE",    value: overdueFrom },
+                { propertyName: "hs_timestamp",     operator: "LT",     value: new Date(now).toISOString() },
+              ],
+            }],
+            properties: ["hs_task_subject","hs_task_status","hs_task_type","hs_timestamp","hs_task_priority","hs_task_body","hubspot_owner_id"],
+            sorts:      [{ propertyName: "hs_timestamp", direction: "ASCENDING" }],
+            limit:      200,
+          }).catch(() => ({ results: [] })),
+        ]);
+
+        const normalize = (t, overdue = false) => ({
+          id:        t.id,
+          subject:   t.properties?.hs_task_subject  || "Untitled task",
+          status:    t.properties?.hs_task_status   || "NOT_STARTED",
+          type:      t.properties?.hs_task_type     || "TODO",
+          dueDate:   t.properties?.hs_timestamp     || null,
+          priority:  t.properties?.hs_task_priority || "NONE",
+          body:      t.properties?.hs_task_body     || null,
+          overdue,
+          url: `https://app.hubspot.com/tasks/39921549/view/all/task/${t.id}`,
+        });
+
+        const upcoming = (upcomingData.results || []).map(t => normalize(t, false));
+        const overdue  = (overdueData.results  || []).map(t => normalize(t, true));
+
+        return ok({
+          tasks: [...overdue, ...upcoming],
+          meta: {
+            overdue:   overdue.length,
+            upcoming:  upcoming.length,
+            total:     overdue.length + upcoming.length,
+            days,
+            windowEnd,
+          },
+        });
+      } catch (err) {
+        console.error("[tasks] Error:", err.message);
+        return error(500, `Tasks error: ${err.message}`);
+      }
+    }
+
     if (method === "GET" && path === "/signals") {
       try {
       const hours      = Math.min(parseInt(qp.hours || "2880", 10), 2880);
@@ -750,16 +860,19 @@ export const handler = async (event, context) => {
       const includeBots = qp.includeBots === "true";
 
       // Build filter groups -- use OR logic across multiple date properties
-      // so we catch contacts active via marketing emails, sequences, AND 1:1 emails.
+      // so we catch contacts active via marketing emails, sequences, AND 1:1 sales emails.
       // HubSpot sequences update hs_last_sales_activity_date, not hs_last_email_activity_date.
       // Marketing emails update hs_email_last_send_date.
+      // Sales / 1:1 emails update hs_sales_email_last_opened / clicked / replied.
       // We run one search per date property and merge results.
       const customFilters = buildCustomFilters(qp);
 
       const activityDateProps = [
-        "hs_last_email_activity_date",   // 1:1 sales emails, general activity
-        "hs_email_last_send_date",        // marketing + sequence sends
-        "hs_last_sales_activity_date",    // sequence steps, calls, meetings
+        "hs_last_email_activity_date",    // 1:1 sales emails, general activity
+        "hs_email_last_send_date",         // marketing + sequence sends
+        "hs_last_sales_activity_date",     // sequence steps, calls, meetings
+        "hs_sales_email_last_opened",      // 1:1 sales email opens
+        "hs_sales_email_last_replied",     // 1:1 sales email replies
       ];
 
       // Run all three searches in parallel for maximum coverage
@@ -792,14 +905,18 @@ export const handler = async (event, context) => {
       // Sort merged results by most recent activity across all date props
       allContactResults.sort((a, b) => {
         const dateA = Math.max(
-          new Date(a.properties?.hs_last_email_activity_date || 0).getTime(),
-          new Date(a.properties?.hs_email_last_send_date     || 0).getTime(),
-          new Date(a.properties?.hs_last_sales_activity_date || 0).getTime(),
+          new Date(a.properties?.hs_last_email_activity_date  || 0).getTime(),
+          new Date(a.properties?.hs_email_last_send_date      || 0).getTime(),
+          new Date(a.properties?.hs_last_sales_activity_date  || 0).getTime(),
+          new Date(a.properties?.hs_sales_email_last_opened   || 0).getTime(),
+          new Date(a.properties?.hs_sales_email_last_replied  || 0).getTime(),
         );
         const dateB = Math.max(
-          new Date(b.properties?.hs_last_email_activity_date || 0).getTime(),
-          new Date(b.properties?.hs_email_last_send_date     || 0).getTime(),
-          new Date(b.properties?.hs_last_sales_activity_date || 0).getTime(),
+          new Date(b.properties?.hs_last_email_activity_date  || 0).getTime(),
+          new Date(b.properties?.hs_email_last_send_date      || 0).getTime(),
+          new Date(b.properties?.hs_last_sales_activity_date  || 0).getTime(),
+          new Date(b.properties?.hs_sales_email_last_opened   || 0).getTime(),
+          new Date(b.properties?.hs_sales_email_last_replied  || 0).getTime(),
         );
         return dateB - dateA;
       });
@@ -823,62 +940,92 @@ export const handler = async (event, context) => {
         if (info.email) contactMap[info.email] = info;
       });
 
-      // Build signals from contact properties (covers all email types)
+      // Build signals from contact properties (covers both marketing and sales email types)
       const contactSignals = (recentContactsData.results || []).map(c => {
         const p    = c.properties || {};
         const info = contactMap[c.id];
 
-        const replyTs = p.hs_email_last_reply_date  ? new Date(p.hs_email_last_reply_date).getTime()  : 0;
-        const clickTs = p.hs_email_last_click_date  ? new Date(p.hs_email_last_click_date).getTime()  : 0;
-        const openTs  = p.hs_email_last_open_date   ? new Date(p.hs_email_last_open_date).getTime()   : 0;
-        const sendTs  = p.hs_email_last_send_date   ? new Date(p.hs_email_last_send_date).getTime()   : 0;
+        // Marketing email timestamps
+        const mktReplyTs = p.hs_email_last_reply_date  ? new Date(p.hs_email_last_reply_date).getTime()  : 0;
+        const mktClickTs = p.hs_email_last_click_date  ? new Date(p.hs_email_last_click_date).getTime()  : 0;
+        const mktOpenTs  = p.hs_email_last_open_date   ? new Date(p.hs_email_last_open_date).getTime()   : 0;
+        const mktSendTs  = p.hs_email_last_send_date   ? new Date(p.hs_email_last_send_date).getTime()   : 0;
 
-        let score = 0, label = "", primaryTs = null, eventType = "OPEN";
+        // Sales / 1:1 email timestamps
+        const salesReplyTs  = p.hs_sales_email_last_replied ? new Date(p.hs_sales_email_last_replied).getTime() : 0;
+        const salesClickTs  = p.hs_sales_email_last_clicked ? new Date(p.hs_sales_email_last_clicked).getTime() : 0;
+        const salesOpenTs   = p.hs_sales_email_last_opened  ? new Date(p.hs_sales_email_last_opened).getTime()  : 0;
+
+        // Best signal across both email types (most recent wins)
+        const replyTs = Math.max(mktReplyTs, salesReplyTs);
+        const clickTs = Math.max(mktClickTs, salesClickTs);
+        const openTs  = Math.max(mktOpenTs,  salesOpenTs);
+
+        // Which source is driving the top signal?
+        const replySource = replyTs > 0 ? (salesReplyTs >= mktReplyTs ? "sales" : "marketing") : null;
+        const clickSource = clickTs > 0 ? (salesClickTs >= mktClickTs ? "sales" : "marketing") : null;
+        const openSource  = openTs  > 0 ? (salesOpenTs  >= mktOpenTs  ? "sales" : "marketing") : null;
+
+        let score = 0, label = "", primaryTs = null, eventType = "OPEN", emailSource = null;
 
         if (replyTs > 0 && replyTs >= since) {
-          score = 100; label = "Replied"; primaryTs = p.hs_email_last_reply_date; eventType = "REPLY";
+          score = 100; label = "Replied"; eventType = "REPLY"; emailSource = replySource;
+          primaryTs = replySource === "sales" ? p.hs_sales_email_last_replied : p.hs_email_last_reply_date;
         } else if (clickTs > 0 && clickTs >= since) {
-          score = 70; label = "Clicked link"; primaryTs = p.hs_email_last_click_date; eventType = "CLICK";
+          score = 70; label = "Clicked link"; eventType = "CLICK"; emailSource = clickSource;
+          primaryTs = clickSource === "sales" ? p.hs_sales_email_last_clicked : p.hs_email_last_click_date;
         } else if (openTs > 0 && openTs >= since) {
-          score = 40; label = "Opened"; primaryTs = p.hs_email_last_open_date; eventType = "OPEN";
+          score = 40; label = "Opened"; eventType = "OPEN"; emailSource = openSource;
+          primaryTs = openSource === "sales" ? p.hs_sales_email_last_opened : p.hs_email_last_open_date;
         } else {
           return null;
         }
 
-        // Build event chain in chronological order
+        // Build unified event chain in chronological order across both email types
         const eventChain = [];
-        if (sendTs > 0)  eventChain.push({ type:"SENT",    timestamp: p.hs_email_last_send_date,  label:"Sent" });
-        if (openTs > 0)  eventChain.push({ type:"OPENED",  timestamp: p.hs_email_last_open_date,  label:"Opened" });
-        if (clickTs > 0) eventChain.push({ type:"CLICKED", timestamp: p.hs_email_last_click_date, label:"Clicked" });
-        if (replyTs > 0) eventChain.push({ type:"REPLIED", timestamp: p.hs_email_last_reply_date, label:"Replied" });
+        if (mktSendTs > 0)    eventChain.push({ type:"SENT",       timestamp: p.hs_email_last_send_date,      label:"Sent (marketing)",   source:"marketing" });
+        if (mktOpenTs > 0)    eventChain.push({ type:"OPENED",     timestamp: p.hs_email_last_open_date,      label:"Opened (marketing)", source:"marketing" });
+        if (mktClickTs > 0)   eventChain.push({ type:"CLICKED",    timestamp: p.hs_email_last_click_date,     label:"Clicked (marketing)",source:"marketing" });
+        if (mktReplyTs > 0)   eventChain.push({ type:"REPLIED",    timestamp: p.hs_email_last_reply_date,     label:"Replied (marketing)",source:"marketing" });
+        if (salesOpenTs > 0)  eventChain.push({ type:"OPENED",     timestamp: p.hs_sales_email_last_opened,   label:"Opened (sales)",     source:"sales" });
+        if (salesClickTs > 0) eventChain.push({ type:"CLICKED",    timestamp: p.hs_sales_email_last_clicked,  label:"Clicked (sales)",    source:"sales" });
+        if (salesReplyTs > 0) eventChain.push({ type:"REPLIED",    timestamp: p.hs_sales_email_last_replied,  label:"Replied (sales)",    source:"sales" });
         eventChain.sort((a,b) => new Date(a.timestamp) - new Date(b.timestamp));
 
+        // Use whichever open/send timestamps are available for bot detection
+        const botOpenTs = openSource === "sales" ? salesOpenTs : mktOpenTs;
         const botCheck = detectBot({
           filteredEvent: false,
-          sentAt:    sendTs || null,
-          openedAt:  openTs || null,
-          numOpens:  openTs > 0 ? 1 : 0,
+          sentAt:    mktSendTs || null,
+          openedAt:  botOpenTs || null,
+          numOpens:  openTs > 0  ? 1 : 0,
           numClicks: clickTs > 0 ? 1 : 0,
           replied:   replyTs > 0,
         });
 
+        // Sequence subject: hs_sequence_name does not exist on contacts.
+        // Show the email name for marketing sends; sequence ID is a fallback only.
+        const subjectLabel = p.hs_email_last_email_name
+          || (p.hs_latest_sequence_enrolled ? `Sequence #${p.hs_latest_sequence_enrolled}` : null);
+
         return {
-          source:    "contact_activity",
-          id:        `ca-${c.id}`,
-          type:      eventType,
-          timestamp: primaryTs,
+          source:      "contact_activity",
+          id:          `ca-${c.id}`,
+          type:        eventType,
+          emailSource,                   // "marketing" | "sales" -- which system drove this signal
+          timestamp:   primaryTs,
           score,
           label,
           eventChain,
-          contactId: c.id,
-          contact:   info,
+          contactId:   c.id,
+          contact:     info,
           botCheck,
-          isBot:     botCheck.isBot && eventType === "OPEN",
-          subject:   p.hs_email_last_email_name || p.hs_sequence_name || null,
-          sentAt:    p.hs_email_last_send_date  || null,
-          openedAt:  p.hs_email_last_open_date  || null,
-          clickedAt: p.hs_email_last_click_date || null,
-          repliedAt: p.hs_email_last_reply_date || null,
+          isBot:       botCheck.isBot && eventType === "OPEN",
+          subject:     subjectLabel,
+          sentAt:      p.hs_email_last_send_date        || null,
+          openedAt:    primaryTs && eventType === "OPEN"   ? primaryTs : null,
+          clickedAt:   primaryTs && eventType === "CLICK"  ? primaryTs : null,
+          repliedAt:   primaryTs && eventType === "REPLY"  ? primaryTs : null,
         };
       }).filter(Boolean);
 
