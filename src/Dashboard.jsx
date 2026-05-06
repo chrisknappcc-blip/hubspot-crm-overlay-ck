@@ -1007,7 +1007,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                 <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
                   <thead>
                     <tr>
-                      {['Company', 'Contacts', 'Tier', 'Last sent', 'Best engagement'].map(h => (
+                      {['Company', 'Contacts', 'Tier', 'Last sent', 'Last engagement'].map(h => (
                         <th key={h} style={{ textAlign:'left', fontSize:11, fontWeight:500, color:'var(--text-tertiary)', textTransform:'uppercase', letterSpacing:'.04em', padding:'0 8px 8px 0', borderBottom:'1px solid var(--border)' }}>{h}</th>
                       ))}
                     </tr>
@@ -1051,14 +1051,14 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                           ) : <span style={{ color:'var(--text-tertiary)', fontSize:12 }}>—</span>}
                         </td>
                         <td style={{ padding:'9px 0' }}>
-                          {a.bestEngagement ? (
+                          {a.lastEngagement ? (
                             <div>
                               <Badge
-                                label={a.bestEngagement.label}
-                                type={a.bestEngagement.type === 'replied' ? 'reply' : a.bestEngagement.type === 'clicked' ? 'click' : 'hot'}
+                                label={a.lastEngagement.label}
+                                type={a.lastEngagement.type === 'replied' ? 'reply' : a.lastEngagement.type === 'clicked' ? 'click' : 'hot'}
                               />
-                              <div style={{ fontSize:11, color:'var(--text-tertiary)', marginTop:2 }}>{timeAgo(a.bestEngagement.date)}</div>
-                              <div style={{ fontSize:11, color:'var(--text-tertiary)' }}>{a.bestEngagement.contact}</div>
+                              <div style={{ fontSize:11, color:'var(--text-tertiary)', marginTop:2 }}>{timeAgo(a.lastEngagement.date)}</div>
+                              <div style={{ fontSize:11, color:'var(--text-tertiary)' }}>{a.lastEngagement.contact}</div>
                             </div>
                           ) : <span style={{ color:'var(--text-tertiary)', fontSize:12 }}>No engagement yet</span>}
                         </td>
