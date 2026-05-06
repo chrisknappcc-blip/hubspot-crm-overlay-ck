@@ -649,7 +649,24 @@ export const handler = async (event, context) => {
   return withAuth(async (event, context, user) => {
     const path   = rawPath;
     const method = event.httpMethod;
-    const qp     = event.queryStringParameters || {};
+
+    // Netlify's queryStringParameters can be null or incomplete in some routing configs.
+    // Parse from rawUrl/rawQuery as the authoritative source.
+    let qp = event.queryStringParameters || {};
+    try {
+      const rawUrl = event.rawUrl || event.rawQuery
+        ? `https://x.x/?${event.rawQuery || ""}`
+        : null;
+      if (rawUrl) {
+        const parsed = Object.fromEntries(new URL(rawUrl).searchParams.entries());
+        if (Object.keys(parsed).length > 0) qp = parsed;
+      } else if (event.rawQuery) {
+        const parsed = Object.fromEntries(new URLSearchParams(event.rawQuery).entries());
+        if (Object.keys(parsed).length > 0) qp = parsed;
+      }
+    } catch { /* fall back to queryStringParameters */ }
+
+    console.log(`[router] path=${path} qp=${JSON.stringify(qp)}`);
 
     // ── OAuth: start connect ─────────────────────────────────────────────────
     if (method === "GET" && path === "/auth/connect") {
@@ -1687,11 +1704,16 @@ export const handler = async (event, context) => {
 
         // Use whichever open/send timestamps are available for bot detection
         const botOpenTs = openSource === "sales" ? salesOpenTs : mktOpenTs;
+
+        // For contact-property signals, we only have the most recent event timestamps,
+        // not full open/click history. Disable soft signals that require history context
+        // (no-click and burst-pattern checks) -- they produce false positives here.
+        // Only use time-to-open and HubSpot's own filteredEvent flag.
         const botCheck = detectBot({
           filteredEvent: false,
           sentAt:    mktSendTs || null,
           openedAt:  botOpenTs || null,
-          numOpens:  openTs > 0  ? 1 : 0,
+          numOpens:  0,   // set to 0 to disable history-based checks
           numClicks: clickTs > 0 ? 1 : 0,
           replied:   replyTs > 0,
         });
