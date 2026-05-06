@@ -870,7 +870,7 @@ export const handler = async (event, context) => {
             "hs_sales_email_last_replied",
             "hs_email_last_reply_date",
             "hs_last_sales_activity_timestamp",
-            "hs_last_sales_activity_timestamp",
+            "hs_email_last_send_date",
           ],
           sorts:  [{ propertyName: "hs_sales_email_last_replied", direction: "DESCENDING" }],
           limit:  200,
@@ -888,10 +888,10 @@ export const handler = async (event, context) => {
               ? p.hs_sales_email_last_replied
               : p.hs_email_last_reply_date;
 
-            // Most recent outbound activity
+            // Most recent outbound activity -- use both activity timestamp and last send date
             const lastOutboundTs = Math.max(
-              p.hs_last_sales_activity_timestamp  ? new Date(p.hs_last_sales_activity_timestamp).getTime()  : 0,
-              p.hs_last_sales_activity_timestamp  ? new Date(p.hs_last_sales_activity_timestamp).getTime()  : 0,
+              p.hs_last_sales_activity_timestamp ? new Date(p.hs_last_sales_activity_timestamp).getTime() : 0,
+              p.hs_email_last_send_date           ? new Date(p.hs_email_last_send_date).getTime()           : 0,
             );
 
             // Only include if reply is more recent than last outbound
@@ -962,11 +962,36 @@ export const handler = async (event, context) => {
         });
 
         // ── Section 3: Due tasks (HubSpot tasks with date window) ─────────────
+        // Look up the current user's HubSpot owner ID for task filtering
+        let ownerIdForTasks = user.ownerId || null;
+        if (!ownerIdForTasks) {
+          try {
+            const meData = await hsGet(user.userId, "/crm/v3/owners/me", {});
+            ownerIdForTasks = meData?.id || null;
+          } catch { /* use null */ }
+        }
+
+        // If assigned_bdr filter is set, also look up that rep's owner ID
+        const repName = qp.assigned_bdr ? decodeURIComponent(qp.assigned_bdr).trim() : null;
+        let repOwnerId = ownerIdForTasks;
+        if (repName) {
+          try {
+            const ownersData = await hsGet(user.userId, "/crm/v3/owners", { limit: 100 });
+            const match = (ownersData.results || []).find(o =>
+              `${o.firstName||""} ${o.lastName||""}`.trim() === repName
+            );
+            if (match?.id) repOwnerId = match.id;
+          } catch { /* fall back to current user */ }
+        }
+
+        const taskOwnerFilter = repOwnerId
+          ? [{ propertyName: "hubspot_owner_id", operator: "EQ", value: String(repOwnerId) }]
+          : [];
         const [upcomingTasksData, overdueTasksData] = await Promise.all([
           hsPost(user.userId, "/crm/v3/objects/tasks/search", {
             filterGroups: [{
               filters: [
-                { propertyName: "hubspot_owner_id", operator: "EQ",     value: String(user.ownerId || "") },
+                ...taskOwnerFilter,
                 { propertyName: "hs_task_status",   operator: "NOT_IN", values: ["COMPLETED", "DEFERRED"] },
                 { propertyName: "hs_timestamp",     operator: "GTE",    value: new Date(now).toISOString() },
                 { propertyName: "hs_timestamp",     operator: "LTE",    value: windowEnd },
@@ -980,7 +1005,7 @@ export const handler = async (event, context) => {
           hsPost(user.userId, "/crm/v3/objects/tasks/search", {
             filterGroups: [{
               filters: [
-                { propertyName: "hubspot_owner_id", operator: "EQ",     value: String(user.ownerId || "") },
+                ...taskOwnerFilter,
                 { propertyName: "hs_task_status",   operator: "NOT_IN", values: ["COMPLETED", "DEFERRED"] },
                 { propertyName: "hs_timestamp",     operator: "GTE",    value: overdueFrom },
                 { propertyName: "hs_timestamp",     operator: "LT",     value: new Date(now).toISOString() },
@@ -2273,8 +2298,12 @@ export const handler = async (event, context) => {
               after = d.paging.next.after;
               await new Promise(r => setTimeout(r, 150));
             }
+            console.log(`[reports fetchC] sortProp=${sortProp} returned=${results.length}`);
             return results;
-          } catch { return []; }
+          } catch (err) {
+            console.error(`[reports fetchC] error: ${err.message}`);
+            return [];
+          }
         };
 
         // ── EMAIL ACTIVITY ────────────────────────────────────────────────────
@@ -2468,8 +2497,29 @@ export const handler = async (event, context) => {
             }
           } catch (e) { console.error("[reports sequences]", e.message); }
 
+          // Resolve sequence IDs to names via batch lookup
+          const seqIds = [...new Set(Object.keys(bySequence))].filter(id => id !== "Unknown");
+          const seqNames = {};
+          if (seqIds.length > 0) {
+            try {
+              // HubSpot sequences are accessible at /crm/v3/objects/sequences
+              const seqBatch = await hsPost(user.userId, "/crm/v3/objects/sequences/batch/read", {
+                properties: ["hs_name"],
+                inputs: seqIds.slice(0, 50).map(id => ({ id })),
+              });
+              for (const s of (seqBatch.results || [])) {
+                seqNames[s.id] = s.properties?.hs_name || `Sequence ${s.id}`;
+              }
+            } catch (e) {
+              console.error("[reports] sequence name lookup failed:", e.message);
+              // Fall back to showing IDs
+            }
+          }
+
           const sequences = Object.values(bySequence).map(s => ({
             ...s,
+            sequenceName: seqNames[s.sequenceId] || `Sequence #${s.sequenceId}`,
+            sequenceUrl:  `https://app.hubspot.com/sequences/${PORTAL}/sequence/${s.sequenceId}`,
             replyRate: s.enrolled > 0 ? +((s.replied / s.enrolled) * 100).toFixed(1) : 0,
             openRate:  s.enrolled > 0 ? +((s.opened  / s.enrolled) * 100).toFixed(1) : 0,
             clickRate: s.enrolled > 0 ? +((s.clicked / s.enrolled) * 100).toFixed(1) : 0,
@@ -2578,7 +2628,11 @@ export const handler = async (event, context) => {
           return ok({
             section: "deals", period, owner: qp.owner || null,
             totals: { total: allDeals.length, totalValue, totalWeighted, wonCount, wonValue, lostCount, lostValue, winRate, avgVelocity, avgDealSize },
-            byPipeline: Object.values(byPipeline).sort((a,b)=>b.count-a.count),
+            byPipeline: Object.entries(byPipeline).map(([pipeId, p]) => ({
+              ...p,
+              pipelineId: pipeId,
+              url: `${DEALS_LIST}?pipeline=${pipeId}`,
+            })).sort((a,b)=>b.count-a.count),
             byStage:    Object.values(byStage).sort((a,b)=>b.count-a.count),
             lostReasons: Object.entries(lostReasons).map(([reason,count])=>({reason,count})).sort((a,b)=>b.count-a.count),
             recentDeals: allDeals.slice(0,200).map(deal => {
