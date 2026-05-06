@@ -310,8 +310,22 @@ function EmailSourcePill({ source }) {
 }
 
 // ─── Main Dashboard ───────────────────────────────────────────────────────────
-export default function Dashboard({ user, theme, toggleTheme, getToken }) {
+export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeError }) {
   const { signOut } = useClerk()
+
+  // Wrap apiFetch to intercept 403 MISSING_SCOPES and trigger reconnect flow
+  const safeFetch = async (url, ...args) => {
+    try {
+      return await apiFetch(url, getToken, ...args)
+    } catch (err) {
+      const msg = err?.message || ''
+      if (msg.includes('403') && msg.includes('MISSING_SCOPES')) {
+        onScopeError?.('This app needs additional HubSpot permissions that were added since you last connected.')
+        throw err
+      }
+      throw err
+    }
+  }
 
   // Core data
   const [signals, setSignals]         = useState([])
@@ -372,7 +386,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken }) {
 
   // Load owners once on mount
   useEffect(() => {
-    apiFetch('/api/hubspot/owners', getToken)
+    safeFetch('/api/hubspot/owners', getToken)
       .then(d => setOwners(d.owners || []))
       .catch(() => {})
   }, [getToken])
@@ -392,8 +406,8 @@ export default function Dashboard({ user, theme, toggleTheme, getToken }) {
     try {
       const params = `hours=${dateRange}&showBots=true&offset=0${filterParams ? '&' + filterParams : ''}`
       const [sigData, contactData] = await Promise.all([
-        apiFetch(`/api/hubspot/signals?${params}`, getToken),
-        apiFetch(`/api/hubspot/contacts${filterParams ? '?' + filterParams : ''}`, getToken),
+        safeFetch(`/api/hubspot/signals?${params}`, getToken),
+        safeFetch(`/api/hubspot/contacts${filterParams ? '?' + filterParams : ''}`, getToken),
       ])
       const sigs = sigData.signals || []
       setSignals(sigs)
@@ -407,7 +421,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken }) {
       if (sigData.meta?.hasMore) {
         const nextOffset = sigData.meta?.nextOffset || 100
         setLoadingMore(true)
-        apiFetch(`/api/hubspot/signals?hours=${dateRange}&showBots=true&offset=${nextOffset}${filterParams ? '&' + filterParams : ''}`, getToken)
+        safeFetch(`/api/hubspot/signals?hours=${dateRange}&showBots=true&offset=${nextOffset}${filterParams ? '&' + filterParams : ''}`, getToken)
           .then(more => {
             setSignals(prev => {
               const existingIds = new Set(prev.map(s => s.id))
@@ -436,7 +450,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken }) {
     setTaskLoading(true)
     try {
       const params = `days=${taskDays}${filterBdr ? `&assigned_bdr=${encodeURIComponent(filterBdr)}` : ''}`
-      const data = await apiFetch(`/api/hubspot/tasks?${params}`, getToken)
+      const data = await safeFetch(`/api/hubspot/tasks?${params}`, getToken)
       setTaskData({
         repliesAwaitingResponse: data.repliesAwaitingResponse || [],
         upcomingSequences:       data.upcomingSequences       || [],
@@ -455,7 +469,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken }) {
     setGoldLoading(true)
     try {
       const params = filterBdr ? `assigned_bdr=${encodeURIComponent(filterBdr)}` : ''
-      const data = await apiFetch(`/api/hubspot/gold${params ? '?' + params : ''}`, getToken)
+      const data = await safeFetch(`/api/hubspot/gold${params ? '?' + params : ''}`, getToken)
       setGoldAccounts(data.accounts || [])
     } catch (e) {
       console.error('[gold]', e)
@@ -473,7 +487,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken }) {
         activityRep !== 'all' ? `rep=${encodeURIComponent(activityRep)}` : 'rep=all',
         activityIncludeOwned ? 'include_owned=true' : '',
       ].filter(Boolean).join('&')
-      const data = await apiFetch(`/api/hubspot/activity?${params}`, getToken)
+      const data = await safeFetch(`/api/hubspot/activity?${params}`, getToken)
       setActivityData(data)
     } catch (e) {
       console.error('[activity]', e)
@@ -506,8 +520,15 @@ export default function Dashboard({ user, theme, toggleTheme, getToken }) {
 
   useEffect(() => { fetchData() }, [fetchData])
   useEffect(() => { fetchTasks() }, [fetchTasks])
-  useEffect(() => { fetchGold() }, [fetchGold])
-  useEffect(() => { fetchActivity() }, [fetchActivity])
+  // Stagger gold and activity by 1-2 seconds to avoid HubSpot 429 on page load
+  useEffect(() => {
+    const t = setTimeout(() => fetchGold(), 1000)
+    return () => clearTimeout(t)
+  }, [fetchGold])
+  useEffect(() => {
+    const t = setTimeout(() => fetchActivity(), 2000)
+    return () => clearTimeout(t)
+  }, [fetchActivity])
 
   // Start real-time polling on mount, clear on unmount
   useEffect(() => {
@@ -524,7 +545,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken }) {
 
   const loadContactFeed = useCallback(async (contactId) => {
     try {
-      const data = await apiFetch(`/api/hubspot/feed/${contactId}`, getToken)
+      const data = await safeFetch(`/api/hubspot/feed/${contactId}`, getToken)
       setFeed(data.feed || [])
     } catch { setFeed([]) }
   }, [getToken])
