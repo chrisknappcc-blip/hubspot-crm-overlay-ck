@@ -1549,7 +1549,11 @@ export const handler = async (event, context) => {
       ];
 
       // Run all searches in parallel, each with the current page offset.
-      // HubSpot search uses numeric `after` cursor but also accepts integer offset.
+      // NOTE: HubSpot search API uses opaque string cursors for pagination, not
+      // numeric offsets. The `after` param must be the paging.next.after token
+      // from a previous response. We can't pass a numeric offset directly.
+      // For now the first page (offset=0) fetches 100 per prop. The "tier 2"
+      // background fetch is disabled until we implement proper cursor tracking.
       const searchResults = await Promise.all(
         activityDateProps.map(prop =>
           hsPost(user.userId, "/crm/v3/objects/contacts/search", {
@@ -1560,10 +1564,19 @@ export const handler = async (event, context) => {
             properties: BASE_CONTACT_PROPS,
             sorts:      [{ propertyName: prop, direction: "DESCENDING" }],
             limit:      perPropLimit,
-            after:      pageOffset > 0 ? pageOffset : undefined,
-          }).catch(() => ({ results: [], total: 0 }))
+            // after cursor only valid when we have a real paging token
+            // pageOffset > 0 is disabled -- see note above
+          }).catch(err => {
+            console.error(`[signals] search failed for prop ${prop}:`, err.message);
+            return { results: [], total: 0 };
+          })
         )
       );
+
+      // Log how many results each prop search returned for debugging
+      searchResults.forEach((r, i) => {
+        console.log(`[signals] prop=${activityDateProps[i]} returned=${( r.results||[]).length} total=${r.total||0} filters=${JSON.stringify(customFilters)}`);
+      });
 
       // Merge and deduplicate across all three searches
       const seenIds = new Set();
@@ -1875,6 +1888,8 @@ export const handler = async (event, context) => {
       // meaning there are likely more contacts beyond this offset.
       const anyFullPage = searchResults.some(r => (r.results || []).length === perPropLimit);
 
+      console.log(`[signals] merged=${allContactResults.length} contactSignals=${contactSignals.length} finalReal=${finalReal.length} finalBots=${finalBots.length} filters=${JSON.stringify(customFilters)}`);
+
       const response = {
         signals: finalReal,
         meta: {
@@ -1894,6 +1909,19 @@ export const handler = async (event, context) => {
           botSummary: finalBots.length > 0
             ? `${finalBots.length} open event${finalBots.length > 1 ? "s" : ""} filtered as likely bot scan`
             : null,
+          // Debug info -- remove once signals filter issue is resolved
+          _debug: {
+            searchCounts: searchResults.map((r, i) => ({
+              prop:     activityDateProps[i],
+              returned: (r.results || []).length,
+              total:    r.total || 0,
+            })),
+            contactsAfterDedup:    allContactResults.length,
+            contactSignalsBuilt:   contactSignals.length,
+            afterBotFilter:        finalReal.length,
+            botsFiltered:          finalBots.length,
+            customFiltersApplied:  customFilters,
+          },
         },
       };
       if (qp.showBots === "true") {
