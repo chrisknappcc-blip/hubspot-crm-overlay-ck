@@ -908,45 +908,56 @@ export const handler = async (event, context) => {
             .sort((a, b) => b.replyTs - a.replyTs)
             .slice(0, 30); // check top 30 candidates
 
-          // For each candidate, check if any meeting/note was logged AFTER their reply
-          // This catches cases where an AE logged activity that didn't update the contact property
-          const filtered = await Promise.all(candidates.map(async (item) => {
+          // For each candidate, check sequentially (not parallel) to avoid rate limits.
+          // Each check fires 2 searches -- 30 candidates × 2 = 60 searches in parallel hits 429s.
+          const filtered = [];
+          for (const item of candidates) {
             try {
+              // Check meetings logged after the reply date
               const meetings = await hsPost(user.userId, "/crm/v3/objects/meetings/search", {
                 filterGroups: [{
                   filters: [
                     { propertyName: "hs_createdate", operator: "GT", value: new Date(item.replyTs).toISOString() },
                   ],
-                  associatedWith: [{ objectType: "contacts", operator: "EQUAL", objectIdValues: [item.contactId] }],
+                  associatedWith: [{ objectType: "contacts", operator: "EQUAL", objectIdValues: [String(item.contactId)] }],
                 }],
-                properties: ["hs_meeting_title", "hs_createdate", "hubspot_owner_id"],
+                properties: ["hs_meeting_title", "hs_createdate"],
                 limit: 1,
-              }).catch(() => ({ results: [] }));
+              }).catch(e => { console.error("[tasks] meetings check:", e.message); return { results: [] }; });
 
-              if ((meetings.results || []).length > 0) return null; // already followed up
+              if ((meetings.results || []).length > 0) {
+                console.log(`[tasks] excluding ${item.contactId} - meeting after reply`);
+                await new Promise(r => setTimeout(r, 100));
+                continue; // already followed up via meeting
+              }
 
-              // Also check notes
+              // Check notes logged after the reply date
               const notes = await hsPost(user.userId, "/crm/v3/objects/notes/search", {
                 filterGroups: [{
                   filters: [
                     { propertyName: "hs_createdate", operator: "GT", value: new Date(item.replyTs).toISOString() },
                   ],
-                  associatedWith: [{ objectType: "contacts", operator: "EQUAL", objectIdValues: [item.contactId] }],
+                  associatedWith: [{ objectType: "contacts", operator: "EQUAL", objectIdValues: [String(item.contactId)] }],
                 }],
                 properties: ["hs_note_body"],
                 limit: 1,
-              }).catch(() => ({ results: [] }));
+              }).catch(e => { console.error("[tasks] notes check:", e.message); return { results: [] }; });
 
-              if ((notes.results || []).length > 0) return null; // note logged after reply
+              if ((notes.results || []).length > 0) {
+                console.log(`[tasks] excluding ${item.contactId} - note after reply`);
+                await new Promise(r => setTimeout(r, 100));
+                continue;
+              }
 
-              return item;
-            } catch {
-              return item; // include if check fails
+              filtered.push(item);
+            } catch (err) {
+              console.error(`[tasks] check failed for ${item.contactId}:`, err.message);
+              filtered.push(item); // include if check fails
             }
-          }));
+            await new Promise(r => setTimeout(r, 150)); // rate limit gap
+          }
 
           return filtered
-            .filter(Boolean)
             .map(item => ({
               ...item,
               lastOutboundDate: item.lastOutboundTs > 0 ? new Date(item.lastOutboundTs).toISOString() : null,
@@ -2460,14 +2471,14 @@ export const handler = async (event, context) => {
           const byCampaign = {};
           try {
             let after, fetched = 0;
-            while (fetched < 3000) {
+            while (fetched < 5000) {
               const body = {
                 filterGroups: [{ filters: [
                   { propertyName: "hs_email_last_email_name", operator: "HAS_PROPERTY" },
                   ...(sinceISO ? [{ propertyName: "hs_email_last_send_date", operator: "GTE", value: sinceISO }] : []),
                 ]}],
                 properties: ["hs_email_last_email_name","hs_email_last_open_date","hs_email_last_click_date","hs_email_last_reply_date","hs_email_last_send_date"],
-                sorts: [{ propertyName: "hs_email_last_email_name", direction: "ASCENDING" }],
+                sorts: [{ propertyName: "hs_email_last_send_date", direction: "DESCENDING" }],
                 limit: 100,
               };
               if (after) body.after = after;
@@ -2486,6 +2497,7 @@ export const handler = async (event, context) => {
               await new Promise(r => setTimeout(r, 150));
             }
           } catch (e) { console.error("[reports mkt campaigns]", e.message); }
+          console.log(`[reports mkt] campaigns fetched, found ${Object.keys(byCampaign).length} unique campaigns`);
 
           const campaigns = Object.values(byCampaign).map(c => ({
             ...c,
@@ -2705,7 +2717,7 @@ export const handler = async (event, context) => {
               ...p,
               pipelineId: pipeId,
               // HubSpot deal board filtered by pipeline
-              url: `${HS_BASE}/contacts/${PORTAL}/deals/board/view/${pipeId}`,
+              url: `${HS_BASE}/contacts/${PORTAL}/deals?pipeline=${pipeId}`,
             })).sort((a,b)=>b.count-a.count),
             byStage:    Object.values(byStage).sort((a,b)=>b.count-a.count),
             lostReasons: Object.entries(lostReasons).map(([reason,count])=>({reason,count})).sort((a,b)=>b.count-a.count),
