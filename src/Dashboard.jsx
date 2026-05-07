@@ -1720,20 +1720,20 @@ function ReportsTab({ safeFetch, owners }) {
                     {rep !== 'all' && <span> Try switching to "All reps" — emails may not be attributed to this rep.</span>}
                   </div>
                 : <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
-                    <THead cols={['Email / Campaign','Sent','Opened','Open %','Clicked','Click %','Replied','Reply %','Send date']} />
+                    <THead cols={['Email / Campaign','Sent','Opens','Open %','Clicks','Click %','Replies','Reply %','Unsub %','Bounce %','Sent by','Date']} />
                     <tbody>
                       {(data.campaigns||[]).map((c,i) => (
                         <tr key={i} onClick={() => openHS(c.url || L.manage)} style={{ borderBottom:i<data.campaigns.length-1?'1px solid var(--border)':'none', cursor:'pointer' }}
                           onMouseEnter={e => e.currentTarget.style.background='var(--bg-secondary)'}
                           onMouseLeave={e => e.currentTarget.style.background=''}>
-                          <td style={{ padding:'8px 10px 8px 0', color:'var(--accent)', maxWidth:220, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{c.name}</td>
+                          <td style={{ padding:'8px 10px 8px 0', color:'var(--accent)', maxWidth:200, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{c.name}</td>
                           <td style={{ padding:'8px 10px 8px 0', color:'var(--text-secondary)' }}>{fmt(c.sent)}</td>
                           <td style={{ padding:'8px 10px 8px 0', color:'var(--text-secondary)' }}>{fmt(c.opened)}</td>
                           <td style={{ padding:'8px 10px 8px 0' }}>
                             <div style={{ display:'flex', alignItems:'center', gap:6 }}>
                               <span style={{ color: c.openRate>=20?'var(--accent)':c.openRate>=10?'var(--amber)':'var(--text-secondary)', minWidth:32 }}>{fmtPct(c.openRate)}</span>
-                              <div style={{ width:40, height:4, background:'var(--bg-secondary)', borderRadius:2 }}>
-                                <div style={{ width:`${Math.min(c.openRate,100)}%`, height:'100%', background:'var(--accent)', borderRadius:2 }} />
+                              <div style={{ width:36, height:4, background:'var(--bg-secondary)', borderRadius:2 }}>
+                                <div style={{ width:`${Math.min(c.openRate||0,100)}%`, height:'100%', background:'var(--accent)', borderRadius:2 }} />
                               </div>
                             </div>
                           </td>
@@ -1741,6 +1741,9 @@ function ReportsTab({ safeFetch, owners }) {
                           <td style={{ padding:'8px 10px 8px 0', color:'var(--text-secondary)' }}>{fmtPct(c.clickRate)}</td>
                           <td style={{ padding:'8px 10px 8px 0', color:'var(--text-secondary)' }}>{fmt(c.replied)}</td>
                           <td style={{ padding:'8px 10px 8px 0', color:'var(--text-secondary)' }}>{fmtPct(c.replyRate)}</td>
+                          <td style={{ padding:'8px 10px 8px 0', color: c.unsubscribeRate>0.5?'var(--red)':'var(--text-secondary)' }}>{fmtPct(c.unsubscribeRate)}</td>
+                          <td style={{ padding:'8px 10px 8px 0', color: c.bounceRate>2?'var(--red)':'var(--text-secondary)' }}>{fmtPct(c.bounceRate)}</td>
+                          <td style={{ padding:'8px 10px 8px 0', color:'var(--text-tertiary)', fontSize:12 }}>{c.publishedBy || '—'}</td>
                           <td style={{ padding:'8px 0', color:'var(--text-tertiary)', fontSize:12, whiteSpace:'nowrap' }}>{fmtDate(c.publishDate)}</td>
                         </tr>
                       ))}
