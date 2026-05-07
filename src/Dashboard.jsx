@@ -1476,13 +1476,9 @@ function ReportsTab({ safeFetch, owners }) {
     }
   }, [section, period, rep, owner])
 
-  const prevKey = useRef(null)
   useEffect(() => {
-    const key = `${section}|${period}|${rep}|${owner}`
-    if (prevKey.current === key) return
-    prevKey.current = key
     fetchReport()
-  }, [section, period, rep, owner, fetchReport])
+  }, [fetchReport])
 
   const fmt      = n => typeof n === 'number' ? n.toLocaleString() : (n ?? '—')
   const fmtMoney = n => n ? `$${Math.round(n).toLocaleString()}` : '$0'
