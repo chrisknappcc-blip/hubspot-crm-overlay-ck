@@ -2310,18 +2310,25 @@ export const handler = async (event, context) => {
         if (section === "email_activity") {
           const bdr = bdrFilters();
 
-          // Try the email stats API first -- returns SUM totals directly
-          let emailStats = null;
-          try {
-            const statsParams = { limit: 1 };
-            if (sinceISO) statsParams.startTimestamp = sinceMs;
-            if (sinceISO) statsParams.endTimestamp   = now;
-            const statsData = await hsGet(user.userId, "/email/public/v1/stats/by-event-type", statsParams);
-            if (statsData) emailStats = statsData;
-            console.log("[reports email] stats API result:", JSON.stringify(statsData).slice(0, 200));
-          } catch (e) {
-            console.log("[reports email] stats API unavailable:", e.message);
-          }
+          // Run stats API attempt AND recent contacts fetch in parallel with rep counts
+          const [emailStatsResult, recentContacts] = await Promise.all([
+            // Try the email stats API -- returns SUM totals directly
+            hsGet(user.userId, "/email/public/v1/stats/by-event-type",
+              sinceISO ? { startTimestamp: sinceMs, endTimestamp: now } : {}
+            ).then(d => { console.log("[reports email] stats API:", JSON.stringify(d).slice(0,200)); return d; })
+              .catch(e => { console.log("[reports email] stats API unavailable:", e.message); return null; }),
+
+            // Recent activity contacts (runs in parallel, not blocked by rep counts)
+            fetchC(
+              [{ filters: [...bdr, ...df("hs_email_last_send_date")] }],
+              ["firstname","lastname","email","company","assigned_bdr",
+               "hs_email_last_send_date","hs_email_last_email_name",
+               "hs_email_last_open_date","hs_email_last_click_date",
+               "hs_email_last_reply_date","hs_sales_email_last_replied"],
+              "hs_email_last_send_date", 300
+            ),
+          ]);
+          const emailStats = emailStatsResult;
 
           // Contact property counts (unique contacts) -- used for per-rep breakdown
           // and as fallback totals if the stats API is unavailable
@@ -2378,22 +2385,12 @@ export const handler = async (event, context) => {
             T.source    = "contact_properties";
           }
 
-          // Recent activity for drill-down
-          const recent = await fetchC(
-            [{ filters: [...bdr, ...df("hs_email_last_send_date")] }],
-            ["firstname","lastname","email","company","assigned_bdr",
-             "hs_email_last_send_date","hs_email_last_email_name",
-             "hs_email_last_open_date","hs_email_last_click_date",
-             "hs_email_last_reply_date","hs_sales_email_last_replied"],
-            "hs_email_last_send_date", 300
-          );
-
           return ok({
             section: "email_activity", period, rep: rep || "all",
             totals: T,
             byRep: repData,
             links: { dashboard: DASHBOARD, contacts: CONTACTS_LIST },
-            recent: recent.map(c => {
+            recent: recentContacts.map(c => {
               const p = c.properties || {};
               const replyDate = p.hs_email_last_reply_date || p.hs_sales_email_last_replied || null;
               return {
@@ -2465,32 +2462,69 @@ export const handler = async (event, context) => {
           }
 
           console.log(`[reports mkt] fetched ${allEmails.length} marketing emails`);
+          // Log first email structure to see actual field names
+          if (allEmails.length > 0) {
+            const sample = allEmails[0];
+            console.log("[reports mkt] sample email fields:", Object.keys(sample).join(", "));
+            console.log("[reports mkt] sample email:", JSON.stringify(sample).slice(0, 500));
+          }
 
-          // Filter by rep if set -- match by createdBy owner ID or name in subject
-          const repOwnerId = rep ? BDR_OWNER_IDS[rep] : null;
-          const filtered = repOwnerId
-            ? allEmails.filter(e => String(e.createdBy || e.authorEmail || "") === repOwnerId ||
-                String(e.authorId || "") === repOwnerId)
+          // Filter by period -- use publishDate, scheduledAt, or updatedAt
+          const inPeriod = sinceMs
+            ? allEmails.filter(e => {
+                const ts = e.publishDate || e.scheduledAt || e.updatedAt || e.createdAt;
+                return ts && new Date(ts).getTime() >= sinceMs;
+              })
             : allEmails;
 
-          // Also filter by send date within period
-          const inPeriod = sinceMs
-            ? filtered.filter(e => {
-                const sendTs = e.publishDate || e.scheduledAt || e.updatedAt || e.createdAt;
-                return sendTs && new Date(sendTs).getTime() >= sinceMs;
-              })
-            : filtered;
+          console.log(`[reports mkt] ${inPeriod.length} emails in period`);
+
+          // Stats field extraction -- try multiple possible field names from v3 API
+          const getStats = (e) => {
+            // Try nested stats object first
+            if (e.stats) return e.stats;
+            if (e.counters) return e.counters;
+            // Stats may be at top level
+            return e;
+          };
+
+          const getSent    = (e) => { const s = getStats(e); return s.sent || s.SENT || s.delivered || s.numSent || s.recipientsDelivered || 0; };
+          const getOpened  = (e) => { const s = getStats(e); return s.open || s.OPEN || s.opens || s.numOpened || s.uniqueOpens || 0; };
+          const getClicked = (e) => { const s = getStats(e); return s.click || s.CLICK || s.clicks || s.numClicked || s.uniqueClicks || 0; };
+          const getReplied = (e) => { const s = getStats(e); return s.reply || s.REPLY || s.replies || s.numReplied || 0; };
+
+          // Rep filter -- try all possible sender fields
+          // The marketing API may use userId, createdById, or author fields
+          const repFilter = (emails) => {
+            if (!rep) return emails;
+            const repName = rep.toLowerCase();
+            return emails.filter(e => {
+              // Try matching by name in various fields
+              const nameFields = [
+                e.name, e.subject, e.authorName, e.createdByName,
+                e.author, e.owner, e.ownerName,
+              ].filter(Boolean).map(v => String(v).toLowerCase());
+              // Try matching by ID
+              const idFields = [
+                String(e.createdBy || ""), String(e.authorId || ""),
+                String(e.ownerId || ""), String(e.userId || ""),
+              ];
+              const ownerId = BDR_OWNER_IDS[rep];
+              return idFields.some(id => id === ownerId) ||
+                     nameFields.some(n => n.includes(repName.split(" ")[0].toLowerCase()));
+            });
+          };
+
+          const filtered = repFilter(inPeriod);
 
           // Build campaign stats from the email records
-          // Stats may be in e.stats or e.counters depending on API version
           let totalReached = 0, totalOpened = 0, totalClicked = 0, totalReplied = 0;
-          const campaigns = inPeriod.map(e => {
-            const stats    = e.stats || e.counters || {};
-            const sent     = stats.sent       || stats.delivered   || 0;
-            const opened   = stats.open       || stats.opened       || 0;
-            const clicked  = stats.click      || stats.clicked      || 0;
-            const replied  = stats.reply      || stats.replied      || 0;
-            const name     = e.name || e.subject || "Untitled";
+          const campaigns = filtered.map(e => {
+            const sent    = getSent(e);
+            const opened  = getOpened(e);
+            const clicked = getClicked(e);
+            const replied = getReplied(e);
+            const name    = e.name || e.subject || "Untitled";
             totalReached += sent;
             totalOpened  += opened;
             totalClicked += clicked;
@@ -2505,11 +2539,9 @@ export const handler = async (event, context) => {
               clickRate: sent > 0 ? +((clicked / sent) * 100).toFixed(1) : 0,
               replyRate: sent > 0 ? +((replied / sent) * 100).toFixed(1) : 0,
               publishDate: e.publishDate || e.scheduledAt || null,
-              createdBy: e.createdBy || null,
               url: `${HS_BASE}/email/${PORTAL}/details/${e.id}/performance`,
             };
           }).sort((a, b) => {
-            // Sort by publish date desc, then by sent count desc
             const tsA = a.publishDate ? new Date(a.publishDate).getTime() : 0;
             const tsB = b.publishDate ? new Date(b.publishDate).getTime() : 0;
             return tsB - tsA || b.sent - a.sent;
@@ -2522,17 +2554,20 @@ export const handler = async (event, context) => {
           // Per-rep breakdown from email records
           const repData = [];
           for (const repName of targetReps) {
-            const rOwnerId = BDR_OWNER_IDS[repName];
-            const repEmails = rOwnerId
-              ? inPeriod.filter(e => String(e.createdBy || e.authorId || "") === rOwnerId)
-              : [];
+            const repEmails = repFilter(inPeriod.filter(e => {
+              // Force-match to this specific rep
+              const ownerId = BDR_OWNER_IDS[repName];
+              const name = repName.toLowerCase();
+              const idFields = [String(e.createdBy || ""), String(e.authorId || ""), String(e.ownerId || ""), String(e.userId || "")];
+              const nameFields = [e.authorName, e.createdByName, e.author, e.ownerName].filter(Boolean).map(v => String(v).toLowerCase());
+              return idFields.some(id => id === ownerId) || nameFields.some(n => n.includes(name.split(" ")[0]));
+            }));
             let rReached = 0, rOpened = 0, rClicked = 0, rReplied = 0;
             repEmails.forEach(e => {
-              const s = e.stats || e.counters || {};
-              rReached  += s.sent    || s.delivered || 0;
-              rOpened   += s.open    || s.opened    || 0;
-              rClicked  += s.click   || s.clicked   || 0;
-              rReplied  += s.reply   || s.replied   || 0;
+              rReached  += getSent(e);
+              rOpened   += getOpened(e);
+              rClicked  += getClicked(e);
+              rReplied  += getReplied(e);
             });
             repData.push({
               rep: repName, emailCount: repEmails.length,
