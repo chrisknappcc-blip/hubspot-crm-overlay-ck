@@ -871,111 +871,43 @@ export const handler = async (event, context) => {
             "hs_email_last_reply_date",
             "hs_last_sales_activity_timestamp",
             "hs_email_last_send_date",
+            "notes_last_contacted",
           ],
           sorts:  [{ propertyName: "hs_sales_email_last_replied", direction: "DESCENDING" }],
           limit:  200,
         }).catch(() => ({ results: [] }));
 
-        const repliesAwaitingResponse = await (async () => {
-          const candidates = (repliesData.results || [])
-            .map(c => {
-              const p = c.properties || {};
-              const salesReplyTs = p.hs_sales_email_last_replied ? new Date(p.hs_sales_email_last_replied).getTime() : 0;
-              const mktReplyTs   = p.hs_email_last_reply_date    ? new Date(p.hs_email_last_reply_date).getTime()    : 0;
-              const replyTs      = Math.max(salesReplyTs, mktReplyTs);
-              if (replyTs === 0) return null;
-              const replyDate = replyTs === salesReplyTs ? p.hs_sales_email_last_replied : p.hs_email_last_reply_date;
+        const repliesAwaitingResponse = (repliesData.results || [])
+          .map(c => {
+            const p = c.properties || {};
+            const salesReplyTs = p.hs_sales_email_last_replied ? new Date(p.hs_sales_email_last_replied).getTime() : 0;
+            const mktReplyTs   = p.hs_email_last_reply_date    ? new Date(p.hs_email_last_reply_date).getTime()    : 0;
+            const replyTs      = Math.max(salesReplyTs, mktReplyTs);
+            if (replyTs === 0) return null;
+            const replyDate = replyTs === salesReplyTs ? p.hs_sales_email_last_replied : p.hs_email_last_reply_date;
 
-              // Use contact-level timestamps as a quick pre-filter only
-              const lastOutboundTs = Math.max(
-                p.hs_last_sales_activity_timestamp ? new Date(p.hs_last_sales_activity_timestamp).getTime() : 0,
-                p.hs_email_last_send_date           ? new Date(p.hs_email_last_send_date).getTime()           : 0,
-              );
-              // Don't pre-filter here -- we'll do a more accurate check via meetings below
-              const info = normalizeContact(c);
-              return {
-                contactId: c.id,
-                contact: info,
-                replyDate,
-                replyTs,
-                lastOutboundTs,
-                waitingHours: Math.round((now - replyTs) / (1000 * 60 * 60)),
-                subject: p.hs_email_last_email_name || null,
-                url: `https://app.hubspot.com/contacts/39921549/record/0-1/${c.id}`,
-              };
-            })
-            .filter(Boolean)
-            .sort((a, b) => b.replyTs - a.replyTs)
-            .slice(0, 30); // check top 30 candidates
+            // Exclude if any outbound activity was logged AFTER the reply.
+            // Check all available activity timestamps on the contact.
+            const lastActivityTs = Math.max(
+              p.hs_last_sales_activity_timestamp ? new Date(p.hs_last_sales_activity_timestamp).getTime() : 0,
+              p.hs_email_last_send_date           ? new Date(p.hs_email_last_send_date).getTime()           : 0,
+              p.notes_last_contacted              ? new Date(p.notes_last_contacted).getTime()              : 0,
+            );
+            if (lastActivityTs > replyTs) return null;
 
-          // For each candidate, check v3 CRM objects (meetings, notes) directly via
-          // the associations endpoint. This catches Gong-synced meetings and other
-          // modern activity that doesn't appear in the v1 engagements API.
-          // Logic: if ANY meeting, note, or call was created AFTER the reply, exclude.
-          const filtered = [];
-          for (const item of candidates) {
-            try {
-              // Get associated meeting IDs for this contact
-              const assocMeetings = await hsGet(user.userId,
-                `/crm/v3/objects/contacts/${item.contactId}/associations/meetings`,
-                { limit: 10 }
-              ).catch(() => ({ results: [] }));
-
-              const meetingIds = (assocMeetings.results || []).map(r => r.id);
-              let hasFollowUp = false;
-
-              if (meetingIds.length > 0) {
-                // Batch read the meetings to get their create dates
-                const meetingData = await hsPost(user.userId, "/crm/v3/objects/meetings/batch/read", {
-                  properties: ["hs_createdate"],
-                  inputs: meetingIds.slice(0, 10).map(id => ({ id })),
-                }).catch(() => ({ results: [] }));
-
-                hasFollowUp = (meetingData.results || []).some(m => {
-                  const ts = m.properties?.hs_createdate ? new Date(m.properties.hs_createdate).getTime() : 0;
-                  return ts > item.replyTs;
-                });
-              }
-
-              if (!hasFollowUp) {
-                // Also check notes
-                const assocNotes = await hsGet(user.userId,
-                  `/crm/v3/objects/contacts/${item.contactId}/associations/notes`,
-                  { limit: 10 }
-                ).catch(() => ({ results: [] }));
-
-                const noteIds = (assocNotes.results || []).map(r => r.id);
-                if (noteIds.length > 0) {
-                  const noteData = await hsPost(user.userId, "/crm/v3/objects/notes/batch/read", {
-                    properties: ["hs_createdate"],
-                    inputs: noteIds.slice(0, 10).map(id => ({ id })),
-                  }).catch(() => ({ results: [] }));
-
-                  hasFollowUp = (noteData.results || []).some(n => {
-                    const ts = n.properties?.hs_createdate ? new Date(n.properties.hs_createdate).getTime() : 0;
-                    return ts > item.replyTs;
-                  });
-                }
-              }
-
-              if (hasFollowUp) {
-                console.log(`[tasks] excluding contact ${item.contactId} - v3 activity after reply`);
-              } else {
-                filtered.push(item);
-              }
-            } catch (err) {
-              console.error(`[tasks] v3 check failed for ${item.contactId}:`, err.message);
-              filtered.push(item);
-            }
-            await new Promise(r => setTimeout(r, 150));
-          }
-
-          return filtered
-            .map(item => ({
-              ...item,
-              lastOutboundDate: item.lastOutboundTs > 0 ? new Date(item.lastOutboundTs).toISOString() : null,
-            }));
-        })();
+            const info = normalizeContact(c);
+            return {
+              contactId:       c.id,
+              contact:         info,
+              replyDate,
+              lastOutboundDate: lastActivityTs > 0 ? new Date(lastActivityTs).toISOString() : null,
+              waitingHours:    Math.round((now - replyTs) / (1000 * 60 * 60)),
+              subject:         p.hs_email_last_email_name || null,
+              url: `https://app.hubspot.com/contacts/39921549/record/0-1/${c.id}`,
+            };
+          })
+          .filter(Boolean)
+          .sort((a, b) => new Date(b.replyDate) - new Date(a.replyDate));
 
         // ── Section 2: Upcoming sequences (currently enrolled) ────────────────
         const sequencesData = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
