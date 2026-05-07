@@ -1568,15 +1568,20 @@ function ReportsTab({ safeFetch, owners }) {
         const L = data.links || {}
         return (
           <div>
-            <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:10, marginBottom:10 }}>
-              <KpiCard label="Emails sent"   value={fmt(T.sent)}      sub="Unique contacts reached"       href={L.sent} />
-              <KpiCard label="Sequences"     value={fmt(T.sequences)} sub="Contacts enrolled in period"   href={L.dashboard} />
-              <KpiCard label="Open rate"     value={fmtPct(T.openRate)}  sub={`${fmt(T.opens)} contacts opened`}  href={L.opens} accent />
-            </div>
-            <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:10, marginBottom:'1.5rem' }}>
-              <KpiCard label="Clicks"        value={fmt(T.clicks)}    sub={`${fmtPct(T.clickRate)} click rate`}   href={L.clicks} />
-              <KpiCard label="Replies"       value={fmt(T.replies)}   sub={`${fmtPct(T.replyRate)} reply rate`}  href={L.replies} />
-              <KpiCard label="Click rate"    value={fmtPct(T.clickRate)} sub="Of emails sent"               href={L.clicks} accent />
+            {T.source === 'contact_properties' && (
+              <div style={{ fontSize:11, color:'var(--text-tertiary)', marginBottom:12, padding:'8px 12px', background:'var(--bg-panel)', borderRadius:'var(--radius)', border:'1px solid var(--border)' }}>
+                Counts reflect unique contacts with activity. For raw send volume totals, see HubSpot directly.
+                <button onClick={() => openHS(DASHBOARD)} style={{ marginLeft:8, color:'var(--accent)', background:'none', border:'none', cursor:'pointer', padding:0, fontSize:11 }}>View in HubSpot ↗</button>
+              </div>
+            )}
+            {/* 6 KPIs matching screenshot: Emails Sent, Opens, Open Rate, Clicks, Click Rate, Replies */}
+            <div style={{ display:'grid', gridTemplateColumns:'repeat(6,minmax(0,1fr))', gap:10, marginBottom:'1.5rem' }}>
+              <KpiCard label="Emails sent"   value={fmt(T.sent)}           sub="Total sent"                         href={L.contacts} />
+              <KpiCard label="Email opens"   value={fmt(T.opens)}          sub={`${fmtPct(T.openRate)} open rate`}  href={L.contacts} />
+              <KpiCard label="Open rate"     value={fmtPct(T.openRate)}    sub="Of emails sent"                     href={L.contacts} accent />
+              <KpiCard label="Clicks"        value={fmt(T.clicks)}         sub={`${fmtPct(T.clickRate)} click rate`} href={L.contacts} />
+              <KpiCard label="Click rate"    value={fmtPct(T.clickRate)}   sub="Of emails sent"                     href={L.contacts} accent />
+              <KpiCard label="Replies"       value={fmt(T.replies)}        sub={`${fmtPct(T.replyRate)} reply rate`} href={L.contacts} />
             </div>
 
             {(data.byRep||[]).length > 1 && (
@@ -1645,20 +1650,29 @@ function ReportsTab({ safeFetch, owners }) {
       {!loading && data && section === 'marketing' && (() => {
         const T = data.totals || {}
         const L = data.links || {}
+        const ctr = (T.totalOpened > 0 && T.totalClicked > 0)
+          ? fmtPct(+((T.totalClicked / T.totalOpened) * 100).toFixed(1))
+          : '—'
         return (
           <div>
-            <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:10, marginBottom:10 }}>
-              <KpiCard label="Contacts reached" value={fmt(T.totalReached)} sub="Unique recipients"              href={L.manage} />
-              <KpiCard label="Opened"           value={fmt(T.totalOpened)}  sub={`${fmtPct(T.openRate)} open rate`}  href={L.manage} />
-              <KpiCard label="Clicked"          value={fmt(T.totalClicked)} sub={`${fmtPct(T.clickRate)} click rate`} href={L.manage} />
-              <KpiCard label="Replied"          value={fmt(T.totalReplied)} sub={`${fmtPct(T.replyRate)} reply rate`} href={L.manage} />
+            {data.usedFallback && (
+              <div style={{ fontSize:11, color:'var(--amber)', marginBottom:12, padding:'8px 12px', background:'var(--bg-panel)', borderRadius:'var(--radius)', border:'1px solid var(--border)' }}>
+                ⚠ Marketing emails API unavailable — showing contact-level estimates.
+                <button onClick={() => openHS(L.manage)} style={{ marginLeft:8, color:'var(--accent)', background:'none', border:'none', cursor:'pointer', padding:0, fontSize:11 }}>View in HubSpot ↗</button>
+              </div>
+            )}
+            <div style={{ display:'grid', gridTemplateColumns:'repeat(4,minmax(0,1fr))', gap:10, marginBottom:10 }}>
+              <KpiCard label="Emails sent"  value={fmt(T.totalReached)}  sub="Total delivered"                    href={L.manage} />
+              <KpiCard label="Opens"        value={fmt(T.totalOpened)}   sub={`${fmtPct(T.openRate)} open rate`}  href={L.manage} />
+              <KpiCard label="Clicks"       value={fmt(T.totalClicked)}  sub={`${fmtPct(T.clickRate)} click rate`} href={L.manage} />
+              <KpiCard label="Replies"      value={fmt(T.totalReplied)}  sub={`${fmtPct(T.replyRate)} reply rate`} href={L.manage} />
             </div>
-            <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:10, marginBottom:'1.5rem' }}>
-              <KpiCard label="Open rate"  value={fmtPct(T.openRate)}  sub="Industry avg ~20%"  href={L.manage} accent />
-              <KpiCard label="Click rate" value={fmtPct(T.clickRate)} sub="Industry avg ~2-3%" href={L.manage} accent />
-              <KpiCard label="Reply rate" value={fmtPct(T.replyRate)} sub="Industry avg ~1%"   href={L.manage} accent />
+            <div style={{ display:'grid', gridTemplateColumns:'repeat(4,minmax(0,1fr))', gap:10, marginBottom:'1.5rem' }}>
+              <KpiCard label="Open rate"       value={fmtPct(T.openRate)}  sub="Industry avg ~20%"  href={L.manage} accent />
+              <KpiCard label="Click rate"      value={fmtPct(T.clickRate)} sub="Industry avg ~2-3%" href={L.manage} accent />
+              <KpiCard label="Reply rate"      value={fmtPct(T.replyRate)} sub="Industry avg ~1%"   href={L.manage} accent />
+              <KpiCard label="Click-through"   value={ctr}                 sub="Clicks / opens"     href={L.manage} accent />
             </div>
-
             {(data.byRep||[]).length > 1 && (
               <Panel style={{ marginBottom:12 }}>
                 <SectionTitle>By rep</SectionTitle>
