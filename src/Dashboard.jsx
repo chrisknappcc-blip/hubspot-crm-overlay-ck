@@ -1667,11 +1667,12 @@ function ReportsTab({ safeFetch, owners }) {
               <Panel style={{ marginBottom:12 }}>
                 <SectionTitle>By rep</SectionTitle>
                 <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
-                  <THead cols={['Rep','Reached','Opened','Open %','Clicked','Click %','Replied','Reply %']} />
+                  <THead cols={['Rep','Emails sent','Reached','Opened','Open %','Clicked','Click %','Replied','Reply %']} />
                   <tbody>
                     {(data.byRep||[]).map((r,i) => (
                       <tr key={i} style={{ borderBottom:i<data.byRep.length-1?'1px solid var(--border)':'none' }}>
                         <td style={{ padding:'8px 10px 8px 0', fontWeight:500 }}>{r.rep}</td>
+                        <td style={{ padding:'8px 10px 8px 0', color:'var(--text-secondary)' }}>{fmt(r.emailCount)}</td>
                         <td style={{ padding:'8px 10px 8px 0', color:'var(--text-secondary)' }}>{fmt(r.reached)}</td>
                         <td style={{ padding:'8px 10px 8px 0', color:'var(--text-secondary)' }}>{fmt(r.opened)}</td>
                         <td style={{ padding:'8px 10px 8px 0', color:'var(--accent)' }}>{fmtPct(r.openRate)}</td>
@@ -1687,26 +1688,36 @@ function ReportsTab({ safeFetch, owners }) {
             )}
 
             <Panel>
-              <SectionTitle>By campaign / email</SectionTitle>
-              <div style={{ fontSize:11, color:'var(--text-tertiary)', marginBottom:10 }}>
-                Grouped by most recent email name per contact. Click any row to view in HubSpot.
+              <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:8 }}>
+                <SectionTitle style={{ margin:0 }}>Marketing emails sent</SectionTitle>
+                <button onClick={() => openHS(L.manage)} style={{ fontSize:11, color:'var(--accent)', background:'none', border:'none', cursor:'pointer', padding:0 }}>
+                  View all in HubSpot ↗
+                </button>
               </div>
+              {data.usedFallback && (
+                <div style={{ fontSize:11, color:'var(--amber)', marginBottom:8 }}>
+                  ⚠ Marketing emails API unavailable — showing contact-level estimates. <button onClick={() => openHS(L.manage)} style={{ color:'var(--accent)', background:'none', border:'none', cursor:'pointer', padding:0, fontSize:11 }}>View in HubSpot ↗</button>
+                </div>
+              )}
               {(data.campaigns||[]).length === 0
-                ? <div style={{ fontSize:13, color:'var(--text-tertiary)' }}>No campaigns found in this period.</div>
+                ? <div style={{ fontSize:13, color:'var(--text-tertiary)' }}>
+                    No marketing emails found in this period.
+                    {rep !== 'all' && <span> Try switching to "All reps" — emails may not be attributed to this rep.</span>}
+                  </div>
                 : <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
-                    <THead cols={['Email / Campaign','Contacts','Opened','Open %','Clicked','Click %','Replied','Reply %']} />
+                    <THead cols={['Email / Campaign','Sent','Opened','Open %','Clicked','Click %','Replied','Reply %','Send date']} />
                     <tbody>
                       {(data.campaigns||[]).map((c,i) => (
-                        <tr key={i} onClick={() => openHS(L.manage)} style={{ borderBottom:i<data.campaigns.length-1?'1px solid var(--border)':'none', cursor:'pointer' }}
+                        <tr key={i} onClick={() => openHS(c.url || L.manage)} style={{ borderBottom:i<data.campaigns.length-1?'1px solid var(--border)':'none', cursor:'pointer' }}
                           onMouseEnter={e => e.currentTarget.style.background='var(--bg-secondary)'}
                           onMouseLeave={e => e.currentTarget.style.background=''}>
-                          <td style={{ padding:'8px 10px 8px 0', color:'var(--accent)', maxWidth:240, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{c.name}</td>
+                          <td style={{ padding:'8px 10px 8px 0', color:'var(--accent)', maxWidth:220, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{c.name}</td>
                           <td style={{ padding:'8px 10px 8px 0', color:'var(--text-secondary)' }}>{fmt(c.sent)}</td>
                           <td style={{ padding:'8px 10px 8px 0', color:'var(--text-secondary)' }}>{fmt(c.opened)}</td>
                           <td style={{ padding:'8px 10px 8px 0' }}>
                             <div style={{ display:'flex', alignItems:'center', gap:6 }}>
                               <span style={{ color: c.openRate>=20?'var(--accent)':c.openRate>=10?'var(--amber)':'var(--text-secondary)', minWidth:32 }}>{fmtPct(c.openRate)}</span>
-                              <div style={{ width:50, height:4, background:'var(--bg-secondary)', borderRadius:2 }}>
+                              <div style={{ width:40, height:4, background:'var(--bg-secondary)', borderRadius:2 }}>
                                 <div style={{ width:`${Math.min(c.openRate,100)}%`, height:'100%', background:'var(--accent)', borderRadius:2 }} />
                               </div>
                             </div>
@@ -1714,7 +1725,8 @@ function ReportsTab({ safeFetch, owners }) {
                           <td style={{ padding:'8px 10px 8px 0', color:'var(--text-secondary)' }}>{fmt(c.clicked)}</td>
                           <td style={{ padding:'8px 10px 8px 0', color:'var(--text-secondary)' }}>{fmtPct(c.clickRate)}</td>
                           <td style={{ padding:'8px 10px 8px 0', color:'var(--text-secondary)' }}>{fmt(c.replied)}</td>
-                          <td style={{ padding:'8px 0', color:'var(--text-secondary)' }}>{fmtPct(c.replyRate)}</td>
+                          <td style={{ padding:'8px 10px 8px 0', color:'var(--text-secondary)' }}>{fmtPct(c.replyRate)}</td>
+                          <td style={{ padding:'8px 0', color:'var(--text-tertiary)', fontSize:12, whiteSpace:'nowrap' }}>{fmtDate(c.publishDate)}</td>
                         </tr>
                       ))}
                     </tbody>
