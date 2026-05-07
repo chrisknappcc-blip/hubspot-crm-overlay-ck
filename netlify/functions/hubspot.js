@@ -2517,26 +2517,50 @@ export const handler = async (event, context) => {
           const statsResults = await Promise.all(
             emailsToStat.map(e =>
               hsGet(user.userId, `/marketing/v3/emails/${e.id}/statistics`, {})
+                .then(r => {
+                  if (emailsToStat.indexOf(e) === 0) {
+                    console.log("[reports mkt] stats response:", JSON.stringify(r).slice(0, 600));
+                  }
+                  return r;
+                })
                 .catch(err => {
-                  console.error(`[reports mkt] stats error for ${e.id}:`, err.message);
+                  if (emailsToStat.indexOf(e) === 0) {
+                    console.error(`[reports mkt] stats error for ${e.id}:`, err.message);
+                  }
                   return null;
                 })
             )
           );
 
-          if (statsResults.length > 0 && statsResults[0]) {
-            console.log("[reports mkt] stats sample:", JSON.stringify(statsResults[0]).slice(0,400));
-          }
-
           for (let i = 0; i < emailsToStat.length; i++) {
             const e = emailsToStat[i];
             const stats = statsResults[i];
-            // Try every possible stats structure
-            const counters = stats?.counters || stats?.stats || stats?.overall || stats || {};
-            const sent    = counters.sent    || counters.delivered || counters.numSent    || 0;
-            const opened  = counters.open    || counters.opens     || counters.numOpened  || counters.uniqueOpens || 0;
-            const clicked = counters.click   || counters.clicks    || counters.numClicked || counters.uniqueClicks || 0;
-            const replied = counters.reply   || counters.replies   || counters.numReplied || 0;
+
+            // HubSpot /marketing/v3/emails/{id}/statistics returns:
+            // { counters: { sent, open, click, reply, unsubscribed, bounce, hardbounce, softbounce } }
+            // OR { overall: { sent, open, ... } }
+            // OR stats may be directly on the email object as e.stats or e.counters
+            let counters = {};
+            if (stats) {
+              counters = stats.counters
+                || stats.overall
+                || stats.stats
+                || stats.data?.counters
+                || stats.data
+                || stats;
+            }
+            // Fallback: stats may be embedded in the email object itself
+            if (Object.keys(counters).length === 0 && e.stats) {
+              counters = e.stats.counters || e.stats;
+            }
+            if (Object.keys(counters).length === 0 && e.counters) {
+              counters = e.counters;
+            }
+
+            const sent    = Number(counters.sent    || counters.delivered     || counters.numSent      || 0);
+            const opened  = Number(counters.open    || counters.opens         || counters.numOpened    || counters.uniqueOpens  || 0);
+            const clicked = Number(counters.click   || counters.clicks        || counters.numClicked   || counters.uniqueClicks || 0);
+            const replied = Number(counters.reply   || counters.replies       || counters.numReplied   || 0);
 
             totalSent    += sent;
             totalOpened  += opened;
@@ -2597,8 +2621,8 @@ export const handler = async (event, context) => {
             });
           }
 
-          // Fallback to contact property counts if API returned no stats
-          const usedFallback = totalSent === 0;
+          // Only use fallback if we couldn't fetch ANY emails at all
+          const usedFallback = allEmails.length === 0;
           let totals;
           if (usedFallback) {
             const [fbReached, fbOpened, fbClicked, fbReplied] = await Promise.all([
