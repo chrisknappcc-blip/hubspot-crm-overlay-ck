@@ -2507,60 +2507,50 @@ export const handler = async (event, context) => {
 
           console.log(`[reports mkt] ${inPeriodFiltered.length} emails in period${rep ? ' for '+rep : ''}`);
 
-          // Step 3: Fetch statistics for each email in period (batch by fetching per ID)
-          // /marketing/v3/emails/{id}/statistics returns: sent, open, click, reply counts
+          // Step 3: Fetch statistics via /email/public/v1/campaigns/{campaignId}
+          // The /marketing/v3/emails/{id}/statistics endpoint returns 404 -- stats
+          // live on the email campaign object. Each email has allEmailCampaignIds;
+          // we use the first one to get send/open/click/reply counts.
           let totalSent = 0, totalOpened = 0, totalClicked = 0, totalReplied = 0;
           const campaigns = [];
 
-          // Fetch stats for up to 30 emails (avoid timeout)
           const emailsToStat = inPeriodFiltered.slice(0, 30);
           const statsResults = await Promise.all(
-            emailsToStat.map(e =>
-              hsGet(user.userId, `/marketing/v3/emails/${e.id}/statistics`, {})
+            emailsToStat.map(async e => {
+              const campaignId = (e.allEmailCampaignIds || [])[0];
+              if (!campaignId) return null;
+              return hsGet(user.userId, `/email/public/v1/campaigns/${campaignId}`, {})
                 .then(r => {
                   if (emailsToStat.indexOf(e) === 0) {
-                    console.log("[reports mkt] stats response:", JSON.stringify(r).slice(0, 600));
+                    console.log("[reports mkt] campaign stats:", JSON.stringify(r).slice(0, 400));
                   }
                   return r;
                 })
                 .catch(err => {
                   if (emailsToStat.indexOf(e) === 0) {
-                    console.error(`[reports mkt] stats error for ${e.id}:`, err.message);
+                    console.error(`[reports mkt] campaign stats error:`, err.message);
                   }
                   return null;
-                })
-            )
+                });
+            })
           );
 
           for (let i = 0; i < emailsToStat.length; i++) {
             const e = emailsToStat[i];
             const stats = statsResults[i];
 
-            // HubSpot /marketing/v3/emails/{id}/statistics returns:
+            // /email/public/v1/campaigns/{id} returns:
             // { counters: { sent, open, click, reply, unsubscribed, bounce, hardbounce, softbounce } }
-            // OR { overall: { sent, open, ... } }
-            // OR stats may be directly on the email object as e.stats or e.counters
-            let counters = {};
-            if (stats) {
-              counters = stats.counters
-                || stats.overall
-                || stats.stats
-                || stats.data?.counters
-                || stats.data
-                || stats;
-            }
-            // Fallback: stats may be embedded in the email object itself
-            if (Object.keys(counters).length === 0 && e.stats) {
-              counters = e.stats.counters || e.stats;
-            }
-            if (Object.keys(counters).length === 0 && e.counters) {
-              counters = e.counters;
-            }
+            const counters = stats?.counters || {};
 
-            const sent    = Number(counters.sent    || counters.delivered     || counters.numSent      || 0);
-            const opened  = Number(counters.open    || counters.opens         || counters.numOpened    || counters.uniqueOpens  || 0);
-            const clicked = Number(counters.click   || counters.clicks        || counters.numClicked   || counters.uniqueClicks || 0);
-            const replied = Number(counters.reply   || counters.replies       || counters.numReplied   || 0);
+            const sent         = Number(counters.sent          || counters.delivered    || 0);
+            const opened       = Number(counters.open          || counters.opens         || 0);
+            const clicked      = Number(counters.click         || counters.clicks        || 0);
+            const replied      = Number(counters.reply         || counters.replies       || 0);
+            const unsubscribed = Number(counters.unsubscribed  || counters.unsubscribe   || 0);
+            const hardbounced  = Number(counters.hardbounce    || counters.hardbounced   || 0);
+            const softbounced  = Number(counters.softbounce    || counters.softbounced   || 0);
+            const bounced      = Number(counters.bounce        || 0) || hardbounced + softbounced;
 
             totalSent    += sent;
             totalOpened  += opened;
@@ -2569,11 +2559,14 @@ export const handler = async (event, context) => {
 
             campaigns.push({
               name:        e.name || e.subject || "Untitled",
-              sent, opened, clicked, replied,
-              openRate:  sent > 0 ? +((opened  / sent) * 100).toFixed(1) : 0,
-              clickRate: sent > 0 ? +((clicked / sent) * 100).toFixed(1) : 0,
-              replyRate: sent > 0 ? +((replied / sent) * 100).toFixed(1) : 0,
-              publishDate: e.publishDate || e.scheduledAt || e.sendDate || null,
+              sent, opened, clicked, replied, unsubscribed, bounced, hardbounced, softbounced,
+              openRate:        sent > 0 ? +((opened       / sent) * 100).toFixed(1) : 0,
+              clickRate:       sent > 0 ? +((clicked      / sent) * 100).toFixed(1) : 0,
+              replyRate:       sent > 0 ? +((replied      / sent) * 100).toFixed(1) : 0,
+              unsubscribeRate: sent > 0 ? +((unsubscribed / sent) * 100).toFixed(1) : 0,
+              bounceRate:      sent > 0 ? +((bounced      / sent) * 100).toFixed(1) : 0,
+              publishDate: e.publishDate || e.publishedAt || e.scheduledAt || null,
+              publishedBy: e.publishedByName || null,
               url: `${HS_BASE}/email/${PORTAL}/details/${e.id}/performance`,
             });
           }
@@ -2605,12 +2598,11 @@ export const handler = async (event, context) => {
             for (let i = 0; i < emailsToStat.length; i++) {
               const e = emailsToStat[i];
               if (!repEmails.find(re => re.id === e.id)) continue;
-              const stats = statsResults[i];
-              const counters = stats?.counters || stats?.stats || stats?.overall || stats || {};
-              rSent    += counters.sent    || counters.delivered || 0;
-              rOpened  += counters.open    || counters.opens     || 0;
-              rClicked += counters.click   || counters.clicks    || 0;
-              rReplied += counters.reply   || counters.replies   || 0;
+              const counters = statsResults[i]?.counters || {};
+              rSent    += Number(counters.sent   || counters.delivered || 0);
+              rOpened  += Number(counters.open   || counters.opens     || 0);
+              rClicked += Number(counters.click  || counters.clicks    || 0);
+              rReplied += Number(counters.reply  || counters.replies   || 0);
             }
             repData.push({
               rep: repName, emailCount: repEmails.length,
