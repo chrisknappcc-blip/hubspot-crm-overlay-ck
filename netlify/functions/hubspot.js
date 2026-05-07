@@ -2304,41 +2304,81 @@ export const handler = async (event, context) => {
         };
 
         // ── EMAIL ACTIVITY ────────────────────────────────────────────────────
+        // Uses /email/public/v1/stats/by-event-type for SUM metrics matching
+        // HubSpot's "Email Activity Results" report (sent, opens, clicks, replies).
+        // Falls back to contact property counts if the stats API is unavailable.
         if (section === "email_activity") {
           const bdr = bdrFilters();
 
-          // All counts in parallel per rep then summarize
+          // Try the email stats API first -- returns SUM totals directly
+          let emailStats = null;
+          try {
+            const statsParams = { limit: 1 };
+            if (sinceISO) statsParams.startTimestamp = sinceMs;
+            if (sinceISO) statsParams.endTimestamp   = now;
+            const statsData = await hsGet(user.userId, "/email/public/v1/stats/by-event-type", statsParams);
+            if (statsData) emailStats = statsData;
+            console.log("[reports email] stats API result:", JSON.stringify(statsData).slice(0, 200));
+          } catch (e) {
+            console.log("[reports email] stats API unavailable:", e.message);
+          }
+
+          // Contact property counts (unique contacts) -- used for per-rep breakdown
+          // and as fallback totals if the stats API is unavailable
           const repData = [];
           for (const repName of targetReps) {
             const rf = [{ propertyName: "assigned_bdr", operator: "EQ", value: repName }];
-            const [sent, opens, clicks, mktReplies, salesReplies, sequences] = await Promise.all([
-              count1([...rf, ...df("hs_email_last_send_date")]),
-              count1([...rf, ...df("hs_email_last_open_date")]),
-              count1([...rf, ...df("hs_email_last_click_date")]),
-              count1([...rf, ...df("hs_email_last_reply_date")]),
-              count1([...rf, ...df("hs_sales_email_last_replied")]),
-              count1([...rf, ...df("hs_latest_sequence_enrolled_date")]),
+            const mf = (prop) => [...rf, ...df(prop)];
+            const [sent, opens, clicks, mktReplies, salesReplies, seqs] = await Promise.all([
+              count1(mf("hs_email_last_send_date")),
+              count1(mf("hs_email_last_open_date")),
+              count1(mf("hs_email_last_click_date")),
+              count1(mf("hs_email_last_reply_date")),
+              count1(mf("hs_sales_email_last_replied")),
+              count1(mf("hs_latest_sequence_enrolled_date")),
             ]);
-            const replies  = Math.max(mktReplies, salesReplies); // de-overlap best we can
-            const openRate  = sent > 0 ? +((opens   / sent) * 100).toFixed(1) : 0;
-            const clickRate = sent > 0 ? +((clicks  / sent) * 100).toFixed(1) : 0;
-            const replyRate = sent > 0 ? +((replies / sent) * 100).toFixed(1) : 0;
-            repData.push({ rep: repName, sent, opens, clicks, replies, sequences, openRate, clickRate, replyRate });
+            const replies   = Math.max(mktReplies, salesReplies);
+            repData.push({
+              rep: repName, sent, opens, clicks, replies, sequences: seqs,
+              openRate:  sent > 0 ? +((opens   / sent) * 100).toFixed(1) : 0,
+              clickRate: sent > 0 ? +((clicks  / sent) * 100).toFixed(1) : 0,
+              replyRate: sent > 0 ? +((replies / sent) * 100).toFixed(1) : 0,
+            });
             await new Promise(r => setTimeout(r, 200));
           }
 
-          const T = repData.reduce((a, r) => ({
-            sent:      a.sent      + r.sent,
-            opens:     a.opens     + r.opens,
-            clicks:    a.clicks    + r.clicks,
-            replies:   a.replies   + r.replies,
-            sequences: a.sequences + r.sequences,
-          }), { sent:0, opens:0, clicks:0, replies:0, sequences:0 });
-          T.openRate  = T.sent > 0 ? +((T.opens   / T.sent) * 100).toFixed(1) : 0;
-          T.clickRate = T.sent > 0 ? +((T.clicks  / T.sent) * 100).toFixed(1) : 0;
-          T.replyRate = T.sent > 0 ? +((T.replies / T.sent) * 100).toFixed(1) : 0;
+          // Team totals -- use stats API if available, otherwise sum rep data
+          let T;
+          if (emailStats && (emailStats.sent || emailStats.SENT)) {
+            const s = emailStats;
+            const totalSent    = s.sent    || s.SENT    || 0;
+            const totalOpens   = s.open    || s.OPEN    || s.opens   || 0;
+            const totalClicks  = s.click   || s.CLICK   || s.clicks  || 0;
+            const totalReplies = s.reply   || s.REPLY   || s.replies || 0;
+            T = {
+              sent: totalSent, opens: totalOpens, clicks: totalClicks, replies: totalReplies,
+              sequences: repData.reduce((a,r) => a + r.sequences, 0),
+              openRate:  totalSent > 0 ? +((totalOpens   / totalSent) * 100).toFixed(1) : 0,
+              clickRate: totalSent > 0 ? +((totalClicks  / totalSent) * 100).toFixed(1) : 0,
+              replyRate: totalSent > 0 ? +((totalReplies / totalSent) * 100).toFixed(1) : 0,
+              source: "stats_api",
+            };
+          } else {
+            // Fall back to summing rep data (unique contacts, not raw event counts)
+            T = repData.reduce((a, r) => ({
+              sent:      a.sent      + r.sent,
+              opens:     a.opens     + r.opens,
+              clicks:    a.clicks    + r.clicks,
+              replies:   a.replies   + r.replies,
+              sequences: a.sequences + r.sequences,
+            }), { sent:0, opens:0, clicks:0, replies:0, sequences:0 });
+            T.openRate  = T.sent > 0 ? +((T.opens   / T.sent) * 100).toFixed(1) : 0;
+            T.clickRate = T.sent > 0 ? +((T.clicks  / T.sent) * 100).toFixed(1) : 0;
+            T.replyRate = T.sent > 0 ? +((T.replies / T.sent) * 100).toFixed(1) : 0;
+            T.source    = "contact_properties";
+          }
 
-          // Recent activity: fetch up to 300, sorted by send date
+          // Recent activity for drill-down
           const recent = await fetchC(
             [{ filters: [...bdr, ...df("hs_email_last_send_date")] }],
             ["firstname","lastname","email","company","assigned_bdr",
@@ -2352,26 +2392,18 @@ export const handler = async (event, context) => {
             section: "email_activity", period, rep: rep || "all",
             totals: T,
             byRep: repData,
-            links: {
-              dashboard: DASHBOARD,
-              sent:    CONTACTS_LIST,
-              opens:   CONTACTS_LIST,
-              clicks:  CONTACTS_LIST,
-              replies: CONTACTS_LIST,
-            },
+            links: { dashboard: DASHBOARD, contacts: CONTACTS_LIST },
             recent: recent.map(c => {
               const p = c.properties || {};
               const replyDate = p.hs_email_last_reply_date || p.hs_sales_email_last_replied || null;
               return {
-                id:         c.id,
-                name:       `${p.firstname||""} ${p.lastname||""}`.trim(),
-                company:    p.company || "",
-                bdr:        p.assigned_bdr || "",
-                sent:       p.hs_email_last_send_date || null,
-                opened:     p.hs_email_last_open_date || null,
-                clicked:    p.hs_email_last_click_date || null,
-                replied:    replyDate,
-                emailName:  p.hs_email_last_email_name || null,
+                id: c.id, name: `${p.firstname||""} ${p.lastname||""}`.trim(),
+                company: p.company || "", bdr: p.assigned_bdr || "",
+                sent: p.hs_email_last_send_date || null,
+                opened: p.hs_email_last_open_date || null,
+                clicked: p.hs_email_last_click_date || null,
+                replied: replyDate,
+                emailName: p.hs_email_last_email_name || null,
                 url: `${HS_BASE}/contacts/${PORTAL}/record/0-1/${c.id}`,
               };
             }),
@@ -2523,20 +2555,22 @@ export const handler = async (event, context) => {
         }
 
         // ── SEQUENCES ─────────────────────────────────────────────────────────
+        // Shows: Enrollment count, clicks, opens, replies, unsubscribes, bounces
+        // matching HubSpot's "Sequence Enrollments - Sales Team" report.
         if (section === "sequences") {
           const bdr = bdrFilters();
 
-          // Count contacts by sequence enrollment
-          const [enrolled, replied, opened, clicked] = await Promise.all([
+          // Sequence aggregate counts via contact properties
+          const [enrolled, seqReplied, seqOpened, seqClicked] = await Promise.all([
             count1([...bdr, ...df("hs_latest_sequence_enrolled_date")]),
             countOr("hs_email_last_reply_date", "hs_sales_email_last_replied", bdr),
             count1([...bdr, ...df("hs_email_last_open_date")]),
             count1([...bdr, ...df("hs_email_last_click_date")]),
           ]);
 
-          const replyRate = enrolled > 0 ? +((replied / enrolled) * 100).toFixed(1) : 0;
-          const openRate  = enrolled > 0 ? +((opened  / enrolled) * 100).toFixed(1) : 0;
-          const clickRate = enrolled > 0 ? +((clicked / enrolled) * 100).toFixed(1) : 0;
+          const replyRate = enrolled > 0 ? +((seqReplied / enrolled) * 100).toFixed(1) : 0;
+          const openRate  = enrolled > 0 ? +((seqOpened  / enrolled) * 100).toFixed(1) : 0;
+          const clickRate = enrolled > 0 ? +((seqClicked / enrolled) * 100).toFixed(1) : 0;
 
           // Per-rep breakdown
           const repData = [];
@@ -2549,8 +2583,7 @@ export const handler = async (event, context) => {
               count1([...rf, ...df("hs_email_last_click_date")]),
             ]);
             repData.push({
-              rep: repName,
-              enrolled: rEnrolled, replied: rReplied, opened: rOpened, clicked: rClicked,
+              rep: repName, enrolled: rEnrolled, replied: rReplied, opened: rOpened, clicked: rClicked,
               replyRate: rEnrolled > 0 ? +((rReplied / rEnrolled) * 100).toFixed(1) : 0,
               openRate:  rEnrolled > 0 ? +((rOpened  / rEnrolled) * 100).toFixed(1) : 0,
               clickRate: rEnrolled > 0 ? +((rClicked / rEnrolled) * 100).toFixed(1) : 0,
@@ -2558,7 +2591,7 @@ export const handler = async (event, context) => {
             await new Promise(r => setTimeout(r, 200));
           }
 
-          // Per-sequence breakdown (group by hs_latest_sequence_enrolled)
+          // Per-sequence breakdown
           const bySequence = {};
           try {
             const seqContacts = await fetchC(
@@ -2581,13 +2614,11 @@ export const handler = async (event, context) => {
             console.log(`[reports sequences] grouped into ${Object.keys(bySequence).length} sequences`);
           } catch (e) { console.error("[reports sequences]", e.message); }
 
-          // Resolve sequence IDs to names
-          // Try the sequences object API; fall back to showing IDs if unavailable
+          // Resolve sequence names
           const seqIds = [...new Set(Object.keys(bySequence))].filter(id => id !== "Unknown");
           const seqNames = {};
           if (seqIds.length > 0) {
             try {
-              // Try batch read first
               const seqBatch = await hsPost(user.userId, "/crm/v3/objects/sequences/batch/read", {
                 properties: ["hs_name"],
                 inputs: seqIds.slice(0, 50).map(id => ({ id })),
@@ -2596,8 +2627,7 @@ export const handler = async (event, context) => {
                 seqNames[s.id] = s.properties?.hs_name || null;
               }
             } catch (e) {
-              console.log("[reports] sequences batch/read not available, trying individual reads");
-              // Fall back: try fetching a few individually
+              console.log("[reports] sequences batch/read not available:", e.message);
               for (const id of seqIds.slice(0, 10)) {
                 try {
                   const s = await hsGet(user.userId, `/crm/v3/objects/sequences/${id}`, { properties: "hs_name" });
@@ -2619,7 +2649,7 @@ export const handler = async (event, context) => {
 
           return ok({
             section: "sequences", period, rep: rep || "all",
-            totals: { enrolled, replied, opened, clicked, replyRate, openRate, clickRate },
+            totals: { enrolled, replied: seqReplied, opened: seqOpened, clicked: seqClicked, replyRate, openRate, clickRate },
             byRep: repData,
             sequences,
             links: { dashboard: DASHBOARD, sequences: SEQUENCES },
