@@ -908,53 +908,31 @@ export const handler = async (event, context) => {
             .sort((a, b) => b.replyTs - a.replyTs)
             .slice(0, 30); // check top 30 candidates
 
-          // For each candidate, check sequentially (not parallel) to avoid rate limits.
-          // Each check fires 2 searches -- 30 candidates × 2 = 60 searches in parallel hits 429s.
+          // For each candidate, check via engagements API whether any outbound activity
+          // (meeting, note, call, email sent) was logged AFTER their reply.
+          // Using fetchEngagements (v1 paged API) rather than search with associatedWith
+          // because the search API's associatedWith filter is unreliable in direct calls.
           const filtered = [];
           for (const item of candidates) {
             try {
-              // Check meetings logged after the reply date
-              const meetings = await hsPost(user.userId, "/crm/v3/objects/meetings/search", {
-                filterGroups: [{
-                  filters: [
-                    { propertyName: "hs_createdate", operator: "GT", value: new Date(item.replyTs).toISOString() },
-                  ],
-                  associatedWith: [{ objectType: "contacts", operator: "EQUAL", objectIdValues: [String(item.contactId)] }],
-                }],
-                properties: ["hs_meeting_title", "hs_createdate"],
-                limit: 1,
-              }).catch(e => { console.error("[tasks] meetings check:", e.message); return { results: [] }; });
-
-              if ((meetings.results || []).length > 0) {
-                console.log(`[tasks] excluding ${item.contactId} - meeting after reply`);
-                await new Promise(r => setTimeout(r, 100));
-                continue; // already followed up via meeting
-              }
-
-              // Check notes logged after the reply date
-              const notes = await hsPost(user.userId, "/crm/v3/objects/notes/search", {
-                filterGroups: [{
-                  filters: [
-                    { propertyName: "hs_createdate", operator: "GT", value: new Date(item.replyTs).toISOString() },
-                  ],
-                  associatedWith: [{ objectType: "contacts", operator: "EQUAL", objectIdValues: [String(item.contactId)] }],
-                }],
-                properties: ["hs_note_body"],
-                limit: 1,
-              }).catch(e => { console.error("[tasks] notes check:", e.message); return { results: [] }; });
-
-              if ((notes.results || []).length > 0) {
-                console.log(`[tasks] excluding ${item.contactId} - note after reply`);
+              const engagements = await fetchEngagements(user.userId, item.contactId, 10);
+              const hasFollowUp = engagements.some(eng => {
+                const engTs = eng.timestamp ? new Date(eng.timestamp).getTime() : 0;
+                if (engTs <= item.replyTs) return false; // before or same as reply
+                // Only count outbound types as follow-up
+                return ["MEETING","NOTE","CALL","EMAIL"].includes(eng.type);
+              });
+              if (hasFollowUp) {
+                console.log(`[tasks] excluding ${item.contactId} - engagement after reply`);
                 await new Promise(r => setTimeout(r, 100));
                 continue;
               }
-
               filtered.push(item);
             } catch (err) {
-              console.error(`[tasks] check failed for ${item.contactId}:`, err.message);
-              filtered.push(item); // include if check fails
+              console.error(`[tasks] engagement check failed for ${item.contactId}:`, err.message);
+              filtered.push(item);
             }
-            await new Promise(r => setTimeout(r, 150)); // rate limit gap
+            await new Promise(r => setTimeout(r, 150));
           }
 
           return filtered
@@ -2471,7 +2449,7 @@ export const handler = async (event, context) => {
           const byCampaign = {};
           try {
             let after, fetched = 0;
-            while (fetched < 5000) {
+            while (fetched < 2000) {
               const body = {
                 filterGroups: [{ filters: [
                   { propertyName: "hs_email_last_email_name", operator: "HAS_PROPERTY" },
@@ -2494,7 +2472,7 @@ export const handler = async (event, context) => {
               fetched += (d.results||[]).length;
               if (!d.paging?.next?.after || (d.results||[]).length < 100) break;
               after = d.paging.next.after;
-              await new Promise(r => setTimeout(r, 150));
+              // No delay -- single sequential requests stay within HubSpot rate limits
             }
           } catch (e) { console.error("[reports mkt campaigns]", e.message); }
           console.log(`[reports mkt] campaigns fetched, found ${Object.keys(byCampaign).length} unique campaigns`);
@@ -2717,7 +2695,7 @@ export const handler = async (event, context) => {
               ...p,
               pipelineId: pipeId,
               // HubSpot deal board filtered by pipeline
-              url: `${HS_BASE}/contacts/${PORTAL}/deals?pipeline=${pipeId}`,
+              url: `${HS_BASE}/contacts/${PORTAL}/deals/board/view/all?pipelineId=${pipeId}`,
             })).sort((a,b)=>b.count-a.count),
             byStage:    Object.values(byStage).sort((a,b)=>b.count-a.count),
             lostReasons: Object.entries(lostReasons).map(([reason,count])=>({reason,count})).sort((a,b)=>b.count-a.count),
