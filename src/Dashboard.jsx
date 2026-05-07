@@ -881,10 +881,15 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                               {r.contact?.title}{r.contact?.company ? ` · ${r.contact.company}` : ''}
                             </div>
                             {r.subject && <div style={{ fontSize:11, color:'var(--text-tertiary)', marginBottom:4 }}>{r.subject}</div>}
-                            <div style={{ fontSize:11, color:'var(--text-tertiary)', display:'flex', gap:6 }}>
+                            <div style={{ fontSize:11, color:'var(--text-tertiary)', display:'flex', gap:6, flexWrap:'wrap' }}>
                               <span style={{ color:'var(--text-secondary)', fontWeight:500, minWidth:56 }}>Replied</span>
                               <span>{exactTs(r.replyDate)}</span>
                               <EmailSourcePill source={r.replySource} />
+                              {r.contactOwner && (
+                                <span style={{ color: r.isOwnedBySelected ? 'var(--accent)' : 'var(--amber)', fontWeight:500 }}>
+                                  Owner: {r.contactOwner}
+                                </span>
+                              )}
                             </div>
                           </div>
                         </div>
