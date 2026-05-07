@@ -910,15 +910,18 @@ export const handler = async (event, context) => {
             // If ANY activity happened after the reply, someone responded -- exclude
             if (lastActivityTs > replyTs) return null;
 
-            // Additional check: if the contact is owned by a different person than
-            // the selected rep (i.e. the AE owns it), and the AE's activity timestamp
-            // is recent, they may be handling it. We surface it anyway since we can't
-            // reliably tell WHO sent the last activity from contact properties alone.
-            // Instead we show the contact owner name so the BDR can make that call.
-            const contactOwnerId = p.hubspot_owner_id || null;
+            // Get contact owner info
+            const contactOwnerId   = p.hubspot_owner_id || null;
             const contactOwnerName = contactOwnerId
               ? Object.entries(OWNER_NAME_TO_ID).find(([, id]) => id === String(contactOwnerId))?.[0] || null
               : null;
+
+            // If a specific rep is selected, exclude contacts owned by someone else.
+            // When Chris is selected, contacts owned by Matt (AE) should not appear
+            // in Chris's queue -- Matt is the deal owner and handles those.
+            if (selectedRepOwnerId && contactOwnerId && String(contactOwnerId) !== selectedRepOwnerId) {
+              return null;
+            }
 
             const info = normalizeContact(c);
             return {
@@ -2457,7 +2460,9 @@ export const handler = async (event, context) => {
           try {
             let after, fetched = 0;
             while (fetched < 200) {
-              const params = { limit: 50, state: "SENT" };
+              // Don't filter by state -- try fetching all and filter client-side
+              // The v3 API state values are: DRAFT, SCHEDULED, PROCESSING, SENT, PUBLISHED, ARCHIVED
+              const params = { limit: 50 };
               if (after) params.after = after;
               const d = await hsGet(user.userId, "/marketing/v3/emails", params);
               allEmails.push(...(d.results || []));
@@ -2475,12 +2480,16 @@ export const handler = async (event, context) => {
             console.error("[reports mkt] email list error:", e.message);
           }
 
-          // Step 2: Filter by period and rep
+          // Filter to sent emails only, within period
+          const SENT_STATES = ["SENT", "PUBLISHED"];
           const inPeriod = allEmails.filter(e => {
+            // Only include sent/published emails
+            if (e.state && !SENT_STATES.includes(e.state)) return false;
             const ts = e.publishDate || e.scheduledAt || e.sendDate || e.updatedAt || e.createdAt;
             if (sinceMs && ts && new Date(ts).getTime() < sinceMs) return false;
             return true;
           });
+          console.log(`[reports mkt] ${inPeriod.length} sent emails in period (of ${allEmails.length} total)`);
 
           // Rep filter -- try createdById, authorId, userId, createdBy
           const inPeriodFiltered = repUserId
