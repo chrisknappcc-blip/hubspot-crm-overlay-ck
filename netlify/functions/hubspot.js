@@ -908,28 +908,63 @@ export const handler = async (event, context) => {
             .sort((a, b) => b.replyTs - a.replyTs)
             .slice(0, 30); // check top 30 candidates
 
-          // For each candidate, check via engagements API whether any outbound activity
-          // (meeting, note, call, email sent) was logged AFTER their reply.
-          // Using fetchEngagements (v1 paged API) rather than search with associatedWith
-          // because the search API's associatedWith filter is unreliable in direct calls.
+          // For each candidate, check v3 CRM objects (meetings, notes) directly via
+          // the associations endpoint. This catches Gong-synced meetings and other
+          // modern activity that doesn't appear in the v1 engagements API.
+          // Logic: if ANY meeting, note, or call was created AFTER the reply, exclude.
           const filtered = [];
           for (const item of candidates) {
             try {
-              const engagements = await fetchEngagements(user.userId, item.contactId, 10);
-              const hasFollowUp = engagements.some(eng => {
-                const engTs = eng.timestamp ? new Date(eng.timestamp).getTime() : 0;
-                if (engTs <= item.replyTs) return false; // before or same as reply
-                // Only count outbound types as follow-up
-                return ["MEETING","NOTE","CALL","EMAIL"].includes(eng.type);
-              });
-              if (hasFollowUp) {
-                console.log(`[tasks] excluding ${item.contactId} - engagement after reply`);
-                await new Promise(r => setTimeout(r, 100));
-                continue;
+              // Get associated meeting IDs for this contact
+              const assocMeetings = await hsGet(user.userId,
+                `/crm/v3/objects/contacts/${item.contactId}/associations/meetings`,
+                { limit: 10 }
+              ).catch(() => ({ results: [] }));
+
+              const meetingIds = (assocMeetings.results || []).map(r => r.id);
+              let hasFollowUp = false;
+
+              if (meetingIds.length > 0) {
+                // Batch read the meetings to get their create dates
+                const meetingData = await hsPost(user.userId, "/crm/v3/objects/meetings/batch/read", {
+                  properties: ["hs_createdate"],
+                  inputs: meetingIds.slice(0, 10).map(id => ({ id })),
+                }).catch(() => ({ results: [] }));
+
+                hasFollowUp = (meetingData.results || []).some(m => {
+                  const ts = m.properties?.hs_createdate ? new Date(m.properties.hs_createdate).getTime() : 0;
+                  return ts > item.replyTs;
+                });
               }
-              filtered.push(item);
+
+              if (!hasFollowUp) {
+                // Also check notes
+                const assocNotes = await hsGet(user.userId,
+                  `/crm/v3/objects/contacts/${item.contactId}/associations/notes`,
+                  { limit: 10 }
+                ).catch(() => ({ results: [] }));
+
+                const noteIds = (assocNotes.results || []).map(r => r.id);
+                if (noteIds.length > 0) {
+                  const noteData = await hsPost(user.userId, "/crm/v3/objects/notes/batch/read", {
+                    properties: ["hs_createdate"],
+                    inputs: noteIds.slice(0, 10).map(id => ({ id })),
+                  }).catch(() => ({ results: [] }));
+
+                  hasFollowUp = (noteData.results || []).some(n => {
+                    const ts = n.properties?.hs_createdate ? new Date(n.properties.hs_createdate).getTime() : 0;
+                    return ts > item.replyTs;
+                  });
+                }
+              }
+
+              if (hasFollowUp) {
+                console.log(`[tasks] excluding contact ${item.contactId} - v3 activity after reply`);
+              } else {
+                filtered.push(item);
+              }
             } catch (err) {
-              console.error(`[tasks] engagement check failed for ${item.contactId}:`, err.message);
+              console.error(`[tasks] v3 check failed for ${item.contactId}:`, err.message);
               filtered.push(item);
             }
             await new Promise(r => setTimeout(r, 150));
@@ -2412,83 +2447,145 @@ export const handler = async (event, context) => {
         }
 
         // ── MARKETING ─────────────────────────────────────────────────────────
+        // Uses /marketing/v3/emails to get actual email campaign records with stats.
+        // Filters by sender using the rep param when set.
         if (section === "marketing") {
-          const [totalReached, totalOpened, totalClicked, totalReplied] = await Promise.all([
-            count1(df("hs_email_last_send_date")),
-            count1(df("hs_email_last_open_date")),
-            count1(df("hs_email_last_click_date")),
-            count1(df("hs_email_last_reply_date")),
-          ]);
+
+          // Owner IDs for known BDRs (used to filter by sender)
+          const BDR_OWNER_IDS = {
+            "Chris Knapp":  "78304576",
+            "Chiara Pate":  "87806380",
+          };
+
+          // Fetch marketing emails from the /marketing/v3/emails API
+          // This returns actual email sends with open/click/reply stats
+          let allEmails = [];
+          try {
+            let after, fetched = 0;
+            while (fetched < 500) {
+              const params = { limit: 50 };
+              if (after) params.after = after;
+              if (sinceISO) params.updatedAfter = sinceISO;
+              const d = await hsGet(user.userId, "/marketing/v3/emails", params);
+              const results = d.results || [];
+              allEmails.push(...results);
+              fetched += results.length;
+              if (!d.paging?.next?.after || results.length < 50) break;
+              after = d.paging.next.after;
+            }
+          } catch (e) {
+            console.error("[reports mkt] /marketing/v3/emails error:", e.message);
+          }
+
+          // If /marketing/v3/emails failed or returned nothing, fall back to contact property counts
+          if (allEmails.length === 0) {
+            console.log("[reports mkt] falling back to contact property counts");
+            const [totalReached, totalOpened, totalClicked, totalReplied] = await Promise.all([
+              count1(df("hs_email_last_send_date")),
+              count1(df("hs_email_last_open_date")),
+              count1(df("hs_email_last_click_date")),
+              count1(df("hs_email_last_reply_date")),
+            ]);
+            const openRate  = totalReached > 0 ? +((totalOpened  / totalReached) * 100).toFixed(1) : 0;
+            const clickRate = totalReached > 0 ? +((totalClicked / totalReached) * 100).toFixed(1) : 0;
+            const replyRate = totalReached > 0 ? +((totalReplied / totalReached) * 100).toFixed(1) : 0;
+            return ok({
+              section: "marketing", period, rep: rep || "all",
+              totals: { totalReached, totalOpened, totalClicked, totalReplied, openRate, clickRate, replyRate },
+              byRep: [],
+              campaigns: [],
+              campaignFetched: 0, campaignHitCap: false,
+              usedFallback: true,
+              links: { dashboard: DASHBOARD, manage: MKT_EMAIL },
+            });
+          }
+
+          console.log(`[reports mkt] fetched ${allEmails.length} marketing emails`);
+
+          // Filter by rep if set -- match by createdBy owner ID or name in subject
+          const repOwnerId = rep ? BDR_OWNER_IDS[rep] : null;
+          const filtered = repOwnerId
+            ? allEmails.filter(e => String(e.createdBy || e.authorEmail || "") === repOwnerId ||
+                String(e.authorId || "") === repOwnerId)
+            : allEmails;
+
+          // Also filter by send date within period
+          const inPeriod = sinceMs
+            ? filtered.filter(e => {
+                const sendTs = e.publishDate || e.scheduledAt || e.updatedAt || e.createdAt;
+                return sendTs && new Date(sendTs).getTime() >= sinceMs;
+              })
+            : filtered;
+
+          // Build campaign stats from the email records
+          // Stats may be in e.stats or e.counters depending on API version
+          let totalReached = 0, totalOpened = 0, totalClicked = 0, totalReplied = 0;
+          const campaigns = inPeriod.map(e => {
+            const stats    = e.stats || e.counters || {};
+            const sent     = stats.sent       || stats.delivered   || 0;
+            const opened   = stats.open       || stats.opened       || 0;
+            const clicked  = stats.click      || stats.clicked      || 0;
+            const replied  = stats.reply      || stats.replied      || 0;
+            const name     = e.name || e.subject || "Untitled";
+            totalReached += sent;
+            totalOpened  += opened;
+            totalClicked += clicked;
+            totalReplied += replied;
+            return {
+              name,
+              sent,
+              opened,
+              clicked,
+              replied,
+              openRate:  sent > 0 ? +((opened  / sent) * 100).toFixed(1) : 0,
+              clickRate: sent > 0 ? +((clicked / sent) * 100).toFixed(1) : 0,
+              replyRate: sent > 0 ? +((replied / sent) * 100).toFixed(1) : 0,
+              publishDate: e.publishDate || e.scheduledAt || null,
+              createdBy: e.createdBy || null,
+              url: `${HS_BASE}/email/${PORTAL}/details/${e.id}/performance`,
+            };
+          }).sort((a, b) => {
+            // Sort by publish date desc, then by sent count desc
+            const tsA = a.publishDate ? new Date(a.publishDate).getTime() : 0;
+            const tsB = b.publishDate ? new Date(b.publishDate).getTime() : 0;
+            return tsB - tsA || b.sent - a.sent;
+          });
 
           const openRate  = totalReached > 0 ? +((totalOpened  / totalReached) * 100).toFixed(1) : 0;
           const clickRate = totalReached > 0 ? +((totalClicked / totalReached) * 100).toFixed(1) : 0;
           const replyRate = totalReached > 0 ? +((totalReplied / totalReached) * 100).toFixed(1) : 0;
 
-          // Per-rep breakdown
+          // Per-rep breakdown from email records
           const repData = [];
           for (const repName of targetReps) {
-            const rf = [{ propertyName: "assigned_bdr", operator: "EQ", value: repName }];
-            const mf = (prop) => [...rf, ...df(prop)];
-            const [rReached, rOpened, rClicked, rReplied] = await Promise.all([
-              count1(mf("hs_email_last_send_date")),
-              count1(mf("hs_email_last_open_date")),
-              count1(mf("hs_email_last_click_date")),
-              count1(mf("hs_email_last_reply_date")),
-            ]);
+            const rOwnerId = BDR_OWNER_IDS[repName];
+            const repEmails = rOwnerId
+              ? inPeriod.filter(e => String(e.createdBy || e.authorId || "") === rOwnerId)
+              : [];
+            let rReached = 0, rOpened = 0, rClicked = 0, rReplied = 0;
+            repEmails.forEach(e => {
+              const s = e.stats || e.counters || {};
+              rReached  += s.sent    || s.delivered || 0;
+              rOpened   += s.open    || s.opened    || 0;
+              rClicked  += s.click   || s.clicked   || 0;
+              rReplied  += s.reply   || s.replied   || 0;
+            });
             repData.push({
-              rep: repName,
+              rep: repName, emailCount: repEmails.length,
               reached: rReached, opened: rOpened, clicked: rClicked, replied: rReplied,
               openRate:  rReached > 0 ? +((rOpened  / rReached) * 100).toFixed(1) : 0,
               clickRate: rReached > 0 ? +((rClicked / rReached) * 100).toFixed(1) : 0,
               replyRate: rReached > 0 ? +((rReplied / rReached) * 100).toFixed(1) : 0,
             });
-            await new Promise(r => setTimeout(r, 200));
           }
-
-          // Campaign breakdown -- paginate through all contacts with email name set
-          const byCampaign = {};
-          try {
-            let after, fetched = 0;
-            while (fetched < 2000) {
-              const body = {
-                filterGroups: [{ filters: [
-                  { propertyName: "hs_email_last_email_name", operator: "HAS_PROPERTY" },
-                  ...(sinceISO ? [{ propertyName: "hs_email_last_send_date", operator: "GTE", value: sinceISO }] : []),
-                ]}],
-                properties: ["hs_email_last_email_name","hs_email_last_open_date","hs_email_last_click_date","hs_email_last_reply_date","hs_email_last_send_date"],
-                sorts: [{ propertyName: "hs_email_last_send_date", direction: "DESCENDING" }],
-                limit: 100,
-              };
-              if (after) body.after = after;
-              const d = await hsPost(user.userId, "/crm/v3/objects/contacts/search", body);
-              for (const c of (d.results || [])) {
-                const name = c.properties?.hs_email_last_email_name || "Unknown";
-                if (!byCampaign[name]) byCampaign[name] = { name, sent:0, opened:0, clicked:0, replied:0 };
-                byCampaign[name].sent++;
-                if (c.properties?.hs_email_last_open_date)  byCampaign[name].opened++;
-                if (c.properties?.hs_email_last_click_date) byCampaign[name].clicked++;
-                if (c.properties?.hs_email_last_reply_date) byCampaign[name].replied++;
-              }
-              fetched += (d.results||[]).length;
-              if (!d.paging?.next?.after || (d.results||[]).length < 100) break;
-              after = d.paging.next.after;
-              // No delay -- single sequential requests stay within HubSpot rate limits
-            }
-          } catch (e) { console.error("[reports mkt campaigns]", e.message); }
-          console.log(`[reports mkt] campaigns fetched, found ${Object.keys(byCampaign).length} unique campaigns`);
-
-          const campaigns = Object.values(byCampaign).map(c => ({
-            ...c,
-            openRate:  c.sent > 0 ? +((c.opened  / c.sent) * 100).toFixed(1) : 0,
-            clickRate: c.sent > 0 ? +((c.clicked / c.sent) * 100).toFixed(1) : 0,
-            replyRate: c.sent > 0 ? +((c.replied / c.sent) * 100).toFixed(1) : 0,
-          })).sort((a,b) => b.sent - a.sent).slice(0, 30);
 
           return ok({
             section: "marketing", period, rep: rep || "all",
             totals: { totalReached, totalOpened, totalClicked, totalReplied, openRate, clickRate, replyRate },
             byRep: repData,
             campaigns,
+            campaignFetched: allEmails.length, campaignHitCap: false,
+            usedFallback: false,
             links: { dashboard: DASHBOARD, manage: MKT_EMAIL },
           });
         }
