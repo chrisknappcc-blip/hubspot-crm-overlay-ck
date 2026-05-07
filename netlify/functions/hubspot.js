@@ -846,20 +846,33 @@ export const handler = async (event, context) => {
         const customFilters = buildCustomFilters(qp); // picks up assigned_bdr, territory etc.
 
         // ── Section 1: Replies awaiting response ───────────────────────────────
-        // Find contacts where the most recent reply timestamp is AFTER the most
-        // recent outbound activity timestamp -- meaning we haven't responded yet.
+        // Logic: find contacts where a reply exists in the window AND no outbound
+        // activity was sent AFTER the reply BY ANYONE (not just the selected rep).
         //
-        // Strategy: fetch contacts with a recent reply date, then client-side
-        // filter for those where reply > last outbound. HubSpot search can't do
-        // a cross-property comparison natively.
+        // Owner-aware: fetch hubspot_owner_id on each contact. If the contact owner
+        // (AE) sent activity after the reply, exclude it -- AE is handling it.
+        // Selected rep filter (assigned_bdr) determines whose queue we're showing.
+
+        // Build owner ID lookup from the known owner list for the portal
+        const OWNER_NAME_TO_ID = {};
+        try {
+          const ownersData = await hsGet(user.userId, "/crm/v3/owners", { limit: 100 });
+          for (const o of (ownersData.results || [])) {
+            const name = `${o.firstName||""} ${o.lastName||""}`.trim();
+            if (name) OWNER_NAME_TO_ID[name] = String(o.id);
+          }
+        } catch { /* use empty map */ }
+
+        const selectedRepOwnerId = qp.assigned_bdr
+          ? OWNER_NAME_TO_ID[decodeURIComponent(qp.assigned_bdr).trim()] || null
+          : null;
+
         const repliesData = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
           filterGroups: [
-            // OR: sales email reply in window
             { filters: [
               { propertyName: "hs_sales_email_last_replied", operator: "GTE", value: sinceISO },
               ...customFilters,
             ]},
-            // OR: marketing email reply in window
             { filters: [
               { propertyName: "hs_email_last_reply_date", operator: "GTE", value: sinceISO },
               ...customFilters,
@@ -872,6 +885,7 @@ export const handler = async (event, context) => {
             "hs_last_sales_activity_timestamp",
             "hs_email_last_send_date",
             "notes_last_contacted",
+            "hubspot_owner_id",
           ],
           sorts:  [{ propertyName: "hs_sales_email_last_replied", direction: "DESCENDING" }],
           limit:  200,
@@ -886,23 +900,36 @@ export const handler = async (event, context) => {
             if (replyTs === 0) return null;
             const replyDate = replyTs === salesReplyTs ? p.hs_sales_email_last_replied : p.hs_email_last_reply_date;
 
-            // Exclude if any outbound activity was logged AFTER the reply.
-            // Check all available activity timestamps on the contact.
+            // Check all available activity timestamps on the contact
             const lastActivityTs = Math.max(
               p.hs_last_sales_activity_timestamp ? new Date(p.hs_last_sales_activity_timestamp).getTime() : 0,
               p.hs_email_last_send_date           ? new Date(p.hs_email_last_send_date).getTime()           : 0,
               p.notes_last_contacted              ? new Date(p.notes_last_contacted).getTime()              : 0,
             );
+
+            // If ANY activity happened after the reply, someone responded -- exclude
             if (lastActivityTs > replyTs) return null;
+
+            // Additional check: if the contact is owned by a different person than
+            // the selected rep (i.e. the AE owns it), and the AE's activity timestamp
+            // is recent, they may be handling it. We surface it anyway since we can't
+            // reliably tell WHO sent the last activity from contact properties alone.
+            // Instead we show the contact owner name so the BDR can make that call.
+            const contactOwnerId = p.hubspot_owner_id || null;
+            const contactOwnerName = contactOwnerId
+              ? Object.entries(OWNER_NAME_TO_ID).find(([, id]) => id === String(contactOwnerId))?.[0] || null
+              : null;
 
             const info = normalizeContact(c);
             return {
-              contactId:       c.id,
-              contact:         info,
+              contactId:        c.id,
+              contact:          info,
               replyDate,
+              contactOwner:     contactOwnerName,
+              isOwnedBySelected: selectedRepOwnerId ? String(contactOwnerId) === selectedRepOwnerId : false,
               lastOutboundDate: lastActivityTs > 0 ? new Date(lastActivityTs).toISOString() : null,
-              waitingHours:    Math.round((now - replyTs) / (1000 * 60 * 60)),
-              subject:         p.hs_email_last_email_name || null,
+              waitingHours:     Math.round((now - replyTs) / (1000 * 60 * 60)),
+              subject:          p.hs_email_last_email_name || null,
               url: `https://app.hubspot.com/contacts/39921549/record/0-1/${c.id}`,
             };
           })
@@ -2408,183 +2435,186 @@ export const handler = async (event, context) => {
         }
 
         // ── MARKETING ─────────────────────────────────────────────────────────
-        // Uses /marketing/v3/emails to get actual email campaign records with stats.
-        // Filters by sender using the rep param when set.
+        // /marketing/v3/emails returns email records (no stats).
+        // Stats require a separate call to /marketing/v3/emails/{id}/statistics.
+        // We fetch emails first, then batch-fetch stats for the ones in-period.
         if (section === "marketing") {
 
-          // Owner IDs for known BDRs (used to filter by sender)
-          const BDR_OWNER_IDS = {
-            "Chris Knapp":  "78304576",
-            "Chiara Pate":  "87806380",
+          // Owner ID → user ID map (same for Chris; may differ for others)
+          // We match on createdById which equals userId in HubSpot
+          const OWNER_TO_USER = {
+            "78304576": "78304576", // Chris Knapp
+            "87806380": "87806380", // Chiara Pate
           };
+          const repUserId = rep ? (OWNER_TO_USER[
+            // Look up owner ID from name
+            Object.entries({ "Chris Knapp":"78304576","Chiara Pate":"87806380" })
+              .find(([n]) => n === rep)?.[1] || ""
+          ] || rep) : null;
 
-          // Fetch marketing emails from the /marketing/v3/emails API
-          // This returns actual email sends with open/click/reply stats
+          // Step 1: Fetch email list
           let allEmails = [];
           try {
             let after, fetched = 0;
-            while (fetched < 500) {
-              const params = { limit: 50 };
+            while (fetched < 200) {
+              const params = { limit: 50, state: "SENT" };
               if (after) params.after = after;
-              if (sinceISO) params.updatedAfter = sinceISO;
               const d = await hsGet(user.userId, "/marketing/v3/emails", params);
-              const results = d.results || [];
-              allEmails.push(...results);
-              fetched += results.length;
-              if (!d.paging?.next?.after || results.length < 50) break;
+              allEmails.push(...(d.results || []));
+              fetched += (d.results || []).length;
+              if (!d.paging?.next?.after || (d.results||[]).length < 50) break;
               after = d.paging.next.after;
             }
+            console.log(`[reports mkt] fetched ${allEmails.length} sent emails`);
+            if (allEmails.length > 0) {
+              const s = allEmails[0];
+              console.log("[reports mkt] sample fields:", Object.keys(s).join(", "));
+              console.log("[reports mkt] sample:", JSON.stringify(s).slice(0,400));
+            }
           } catch (e) {
-            console.error("[reports mkt] /marketing/v3/emails error:", e.message);
+            console.error("[reports mkt] email list error:", e.message);
           }
 
-          // If /marketing/v3/emails failed or returned nothing, fall back to contact property counts
-          if (allEmails.length === 0) {
-            console.log("[reports mkt] falling back to contact property counts");
-            const [totalReached, totalOpened, totalClicked, totalReplied] = await Promise.all([
-              count1(df("hs_email_last_send_date")),
-              count1(df("hs_email_last_open_date")),
-              count1(df("hs_email_last_click_date")),
-              count1(df("hs_email_last_reply_date")),
-            ]);
-            const openRate  = totalReached > 0 ? +((totalOpened  / totalReached) * 100).toFixed(1) : 0;
-            const clickRate = totalReached > 0 ? +((totalClicked / totalReached) * 100).toFixed(1) : 0;
-            const replyRate = totalReached > 0 ? +((totalReplied / totalReached) * 100).toFixed(1) : 0;
-            return ok({
-              section: "marketing", period, rep: rep || "all",
-              totals: { totalReached, totalOpened, totalClicked, totalReplied, openRate, clickRate, replyRate },
-              byRep: [],
-              campaigns: [],
-              campaignFetched: 0, campaignHitCap: false,
-              usedFallback: true,
-              links: { dashboard: DASHBOARD, manage: MKT_EMAIL },
-            });
-          }
+          // Step 2: Filter by period and rep
+          const inPeriod = allEmails.filter(e => {
+            const ts = e.publishDate || e.scheduledAt || e.sendDate || e.updatedAt || e.createdAt;
+            if (sinceMs && ts && new Date(ts).getTime() < sinceMs) return false;
+            return true;
+          });
 
-          console.log(`[reports mkt] fetched ${allEmails.length} marketing emails`);
-          // Log first email structure to see actual field names
-          if (allEmails.length > 0) {
-            const sample = allEmails[0];
-            console.log("[reports mkt] sample email fields:", Object.keys(sample).join(", "));
-            console.log("[reports mkt] sample email:", JSON.stringify(sample).slice(0, 500));
-          }
-
-          // Filter by period -- use publishDate, scheduledAt, or updatedAt
-          const inPeriod = sinceMs
-            ? allEmails.filter(e => {
-                const ts = e.publishDate || e.scheduledAt || e.updatedAt || e.createdAt;
-                return ts && new Date(ts).getTime() >= sinceMs;
+          // Rep filter -- try createdById, authorId, userId, createdBy
+          const inPeriodFiltered = repUserId
+            ? inPeriod.filter(e => {
+                const ids = [
+                  String(e.createdById || ""),
+                  String(e.authorId    || ""),
+                  String(e.userId      || ""),
+                  String(e.createdBy   || ""),
+                  String(e.ownerId     || ""),
+                ].filter(Boolean);
+                return ids.some(id => id === repUserId);
               })
-            : allEmails;
+            : inPeriod;
 
-          console.log(`[reports mkt] ${inPeriod.length} emails in period`);
+          console.log(`[reports mkt] ${inPeriodFiltered.length} emails in period${rep ? ' for '+rep : ''}`);
 
-          // Stats field extraction -- try multiple possible field names from v3 API
-          const getStats = (e) => {
-            // Try nested stats object first
-            if (e.stats) return e.stats;
-            if (e.counters) return e.counters;
-            // Stats may be at top level
-            return e;
-          };
+          // Step 3: Fetch statistics for each email in period (batch by fetching per ID)
+          // /marketing/v3/emails/{id}/statistics returns: sent, open, click, reply counts
+          let totalSent = 0, totalOpened = 0, totalClicked = 0, totalReplied = 0;
+          const campaigns = [];
 
-          const getSent    = (e) => { const s = getStats(e); return s.sent || s.SENT || s.delivered || s.numSent || s.recipientsDelivered || 0; };
-          const getOpened  = (e) => { const s = getStats(e); return s.open || s.OPEN || s.opens || s.numOpened || s.uniqueOpens || 0; };
-          const getClicked = (e) => { const s = getStats(e); return s.click || s.CLICK || s.clicks || s.numClicked || s.uniqueClicks || 0; };
-          const getReplied = (e) => { const s = getStats(e); return s.reply || s.REPLY || s.replies || s.numReplied || 0; };
+          // Fetch stats for up to 30 emails (avoid timeout)
+          const emailsToStat = inPeriodFiltered.slice(0, 30);
+          const statsResults = await Promise.all(
+            emailsToStat.map(e =>
+              hsGet(user.userId, `/marketing/v3/emails/${e.id}/statistics`, {})
+                .catch(err => {
+                  console.error(`[reports mkt] stats error for ${e.id}:`, err.message);
+                  return null;
+                })
+            )
+          );
 
-          // Rep filter -- try all possible sender fields
-          // The marketing API may use userId, createdById, or author fields
-          const repFilter = (emails) => {
-            if (!rep) return emails;
-            const repName = rep.toLowerCase();
-            return emails.filter(e => {
-              // Try matching by name in various fields
-              const nameFields = [
-                e.name, e.subject, e.authorName, e.createdByName,
-                e.author, e.owner, e.ownerName,
-              ].filter(Boolean).map(v => String(v).toLowerCase());
-              // Try matching by ID
-              const idFields = [
-                String(e.createdBy || ""), String(e.authorId || ""),
-                String(e.ownerId || ""), String(e.userId || ""),
-              ];
-              const ownerId = BDR_OWNER_IDS[rep];
-              return idFields.some(id => id === ownerId) ||
-                     nameFields.some(n => n.includes(repName.split(" ")[0].toLowerCase()));
-            });
-          };
+          if (statsResults.length > 0 && statsResults[0]) {
+            console.log("[reports mkt] stats sample:", JSON.stringify(statsResults[0]).slice(0,400));
+          }
 
-          const filtered = repFilter(inPeriod);
+          for (let i = 0; i < emailsToStat.length; i++) {
+            const e = emailsToStat[i];
+            const stats = statsResults[i];
+            // Try every possible stats structure
+            const counters = stats?.counters || stats?.stats || stats?.overall || stats || {};
+            const sent    = counters.sent    || counters.delivered || counters.numSent    || 0;
+            const opened  = counters.open    || counters.opens     || counters.numOpened  || counters.uniqueOpens || 0;
+            const clicked = counters.click   || counters.clicks    || counters.numClicked || counters.uniqueClicks || 0;
+            const replied = counters.reply   || counters.replies   || counters.numReplied || 0;
 
-          // Build campaign stats from the email records
-          let totalReached = 0, totalOpened = 0, totalClicked = 0, totalReplied = 0;
-          const campaigns = filtered.map(e => {
-            const sent    = getSent(e);
-            const opened  = getOpened(e);
-            const clicked = getClicked(e);
-            const replied = getReplied(e);
-            const name    = e.name || e.subject || "Untitled";
-            totalReached += sent;
+            totalSent    += sent;
             totalOpened  += opened;
             totalClicked += clicked;
             totalReplied += replied;
-            return {
-              name,
-              sent,
-              opened,
-              clicked,
-              replied,
+
+            campaigns.push({
+              name:        e.name || e.subject || "Untitled",
+              sent, opened, clicked, replied,
               openRate:  sent > 0 ? +((opened  / sent) * 100).toFixed(1) : 0,
               clickRate: sent > 0 ? +((clicked / sent) * 100).toFixed(1) : 0,
               replyRate: sent > 0 ? +((replied / sent) * 100).toFixed(1) : 0,
-              publishDate: e.publishDate || e.scheduledAt || null,
+              publishDate: e.publishDate || e.scheduledAt || e.sendDate || null,
               url: `${HS_BASE}/email/${PORTAL}/details/${e.id}/performance`,
-            };
-          }).sort((a, b) => {
+            });
+          }
+
+          campaigns.sort((a, b) => {
             const tsA = a.publishDate ? new Date(a.publishDate).getTime() : 0;
             const tsB = b.publishDate ? new Date(b.publishDate).getTime() : 0;
             return tsB - tsA || b.sent - a.sent;
           });
 
-          const openRate  = totalReached > 0 ? +((totalOpened  / totalReached) * 100).toFixed(1) : 0;
-          const clickRate = totalReached > 0 ? +((totalClicked / totalReached) * 100).toFixed(1) : 0;
-          const replyRate = totalReached > 0 ? +((totalReplied / totalReached) * 100).toFixed(1) : 0;
+          const openRate  = totalSent > 0 ? +((totalOpened  / totalSent) * 100).toFixed(1) : 0;
+          const clickRate = totalSent > 0 ? +((totalClicked / totalSent) * 100).toFixed(1) : 0;
+          const replyRate = totalSent > 0 ? +((totalReplied / totalSent) * 100).toFixed(1) : 0;
 
-          // Per-rep breakdown from email records
+          // Per-rep breakdown
           const repData = [];
           for (const repName of targetReps) {
-            const repEmails = repFilter(inPeriod.filter(e => {
-              // Force-match to this specific rep
-              const ownerId = BDR_OWNER_IDS[repName];
-              const name = repName.toLowerCase();
-              const idFields = [String(e.createdBy || ""), String(e.authorId || ""), String(e.ownerId || ""), String(e.userId || "")];
-              const nameFields = [e.authorName, e.createdByName, e.author, e.ownerName].filter(Boolean).map(v => String(v).toLowerCase());
-              return idFields.some(id => id === ownerId) || nameFields.some(n => n.includes(name.split(" ")[0]));
-            }));
-            let rReached = 0, rOpened = 0, rClicked = 0, rReplied = 0;
-            repEmails.forEach(e => {
-              rReached  += getSent(e);
-              rOpened   += getOpened(e);
-              rClicked  += getClicked(e);
-              rReplied  += getReplied(e);
-            });
+            const rUserId = OWNER_TO_USER[
+              Object.entries({ "Chris Knapp":"78304576","Chiara Pate":"87806380" })
+                .find(([n]) => n === repName)?.[1] || ""
+            ] || "";
+            const repEmails = rUserId
+              ? inPeriod.filter(e => [
+                  String(e.createdById || ""), String(e.authorId || ""),
+                  String(e.userId || ""), String(e.createdBy || ""),
+                ].some(id => id === rUserId))
+              : [];
+            let rSent = 0, rOpened = 0, rClicked = 0, rReplied = 0;
+            for (let i = 0; i < emailsToStat.length; i++) {
+              const e = emailsToStat[i];
+              if (!repEmails.find(re => re.id === e.id)) continue;
+              const stats = statsResults[i];
+              const counters = stats?.counters || stats?.stats || stats?.overall || stats || {};
+              rSent    += counters.sent    || counters.delivered || 0;
+              rOpened  += counters.open    || counters.opens     || 0;
+              rClicked += counters.click   || counters.clicks    || 0;
+              rReplied += counters.reply   || counters.replies   || 0;
+            }
             repData.push({
               rep: repName, emailCount: repEmails.length,
-              reached: rReached, opened: rOpened, clicked: rClicked, replied: rReplied,
-              openRate:  rReached > 0 ? +((rOpened  / rReached) * 100).toFixed(1) : 0,
-              clickRate: rReached > 0 ? +((rClicked / rReached) * 100).toFixed(1) : 0,
-              replyRate: rReached > 0 ? +((rReplied / rReached) * 100).toFixed(1) : 0,
+              reached: rSent, opened: rOpened, clicked: rClicked, replied: rReplied,
+              openRate:  rSent > 0 ? +((rOpened  / rSent) * 100).toFixed(1) : 0,
+              clickRate: rSent > 0 ? +((rClicked / rSent) * 100).toFixed(1) : 0,
+              replyRate: rSent > 0 ? +((rReplied / rSent) * 100).toFixed(1) : 0,
             });
+          }
+
+          // Fallback to contact property counts if API returned no stats
+          const usedFallback = totalSent === 0;
+          let totals;
+          if (usedFallback) {
+            const [fbReached, fbOpened, fbClicked, fbReplied] = await Promise.all([
+              count1(df("hs_email_last_send_date")),
+              count1(df("hs_email_last_open_date")),
+              count1(df("hs_email_last_click_date")),
+              count1(df("hs_email_last_reply_date")),
+            ]);
+            totals = {
+              totalReached: fbReached, totalOpened: fbOpened,
+              totalClicked: fbClicked, totalReplied: fbReplied,
+              openRate:  fbReached > 0 ? +((fbOpened  / fbReached) * 100).toFixed(1) : 0,
+              clickRate: fbReached > 0 ? +((fbClicked / fbReached) * 100).toFixed(1) : 0,
+              replyRate: fbReached > 0 ? +((fbReplied / fbReached) * 100).toFixed(1) : 0,
+            };
+          } else {
+            totals = { totalReached: totalSent, totalOpened, totalClicked, totalReplied, openRate, clickRate, replyRate };
           }
 
           return ok({
             section: "marketing", period, rep: rep || "all",
-            totals: { totalReached, totalOpened, totalClicked, totalReplied, openRate, clickRate, replyRate },
+            totals,
             byRep: repData,
             campaigns,
-            campaignFetched: allEmails.length, campaignHitCap: false,
-            usedFallback: false,
+            usedFallback,
             links: { dashboard: DASHBOARD, manage: MKT_EMAIL },
           });
         }
