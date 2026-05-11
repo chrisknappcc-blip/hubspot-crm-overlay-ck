@@ -721,6 +721,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
           { key:'reports',   label:'Reports' },
           { key:'map-tool',  label:'Market Mapper' },
           { key:'cpiq',      label:'CPIQ' },
+          { key:'fin-analysis', label:'Financial Analysis' },
           // Dynamic tabs from registry
           ...dynamicTabs.map(t => ({ key:`dyn-${t.id}`, label:t.label, badge:t.badge, url:t.url, tabType:t.type })),
           // Add App tab (admin only)
@@ -1370,6 +1371,18 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
         {/* ── Reports tab ── */}
         {activeTab === 'reports' && (
           <ReportsTab safeFetch={safeFetch} owners={owners} />
+        )}
+
+        {/* ── Financial Analysis tab ── */}
+        {activeTab === 'fin-analysis' && (
+          <div style={{ height:'calc(100vh - 52px)', marginTop:'-1.5rem', marginLeft:'-1.5rem', marginRight:'-1.5rem' }}>
+            <iframe
+              src="https://custom-financial-analysis.netlify.app/"
+              title="Custom Financial Analysis"
+              style={{ width:'100%', height:'100%', border:'none', display:'block' }}
+              allow="fullscreen"
+            />
+          </div>
         )}
 
         {/* ── CPIQ tab ── */}
