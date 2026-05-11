@@ -597,13 +597,14 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
 
   useEffect(() => { fetchData() }, [fetchData])
   useEffect(() => { fetchTasks() }, [fetchTasks])
-  // Stagger gold and activity by 1-2 seconds to avoid HubSpot 429 on page load
+  // Stagger gold and activity well after signals completes.
+  // Signals takes ~2s (6 searches × 300ms). Gold at 2.5s, activity at 4s.
   useEffect(() => {
-    const t = setTimeout(() => fetchGold(), 1000)
+    const t = setTimeout(() => fetchGold(), 2500)
     return () => clearTimeout(t)
   }, [fetchGold])
   useEffect(() => {
-    const t = setTimeout(() => fetchActivity(), 2000)
+    const t = setTimeout(() => fetchActivity(), 4000)
     return () => clearTimeout(t)
   }, [fetchActivity])
 
@@ -719,7 +720,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
           { key:'contacts',  label:'Contacts' },
           { key:'reports',   label:'Reports' },
           { key:'map-tool',  label:'Market Mapper' },
-          { key:'cpiq',      label:'CPIQ', badge:'SOON' },
+          { key:'cpiq',      label:'CPIQ' },
           // Dynamic tabs from registry
           ...dynamicTabs.map(t => ({ key:`dyn-${t.id}`, label:t.label, badge:t.badge, url:t.url, tabType:t.type })),
           // Add App tab (admin only)
@@ -1371,21 +1372,15 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
           <ReportsTab safeFetch={safeFetch} owners={owners} />
         )}
 
-        {/* ── CPIQ placeholder tab ── */}
+        {/* ── CPIQ tab ── */}
         {activeTab === 'cpiq' && (
-          <div style={{ display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', height:'calc(100vh - 180px)', gap:16 }}>
-            <div style={{ width:64, height:64, borderRadius:'var(--radius-lg)', background:'var(--bg-panel)', border:'1px solid var(--border)', display:'flex', alignItems:'center', justifyContent:'center' }}>
-              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="var(--text-tertiary)" strokeWidth="1.5" strokeLinecap="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
-            </div>
-            <div style={{ textAlign:'center' }}>
-              <div style={{ fontSize:16, fontWeight:500, color:'var(--text)', marginBottom:6 }}>CPIQ Tool</div>
-              <div style={{ fontSize:13, color:'var(--text-tertiary)', maxWidth:320 }}>
-                This tab will embed the CPIQ tool once it's ready to deploy. Coming soon.
-              </div>
-            </div>
-            <div style={{ fontSize:11, color:'var(--text-tertiary)', background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius)', padding:'6px 14px' }}>
-              In progress — check back once the tool is deployed to Netlify
-            </div>
+          <div style={{ height:'calc(100vh - 52px)', marginTop:'-1.5rem', marginLeft:'-1.5rem', marginRight:'-1.5rem' }}>
+            <iframe
+              src="https://cpiq-tool.netlify.app/"
+              title="Custom Financial Analysis"
+              style={{ width:'100%', height:'100%', border:'none', display:'block' }}
+              allow="fullscreen"
+            />
           </div>
         )}
 
