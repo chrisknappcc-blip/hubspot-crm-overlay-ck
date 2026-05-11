@@ -1744,28 +1744,40 @@ export const handler = async (event, context) => {
         "hs_sales_email_last_replied",     // 1:1 sales email replies
       ];
 
-      // Run searches SEQUENTIALLY with 150ms gaps to avoid HubSpot's per-second rate limit.
-      // 7 parallel searches = 7 API calls instantly = guaranteed 429 at our volume.
-      // Sequential with small gaps keeps us well within limits.
+      // Run searches SEQUENTIALLY with 300ms gaps and automatic retry on 429.
+      // 150ms was insufficient when concurrent routes (gold, contacts) fire simultaneously
+      // and share the same HubSpot per-second rate limit bucket.
       const searchResults = [];
       for (const prop of activityDateProps) {
-        try {
-          const result = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
-            filterGroups: [{ filters: [
-              { propertyName: prop, operator: "GTE", value: sinceISO },
-              ...customFilters,
-            ]}],
-            properties: BASE_CONTACT_PROPS,
-            sorts:      [{ propertyName: prop, direction: "DESCENDING" }],
-            limit:      perPropLimit,
-          });
-          searchResults.push({ ...result, _prop: prop });
-          console.log(`[signals] prop=${prop} returned=${(result.results||[]).length} total=${result.total||0} filters=${JSON.stringify(customFilters)}`);
-        } catch (err) {
-          console.error(`[signals] search failed for prop ${prop}:`, err.message);
-          searchResults.push({ results: [], total: 0, _prop: prop });
+        let attempts = 0;
+        while (attempts < 2) {
+          try {
+            const result = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
+              filterGroups: [{ filters: [
+                { propertyName: prop, operator: "GTE", value: sinceISO },
+                ...customFilters,
+              ]}],
+              properties: BASE_CONTACT_PROPS,
+              sorts:      [{ propertyName: prop, direction: "DESCENDING" }],
+              limit:      perPropLimit,
+            });
+            searchResults.push({ ...result, _prop: prop });
+            console.log(`[signals] prop=${prop} returned=${(result.results||[]).length} total=${result.total||0} filters=${JSON.stringify(customFilters)}`);
+            break; // success
+          } catch (err) {
+            attempts++;
+            const is429 = err.message?.includes("429");
+            if (is429 && attempts < 2) {
+              console.log(`[signals] 429 on ${prop}, retrying after 1s...`);
+              await new Promise(r => setTimeout(r, 1000));
+            } else {
+              console.error(`[signals] search failed for prop ${prop}:`, err.message);
+              searchResults.push({ results: [], total: 0, _prop: prop });
+              break;
+            }
+          }
         }
-        await new Promise(r => setTimeout(r, 150));
+        await new Promise(r => setTimeout(r, 300)); // increased from 150ms
       }
 
       // Merge and deduplicate across all three searches
@@ -1873,18 +1885,30 @@ export const handler = async (event, context) => {
         // Use whichever open/send timestamps are available for bot detection
         const botOpenTs = openSource === "sales" ? salesOpenTs : mktOpenTs;
 
-        // For contact-property signals, we only have the most recent event timestamps,
-        // not full open/click history. Disable soft signals that require history context
-        // (no-click and burst-pattern checks) -- they produce false positives here.
-        // Only use time-to-open and HubSpot's own filteredEvent flag.
+        // Scanner rule: if open AND click both happen within 90 seconds of send,
+        // it's almost certainly a security scanner regardless of event type.
+        // (Gina/Nicole pattern: sent 1:27, opened 1:28, clicked 1:28 = scanner)
+        const sendTs = mktSendTs || 0;
+        const openClickGap = sendTs > 0 && botOpenTs > 0 && clickTs > 0
+          ? Math.max(botOpenTs - sendTs, clickTs - sendTs) / 1000
+          : null;
+        const isScannerClick = openClickGap !== null && openClickGap < 90;
+
+        // For contact-property signals, pass actual open timestamp so time-to-open
+        // check fires. Keep numOpens: 0 to disable history-based burst checks.
         const botCheck = detectBot({
           filteredEvent: false,
-          sentAt:    mktSendTs || null,
-          openedAt:  botOpenTs || null,
-          numOpens:  0,   // set to 0 to disable history-based checks
+          sentAt:    mktSendTs ? new Date(mktSendTs).toISOString() : null,
+          openedAt:  botOpenTs ? new Date(botOpenTs).toISOString() : null,
+          numOpens:  0,   // keep 0 to disable burst-pattern checks
           numClicks: clickTs > 0 ? 1 : 0,
           replied:   replyTs > 0,
         });
+
+        // Mark as bot if: time-based scanner detected on opens, OR
+        // open+click both within 90 seconds of send (scanner click pattern)
+        const isBotSignal = (botCheck.isBot && eventType === "OPEN") ||
+                            (isScannerClick && !replyTs);
 
         // Sequence subject: hs_sequence_name does not exist on contacts.
         // Show the email name for marketing sends; sequence ID is a fallback only.
@@ -1903,7 +1927,7 @@ export const handler = async (event, context) => {
           contactId:   c.id,
           contact:     info,
           botCheck,
-          isBot:       botCheck.isBot && eventType === "OPEN",
+          isBot:       isBotSignal,
           subject:     subjectLabel,
           sentAt:      p.hs_email_last_send_date        || null,
           openedAt:    primaryTs && eventType === "OPEN"   ? primaryTs : null,
