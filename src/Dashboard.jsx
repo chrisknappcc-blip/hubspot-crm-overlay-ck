@@ -386,6 +386,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
   const [selectedContact, setSelectedContact] = useState(null)
   const [dateRange, setDateRange]         = useState('168')
   const [signalSort, setSignalSort]       = useState('score_desc')
+  const [signalSearch, setSignalSearch]   = useState('')
   const [contactSort, setContactSort]     = useState('name_asc')
 
   // Pagination
@@ -633,7 +634,19 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
   }, [selectedContact, loadContactFeed])
 
   // ── Derived data ──────────────────────────────────────────────────────────
-  const sortedSignals  = sortSignals(signals, signalSort)
+  const sortedSignals  = useMemo(() => {
+    let s = sortSignals(signals, signalSort)
+    if (signalSearch.trim()) {
+      const q = signalSearch.trim().toLowerCase()
+      s = s.filter(sig =>
+        (sig.subject || '').toLowerCase().includes(q) ||
+        (sig.contact?.name || '').toLowerCase().includes(q) ||
+        (sig.contact?.company || '').toLowerCase().includes(q) ||
+        (sig.label || '').toLowerCase().includes(q)
+      )
+    }
+    return s
+  }, [signals, signalSort, signalSearch])
   const sortedContacts = sortContacts(contacts, contactSort)
   const hotCount       = signals.filter(s => s.score >= 100).length
   const warmCount      = signals.filter(s => s.score >= 30 && s.score < 100).length
@@ -682,8 +695,41 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
     return () => clearTimeout(t)
   }, [fetchContentEngagement])
 
+  const exportSignalsCSV = useCallback(() => {
+    const rows = sortedSignals.filter(s => !s.isBot)
+    if (!rows.length) return
+    const headers = ['Name','Company','Title','Email','Signal','Email / Sequence','Sent','Opened','Clicked','Replied','HubSpot URL']
+    const escape  = v => `"${String(v ?? '').replace(/"/g, '""')}"`
+    const lines   = [
+      headers.join(','),
+      ...rows.map(s => {
+        const chain  = s.eventChain || []
+        const chainTs = (type) => chain.find(e => e.type === type)?.timestamp || ''
+        return [
+          escape(s.contact?.name || s.recipientEmail || ''),
+          escape(s.contact?.company || ''),
+          escape(s.contact?.title || ''),
+          escape(s.contact?.email || s.recipientEmail || ''),
+          escape(s.label || ''),
+          escape(s.subject || ''),
+          escape(s.sentAt    || chainTs('SENT')    || ''),
+          escape(s.openedAt  || chainTs('OPENED')  || ''),
+          escape(s.clickedAt || chainTs('CLICKED') || ''),
+          escape(s.repliedAt || chainTs('REPLIED') || ''),
+          escape(s.contactId ? `https://app.hubspot.com/contacts/39921549/record/0-1/${s.contactId}` : ''),
+        ].join(',')
+      })
+    ]
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv' })
+    const url  = URL.createObjectURL(blob)
+    const a    = document.createElement('a')
+    a.href     = url
+    a.download = `signals-export-${new Date().toISOString().slice(0,10)}${signalSearch ? `-${signalSearch.replace(/\s+/g,'-')}` : ''}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
+  }, [sortedSignals, signalSearch])
+
   const openHubSpotContact = (contactId, e) => {
-    if (e) e.stopPropagation()
     const url = hsContactUrl(contactId)
     if (!url) return
     const a = document.createElement('a')
@@ -720,8 +766,9 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
           { key:'contacts',  label:'Contacts' },
           { key:'reports',   label:'Reports' },
           { key:'map-tool',  label:'Market Mapper' },
-          { key:'cpiq',      label:'CPIQ' },
-          { key:'fin-analysis', label:'Financial Analysis' },
+          { key:'cpiq',          label:'CPIQ' },
+          { key:'fin-analysis',  label:'Financial Analysis' },
+          { key:'contact-intel', label:'Contact Intelligence', badge:'SOON' },
           // Dynamic tabs from registry
           ...dynamicTabs.map(t => ({ key:`dyn-${t.id}`, label:t.label, badge:t.badge, url:t.url, tabType:t.type })),
           // Add App tab (visible to all users)
@@ -989,10 +1036,44 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
 
               {/* ── Live signals ── */}
               <Panel>
-                <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:12 }}>
-                  <SectionTitle style={{ margin:0 }}>Live signals</SectionTitle>
-                  <Select value={signalSort} onChange={setSignalSort} options={SIGNAL_SORT_OPTIONS} />
+                <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:8, gap:8 }}>
+                  <SectionTitle style={{ margin:0, flexShrink:0 }}>Live signals</SectionTitle>
+                  <div style={{ display:'flex', alignItems:'center', gap:6, flex:1, justifyContent:'flex-end' }}>
+                    <Select value={signalSort} onChange={setSignalSort} options={SIGNAL_SORT_OPTIONS} />
+                    <button onClick={exportSignalsCSV} title="Export to CSV (bot opens excluded)"
+                      style={{ flexShrink:0, display:'flex', alignItems:'center', gap:5, background:'var(--bg-secondary)', border:'1px solid var(--border)', borderRadius:'var(--radius)', padding:'5px 10px', fontSize:11, fontWeight:500, color:'var(--text-secondary)', cursor:'pointer' }}>
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                      CSV
+                    </button>
+                  </div>
                 </div>
+                {/* Search bar */}
+                <div style={{ position:'relative', marginBottom:10 }}>
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--text-tertiary)" strokeWidth="2" strokeLinecap="round" style={{ position:'absolute', left:9, top:'50%', transform:'translateY(-50%)', pointerEvents:'none' }}>
+                    <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                  </svg>
+                  <input
+                    type="text"
+                    value={signalSearch}
+                    onChange={e => { setSignalSearch(e.target.value); setSignalPage(0) }}
+                    placeholder="Search by email name, sequence, contact or company…"
+                    style={{ width:'100%', padding:'7px 28px 7px 28px', background:'var(--bg-secondary)', border:'1px solid var(--border)', borderRadius:'var(--radius)', fontSize:12, color:'var(--text)', outline:'none', boxSizing:'border-box' }}
+                  />
+                  {signalSearch && (
+                    <button onClick={() => { setSignalSearch(''); setSignalPage(0) }}
+                      style={{ position:'absolute', right:8, top:'50%', transform:'translateY(-50%)', background:'none', border:'none', cursor:'pointer', color:'var(--text-tertiary)', fontSize:14, lineHeight:1, padding:0 }}>×</button>
+                  )}
+                </div>
+                {signalSearch && (
+                  <div style={{ fontSize:11, color:'var(--text-tertiary)', marginBottom:8 }}>
+                    {sortedSignals.length} result{sortedSignals.length !== 1 ? 's' : ''} for "{signalSearch}"
+                    {sortedSignals.length > 0 && (
+                      <button onClick={exportSignalsCSV} style={{ marginLeft:8, color:'var(--accent)', background:'none', border:'none', cursor:'pointer', padding:0, fontSize:11 }}>
+                        Export these {sortedSignals.length} →
+                      </button>
+                    )}
+                  </div>
+                )}
                 {loading && <div style={{ color:'var(--text-tertiary)', fontSize:13 }}>Loading...</div>}
                 {!loading && signals.length === 0 && <div style={{ color:'var(--text-tertiary)', fontSize:13 }}>No signals in this time range.</div>}
                 {sortedSignals.slice(signalPage * PAGE_SIZE, (signalPage + 1) * PAGE_SIZE).map((s, i) => {
@@ -1382,6 +1463,24 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
               style={{ width:'100%', height:'100%', border:'none', display:'block' }}
               allow="fullscreen"
             />
+          </div>
+        )}
+
+        {/* ── Contact Intelligence tab ── */}
+        {activeTab === 'contact-intel' && (
+          <div style={{ display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', height:'calc(100vh - 180px)', gap:16 }}>
+            <div style={{ width:64, height:64, borderRadius:'var(--radius-lg)', background:'var(--bg-panel)', border:'1px solid var(--border)', display:'flex', alignItems:'center', justifyContent:'center' }}>
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="var(--text-tertiary)" strokeWidth="1.5" strokeLinecap="round"><circle cx="12" cy="8" r="4"/><path d="M6 20v-2a6 6 0 0 1 12 0v2"/><circle cx="19" cy="8" r="2"/><path d="M21 13a4 4 0 0 1 0 7"/></svg>
+            </div>
+            <div style={{ textAlign:'center' }}>
+              <div style={{ fontSize:16, fontWeight:500, color:'var(--text)', marginBottom:6 }}>Contact Intelligence</div>
+              <div style={{ fontSize:13, color:'var(--text-tertiary)', maxWidth:320 }}>
+                Deep contact enrichment, ZoomInfo lookups, LinkedIn activity, and AI-powered engagement insights. Coming soon.
+              </div>
+            </div>
+            <div style={{ fontSize:11, color:'var(--text-tertiary)', background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius)', padding:'6px 14px' }}>
+              In development
+            </div>
           </div>
         )}
 
