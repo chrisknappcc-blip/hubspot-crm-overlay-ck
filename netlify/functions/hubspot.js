@@ -26,7 +26,7 @@
 
 import { withAuth } from "./utils/auth.js";
 import { getTokens, setTokens, isTokenValid } from "./utils/tokenStore.js";
-import { getTabsForUser, getRegistry, saveRegistry, slugify, fetchPageTitle } from "./utils/tabRegistry.js";
+import { getTabsForUser, getAllTabsForUser, getRegistry, saveRegistry, getPersonalTabs, savePersonalTabs, slugify, fetchPageTitle } from "./utils/tabRegistry.js";
 
 // Admin user IDs -- comma-separated Clerk user IDs in ADMIN_USER_IDS env var
 // e.g. ADMIN_USER_IDS=user_abc123,user_def456
@@ -2177,7 +2177,7 @@ export const handler = async (event, context) => {
 
     if (method === "GET" && path === "/tabs") {
       try {
-        const tabs = await getTabsForUser(user.userId);
+        const tabs = await getAllTabsForUser(user.userId);
         return ok({ tabs, isAdmin: ADMIN_USER_IDS.has(user.userId) });
       } catch (err) {
         console.error("[tabs] GET error:", err.message);
@@ -2203,44 +2203,58 @@ export const handler = async (event, context) => {
     }
 
     if (method === "POST" && path === "/tabs") {
-      if (!ADMIN_USER_IDS.has(user.userId)) return error(403, "Admin only");
       try {
         const body = JSON.parse(event.body || "{}");
         const { url, label, badge, allowedUsers, enabled = true, type = "iframe" } = body;
+        const isPersonal = body.personal === true;
 
         if (!url)   return error(400, "url is required");
         if (!label) return error(400, "label is required");
         if (!["iframe","link"].includes(type)) return error(400, "type must be iframe or link");
-
-        // Validate URL
         try { new URL(url); } catch { return error(400, "Invalid URL"); }
 
-        const registry = await getRegistry();
-        const id       = body.id || slugify(label);
-        const now      = new Date().toISOString();
-        const existing = registry.findIndex(t => t.id === id);
+        // Personal tabs: any user can create. Shared tabs: admin only.
+        if (!isPersonal && !ADMIN_USER_IDS.has(user.userId)) {
+          return error(403, "Admin only for shared tabs");
+        }
 
+        const now = new Date().toISOString();
+        const id  = body.id || slugify(label);
         const tab = {
           id,
           label:        label.trim().slice(0, 40),
           url:          url.trim(),
           type,
           enabled,
-          allowedUsers: allowedUsers || [],
+          allowedUsers: isPersonal ? [user.userId] : (allowedUsers || []),
           badge:        badge || null,
           addedBy:      user.userId,
-          createdAt:    existing >= 0 ? registry[existing].createdAt : now,
+          personal:     isPersonal,
+          createdAt:    now,
           updatedAt:    now,
         };
 
-        if (existing >= 0) {
-          registry[existing] = tab;
+        if (isPersonal) {
+          const personal = await getPersonalTabs(user.userId);
+          const existing = personal.findIndex(t => t.id === id);
+          if (existing >= 0) {
+            personal[existing] = { ...tab, createdAt: personal[existing].createdAt };
+          } else {
+            personal.push(tab);
+          }
+          await savePersonalTabs(user.userId, personal);
         } else {
-          registry.push(tab);
+          const registry = await getRegistry();
+          const existing = registry.findIndex(t => t.id === id);
+          if (existing >= 0) {
+            registry[existing] = { ...tab, createdAt: registry[existing].createdAt };
+          } else {
+            registry.push(tab);
+          }
+          await saveRegistry(registry);
         }
 
-        await saveRegistry(registry);
-        return ok({ tab, action: existing >= 0 ? "updated" : "created" });
+        return ok({ tab, action: "saved" });
       } catch (err) {
         console.error("[tabs] POST error:", err.message);
         return error(500, `Tab save error: ${err.message}`);
@@ -2248,15 +2262,27 @@ export const handler = async (event, context) => {
     }
 
     if (method === "DELETE" && path.startsWith("/tabs/")) {
-      if (!ADMIN_USER_IDS.has(user.userId)) return error(403, "Admin only");
-      const tabId = path.split("/tabs/")[1];
+      const tabId     = path.split("/tabs/")[1];
+      const isPersonal = qp.personal === "true";
       if (!tabId) return error(400, "Tab ID required");
+
       try {
-        const registry = await getRegistry();
-        const filtered = registry.filter(t => t.id !== tabId);
-        if (filtered.length === registry.length) return error(404, "Tab not found");
-        await saveRegistry(filtered);
-        return ok({ deleted: tabId });
+        if (isPersonal) {
+          // Any user can delete their own personal tabs
+          const personal = await getPersonalTabs(user.userId);
+          const filtered = personal.filter(t => t.id !== tabId);
+          if (filtered.length === personal.length) return error(404, "Tab not found");
+          await savePersonalTabs(user.userId, filtered);
+          return ok({ deleted: tabId });
+        } else {
+          // Shared tabs: admin only
+          if (!ADMIN_USER_IDS.has(user.userId)) return error(403, "Admin only");
+          const registry = await getRegistry();
+          const filtered = registry.filter(t => t.id !== tabId);
+          if (filtered.length === registry.length) return error(404, "Tab not found");
+          await saveRegistry(filtered);
+          return ok({ deleted: tabId });
+        }
       } catch (err) {
         console.error("[tabs] DELETE error:", err.message);
         return error(500, `Tab delete error: ${err.message}`);
