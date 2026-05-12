@@ -2088,6 +2088,9 @@ function AddAppTab({ safeFetch, onSaved, existingTabs, onDelete, isAdmin }) {
               ))}
             </div>
           </div>
+
+          <div>
+            <label style={{ fontSize:12, fontWeight:500, color:'var(--text-secondary)', display:'block', marginBottom:8 }}>How to open</label>
             <div style={{ display:'flex', gap:8 }}>
               {[
                 { value:'iframe', label:'Embed in dashboard', desc:'Works for web apps, HTML files, most public sites' },
