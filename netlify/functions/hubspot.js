@@ -2205,6 +2205,7 @@ export const handler = async (event, context) => {
     if (method === "POST" && path === "/tabs") {
       try {
         const body = JSON.parse(event.body || "{}");
+        console.log("[tabs] POST body:", JSON.stringify(body));
         const { url, label, badge, allowedUsers, enabled = true, type = "iframe" } = body;
         const isPersonal = body.personal === true;
 
@@ -2235,6 +2236,7 @@ export const handler = async (event, context) => {
         };
 
         if (isPersonal) {
+          console.log("[tabs] saving personal tab for user:", user.userId);
           const personal = await getPersonalTabs(user.userId);
           const existing = personal.findIndex(t => t.id === id);
           if (existing >= 0) {
@@ -2244,6 +2246,7 @@ export const handler = async (event, context) => {
           }
           await savePersonalTabs(user.userId, personal);
         } else {
+          console.log("[tabs] saving shared tab, admin:", ADMIN_USER_IDS.has(user.userId));
           const registry = await getRegistry();
           const existing = registry.findIndex(t => t.id === id);
           if (existing >= 0) {
