@@ -154,3 +154,37 @@ export async function fetchPageTitle(url) {
     return null;
   }
 }
+
+// ── Personal tab registry (per-user) ─────────────────────────────────────────
+
+function personalBlobName(userId) {
+  // Sanitize userId for blob key -- replace any non-alphanumeric with _
+  return `tabs--personal--${userId.replace(/[^a-zA-Z0-9]/g, '_')}.json`;
+}
+
+export async function getPersonalTabs(userId) {
+  try {
+    const raw = await blobGet(personalBlobName(userId));
+    if (!raw) return [];
+    return JSON.parse(raw);
+  } catch {
+    return [];
+  }
+}
+
+export async function savePersonalTabs(userId, tabs) {
+  await blobPut(personalBlobName(userId), JSON.stringify(tabs, null, 2));
+}
+
+// Returns shared + personal tabs merged, personal flagged
+export async function getAllTabsForUser(userId) {
+  const [shared, personal] = await Promise.all([
+    getTabsForUser(userId),
+    getPersonalTabs(userId),
+  ]);
+  const sharedMapped   = shared.map(t => ({ ...t, personal: false }));
+  const personalMapped = personal
+    .filter(t => t.enabled !== false)
+    .map(t => ({ ...t, personal: true }));
+  return [...sharedMapped, ...personalMapped];
+}
