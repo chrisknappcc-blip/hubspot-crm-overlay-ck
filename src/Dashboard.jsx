@@ -1414,6 +1414,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
           <AddAppTab
             getToken={getToken}
             safeFetch={safeFetch}
+            isAdmin={isAdmin}
             onSaved={(newTab) => {
               setDynamicTabs(prev => {
                 const existing = prev.findIndex(t => t.id === newTab.id)
@@ -1950,11 +1951,12 @@ function ReportsTab({ safeFetch, owners }) {
 }
 
 // ─── Add App tab ──────────────────────────────────────────────────────────────
-function AddAppTab({ safeFetch, onSaved, existingTabs, onDelete }) {
+function AddAppTab({ safeFetch, onSaved, existingTabs, onDelete, isAdmin }) {
   const [url, setUrl]               = useState('')
   const [label, setLabel]           = useState('')
   const [badge, setBadge]           = useState('')
-  const [tabType, setTabType]       = useState('iframe') // 'iframe' | 'link'
+  const [tabType, setTabType]       = useState('iframe')
+  const [personal, setPersonal]     = useState(true) // default "Just me"
   const [previewing, setPreviewing] = useState(false)
   const [saving, setSaving]         = useState(false)
   const [message, setMessage]       = useState(null)
@@ -1963,7 +1965,6 @@ function AddAppTab({ safeFetch, onSaved, existingTabs, onDelete }) {
   const handleUrlBlur = async () => {
     if (!url.trim() || label) return
     setPreviewing(true)
-    // Auto-detect type based on URL patterns that are known to block iframes
     const lower = url.toLowerCase()
     if (
       lower.includes('sharepoint.com') ||
@@ -1993,15 +1994,17 @@ function AddAppTab({ safeFetch, onSaved, existingTabs, onDelete }) {
       const data = await safeFetch('/api/hubspot/tabs', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: url.trim(), label: label.trim(), badge: badge.trim() || null, type: tabType }),
+        body: JSON.stringify({ url: url.trim(), label: label.trim(), badge: badge.trim() || null, type: tabType, personal }),
       })
       onSaved(data.tab)
       setUrl('')
       setLabel('')
       setBadge('')
       setTabType('iframe')
-      const action = tabType === 'link' ? 'Added as an external link — clicking the tab will open it in a new window.' : 'Taking you there now.'
-      setMessage({ type:'success', text:`"${data.tab.label}" added. ${action}` })
+      setPersonal(true)
+      const scope  = personal ? 'visible to you only' : 'visible to everyone'
+      const action = tabType === 'link' ? 'Opens in a new window.' : 'Taking you there now.'
+      setMessage({ type:'success', text:`"${data.tab.label}" added (${scope}). ${action}` })
     } catch (err) {
       setMessage({ type:'error', text: err.message || 'Something went wrong.' })
     } finally {
@@ -2009,10 +2012,13 @@ function AddAppTab({ safeFetch, onSaved, existingTabs, onDelete }) {
     }
   }
 
-  const handleDelete = async (tabId, tabLabel) => {
+  const handleDelete = async (tabId, tabLabel, isPersonal) => {
     if (deleteConfirm !== tabId) { setDeleteConfirm(tabId); return; }
     try {
-      await safeFetch(`/api/hubspot/tabs/${tabId}`, { method: 'DELETE' })
+      const url = isPersonal
+        ? `/api/hubspot/tabs/${tabId}?personal=true`
+        : `/api/hubspot/tabs/${tabId}`
+      await safeFetch(url, { method: 'DELETE' })
       onDelete(tabId)
       setDeleteConfirm(null)
     } catch (err) {
@@ -2068,7 +2074,20 @@ function AddAppTab({ safeFetch, onSaved, existingTabs, onDelete }) {
           </div>
 
           <div>
-            <label style={{ fontSize:12, fontWeight:500, color:'var(--text-secondary)', display:'block', marginBottom:8 }}>How to open</label>
+            <label style={{ fontSize:12, fontWeight:500, color:'var(--text-secondary)', display:'block', marginBottom:8 }}>Who can see this tab?</label>
+            <div style={{ display:'flex', gap:8 }}>
+              {[
+                { value: true,  label: 'Just me',         desc: 'Only visible in your nav' },
+                { value: false, label: 'Everyone',         desc: isAdmin ? 'Visible to all users' : 'Requires admin access', disabled: !isAdmin },
+              ].map(opt => (
+                <div key={String(opt.value)} onClick={() => !opt.disabled && setPersonal(opt.value)}
+                  style={{ flex:1, padding:'10px 12px', borderRadius:'var(--radius)', border:`1px solid ${personal===opt.value ? 'var(--accent)' : 'var(--border)'}`, background: opt.disabled ? 'var(--bg-secondary)' : personal===opt.value ? 'var(--accent-light)' : 'var(--bg-secondary)', cursor: opt.disabled ? 'not-allowed' : 'pointer', opacity: opt.disabled ? 0.5 : 1 }}>
+                  <div style={{ fontSize:12, fontWeight:500, color: personal===opt.value ? 'var(--accent-text)' : 'var(--text)', marginBottom:3 }}>{opt.label}</div>
+                  <div style={{ fontSize:11, color:'var(--text-tertiary)', lineHeight:1.4 }}>{opt.desc}</div>
+                </div>
+              ))}
+            </div>
+          </div>
             <div style={{ display:'flex', gap:8 }}>
               {[
                 { value:'iframe', label:'Embed in dashboard', desc:'Works for web apps, HTML files, most public sites' },
@@ -2111,11 +2130,14 @@ function AddAppTab({ safeFetch, onSaved, existingTabs, onDelete }) {
                   <div style={{ fontSize:13, fontWeight:500, color:'var(--text)', display:'flex', alignItems:'center', gap:6 }}>
                     {tab.label}
                     {tab.badge && <span style={{ fontSize:9, fontWeight:600, background:'var(--amber-light)', color:'var(--amber)', borderRadius:4, padding:'1px 5px' }}>{tab.badge}</span>}
+                    <span style={{ fontSize:9, fontWeight:600, borderRadius:4, padding:'1px 5px', background: tab.personal ? 'var(--bg-secondary)' : 'var(--accent-light)', color: tab.personal ? 'var(--text-tertiary)' : 'var(--accent)' }}>
+                      {tab.personal ? 'Just me' : 'Shared'}
+                    </span>
                   </div>
                   <div style={{ fontSize:11, color:'var(--text-tertiary)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{tab.url}</div>
                 </div>
                 <button
-                  onClick={() => handleDelete(tab.id, tab.label)}
+                  onClick={() => handleDelete(tab.id, tab.label, tab.personal)}
                   style={{ fontSize:12, color: deleteConfirm === tab.id ? 'var(--red)' : 'var(--text-tertiary)', background:'none', border:'1px solid var(--border)', borderRadius:'var(--radius)', padding:'4px 10px', cursor:'pointer', whiteSpace:'nowrap', flexShrink:0 }}>
                   {deleteConfirm === tab.id ? 'Confirm remove' : 'Remove'}
                 </button>
