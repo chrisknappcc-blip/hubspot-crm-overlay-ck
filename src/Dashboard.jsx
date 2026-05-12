@@ -724,8 +724,8 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
           { key:'fin-analysis', label:'Financial Analysis' },
           // Dynamic tabs from registry
           ...dynamicTabs.map(t => ({ key:`dyn-${t.id}`, label:t.label, badge:t.badge, url:t.url, tabType:t.type })),
-          // Add App tab (admin only)
-          ...(isAdmin ? [{ key:'add-app', label:'+ Add App', isAddApp:true }] : []),
+          // Add App tab (visible to all users)
+          { key:'add-app', label:'+ Add App', isAddApp:true },
         ].map(tab => (
           <button key={tab.key} onClick={() => {
             if (tab.tabType === 'link' && tab.url) {
@@ -1410,7 +1410,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
         ))}
 
         {/* ── Add App tab ── */}
-        {activeTab === 'add-app' && isAdmin && (
+        {activeTab === 'add-app' && (
           <AddAppTab
             getToken={getToken}
             safeFetch={safeFetch}
