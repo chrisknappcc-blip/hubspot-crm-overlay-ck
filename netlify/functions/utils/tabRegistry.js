@@ -1,107 +1,48 @@
 // netlify/functions/utils/tabRegistry.js
 // Reads and writes the dynamic tab registry to Azure Blob Storage.
-// Uses the same storage account as tokenStore (carepathiqdata / crm-tokens).
-// Registry is stored as a single JSON blob at key: tabs--registry.json
+// Uses SAS token auth (same as tokenStore) rather than SharedKey HMAC.
 //
 // Tab schema:
 //   id          string   -- url-safe slug, auto-generated from label
 //   label       string   -- display name in the nav
 //   url         string   -- iframe src URL
-//   type        string   -- "iframe" (only type for now)
+//   type        string   -- "iframe" | "link"
 //   enabled     boolean  -- false hides the tab without deleting it
 //   allowedUsers string[] -- empty = all users, otherwise Clerk user IDs
 //   badge       string   -- optional pill text (e.g. "SOON", "NEW", "BETA")
 //   addedBy     string   -- Clerk user ID of whoever added it
+//   personal    boolean  -- true = personal tab, false = shared
 //   createdAt   string   -- ISO timestamp
 //   updatedAt   string   -- ISO timestamp
 
-const AZURE_ACCOUNT   = process.env.AZURE_STORAGE_ACCOUNT   || "carepathiqdata";
-const AZURE_KEY       = process.env.AZURE_STORAGE_KEY;
-const AZURE_CONTAINER = process.env.AZURE_STORAGE_CONTAINER  || "crm-tokens";
+const AZURE_ACCOUNT   = process.env.AZURE_STORAGE_ACCOUNT_NAME || process.env.AZURE_STORAGE_ACCOUNT || "carepathiqdata";
+const AZURE_SAS       = process.env.AZURE_STORAGE_SAS_TOKEN    || process.env.AZURE_STORAGE_KEY     || "";
+const AZURE_CONTAINER = process.env.AZURE_STORAGE_CONTAINER    || "crm-tokens";
 const REGISTRY_BLOB   = "tabs--registry.json";
 
-// ── Azure Blob helpers ────────────────────────────────────────────────────────
-
-function getBaseUrl() {
-  return `https://${AZURE_ACCOUNT}.blob.core.windows.net/${AZURE_CONTAINER}`;
-}
-
-async function getAuthHeader(method, blobName, contentLength = 0, contentType = "") {
-  // Shared Key authentication for Azure Blob Storage
-  const { createHmac } = await import("crypto");
-  const date = new Date().toUTCString();
-
-  const canonicalHeaders = `x-ms-date:${date}\nx-ms-version:2020-10-02`;
-  const canonicalResource = `/${AZURE_ACCOUNT}/${AZURE_CONTAINER}/${blobName}`;
-
-  const stringToSign = [
-    method.toUpperCase(),
-    "",             // Content-Encoding
-    "",             // Content-Language
-    contentLength > 0 ? String(contentLength) : "",
-    "",             // Content-MD5
-    contentType,
-    "",             // Date
-    "",             // If-Modified-Since
-    "",             // If-Match
-    "",             // If-None-Match
-    "",             // If-Unmodified-Since
-    "",             // Range
-    canonicalHeaders,
-    canonicalResource,
-  ].join("\n");
-
-  const key    = Buffer.from(AZURE_KEY, "base64");
-  const sig    = createHmac("sha256", key).update(stringToSign, "utf8").digest("base64");
-  const auth   = `SharedKey ${AZURE_ACCOUNT}:${sig}`;
-  return { auth, date };
+function blobUrl(blobName) {
+  const sas = AZURE_SAS.startsWith("?") ? AZURE_SAS : `?${AZURE_SAS}`;
+  return `https://${AZURE_ACCOUNT}.blob.core.windows.net/${AZURE_CONTAINER}/${blobName}${sas}`;
 }
 
 async function blobGet(blobName) {
-  const { auth, date } = await getAuthHeader("GET", blobName);
-  const res = await fetch(`${getBaseUrl()}/${blobName}`, {
-    headers: {
-      Authorization:  auth,
-      "x-ms-date":    date,
-      "x-ms-version": "2020-10-02",
-    },
-  });
+  const res = await fetch(blobUrl(blobName));
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(`Azure GET failed: ${res.status} ${await res.text()}`);
   return res.text();
 }
 
 async function blobPut(blobName, content) {
-  const body        = typeof content === "string" ? content : JSON.stringify(content);
-  const bodyBytes   = Buffer.from(body, "utf8");
-  const { auth, date } = await getAuthHeader("PUT", blobName, bodyBytes.length, "application/json");
-
-  const res = await fetch(`${getBaseUrl()}/${blobName}`, {
+  const body = typeof content === "string" ? content : JSON.stringify(content);
+  const res  = await fetch(blobUrl(blobName), {
     method: "PUT",
     headers: {
-      Authorization:    auth,
-      "x-ms-date":      date,
-      "x-ms-version":   "2020-10-02",
       "Content-Type":   "application/json",
-      "Content-Length": String(bodyBytes.length),
       "x-ms-blob-type": "BlockBlob",
     },
-    body: bodyBytes,
+    body,
   });
   if (!res.ok) throw new Error(`Azure PUT failed: ${res.status} ${await res.text()}`);
-}
-
-async function blobDelete(blobName) {
-  const { auth, date } = await getAuthHeader("DELETE", blobName);
-  const res = await fetch(`${getBaseUrl()}/${blobName}`, {
-    method: "DELETE",
-    headers: {
-      Authorization:  auth,
-      "x-ms-date":    date,
-      "x-ms-version": "2020-10-02",
-    },
-  });
-  if (!res.ok && res.status !== 404) throw new Error(`Azure DELETE failed: ${res.status}`);
 }
 
 // ── Registry helpers ──────────────────────────────────────────────────────────
