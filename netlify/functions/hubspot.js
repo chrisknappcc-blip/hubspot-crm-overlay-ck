@@ -168,24 +168,25 @@ async function hsPost(userId, path, body) {
 function buildCustomFilters(qp, baseFilters = []) {
   const filters = [...baseFilters];
 
-  const FILTER_MAP = {
-    assigned_bdr:                    "assigned_bdr",
+  // assigned_bdr may be comma-separated for group filters (e.g. "Chris Knapp,Chiara Pate")
+  if (qp.assigned_bdr) {
+    const vals = decodeURIComponent(qp.assigned_bdr).split(',').map(s => s.trim()).filter(Boolean);
+    if (vals.length === 1) {
+      filters.push({ propertyName: "assigned_bdr", operator: "EQ",  value:  vals[0] });
+    } else if (vals.length > 1) {
+      filters.push({ propertyName: "assigned_bdr", operator: "IN",  values: vals   });
+    }
+  }
+
+  // Other contact filters
+  const OTHER_FILTERS = {
     territory:                       "territory",
-    // NOTE: priority_tier__bdr is a COMPANY property, not a contact property.
-    // It cannot be used to filter contacts directly. Omitted intentionally.
     target_account__bdr_led_outreach:"target_account__bdr_led_outreach",
   };
-
-  Object.entries(FILTER_MAP).forEach(([param, prop]) => {
+  Object.entries(OTHER_FILTERS).forEach(([param, prop]) => {
     if (qp[param]) {
       const val = decodeURIComponent(qp[param]).trim();
-      if (val) {
-        filters.push({
-          propertyName: prop,
-          operator:     "EQ",
-          value:        val,
-        });
-      }
+      if (val) filters.push({ propertyName: prop, operator: "EQ", value: val });
     }
   });
 
@@ -863,8 +864,20 @@ export const handler = async (event, context) => {
           }
         } catch { /* use empty map */ }
 
-        const selectedRepOwnerId = qp.assigned_bdr
-          ? OWNER_NAME_TO_ID[decodeURIComponent(qp.assigned_bdr).trim()] || null
+        // assigned_bdr may be a single name or comma-separated list
+        const assignedBdrRaw = qp.assigned_bdr ? decodeURIComponent(qp.assigned_bdr) : null;
+        const assignedBdrList = assignedBdrRaw
+          ? assignedBdrRaw.split(',').map(s => s.trim()).filter(Boolean)
+          : [];
+
+        // For owner-based filtering, collect all matching owner IDs
+        const selectedOwnerIds = assignedBdrList.length > 0
+          ? assignedBdrList
+              .map(name => OWNER_NAME_TO_ID[name])
+              .filter(Boolean)
+          : [];
+        const selectedRepOwnerId = assignedBdrList.length === 1
+          ? (OWNER_NAME_TO_ID[assignedBdrList[0]] || null)
           : null;
 
         const repliesData = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
@@ -916,10 +929,8 @@ export const handler = async (event, context) => {
               ? Object.entries(OWNER_NAME_TO_ID).find(([, id]) => id === String(contactOwnerId))?.[0] || null
               : null;
 
-            // If a specific rep is selected, exclude contacts owned by someone else.
-            // When Chris is selected, contacts owned by Matt (AE) should not appear
-            // in Chris's queue -- Matt is the deal owner and handles those.
-            if (selectedRepOwnerId && contactOwnerId && String(contactOwnerId) !== selectedRepOwnerId) {
+            // If specific reps are selected, exclude contacts owned by anyone not in the list
+            if (selectedOwnerIds.length > 0 && contactOwnerId && !selectedOwnerIds.includes(String(contactOwnerId))) {
               return null;
             }
 
@@ -1401,7 +1412,7 @@ export const handler = async (event, context) => {
         // Known BDR names -- these are the only values used in the assigned_bdr property.
         // We hardcode these rather than fetching all 25 HubSpot owners (most of which
         // have zero contacts with their name as assigned_bdr, causing 25x unnecessary API calls).
-        const KNOWN_BDRS = ["Chris Knapp", "Chiara Pate"];
+        const KNOWN_BDRS = ["Chris Knapp", "Chiara Pate", "Matt Valin", "Joseph Haine", "Tim Grisham", "Irene Wong", "Cole Hooper", "John Hansel"];
         const targetReps = repFilter ? [repFilter] : KNOWN_BDRS;
 
         // Count contacts where assigned_bdr = repName AND dateProp >= since
@@ -2326,12 +2337,18 @@ export const handler = async (event, context) => {
         const sinceMs  = (PERIOD_MS[period] ?? PERIOD_MS.month)();
         const sinceISO = sinceMs ? new Date(sinceMs).toISOString() : null;
 
-        const KNOWN_BDRS = ["Chris Knapp", "Chiara Pate"];
-        const targetReps = rep ? [rep] : KNOWN_BDRS;
+        const KNOWN_BDRS = ["Chris Knapp", "Chiara Pate", "Matt Valin", "Joseph Haine", "Tim Grisham", "Irene Wong", "Cole Hooper", "John Hansel"];
+        // rep may be a single name or comma-separated list (group filter from frontend)
+        const repNames = rep
+          ? rep.split(',').map(s => s.trim()).filter(Boolean)
+          : [];
+        const targetReps = repNames.length > 0 ? repNames : KNOWN_BDRS;
 
-        const bdrFilters = () => rep
-          ? [{ propertyName: "assigned_bdr", operator: "EQ", value: rep }]
-          : [{ propertyName: "assigned_bdr", operator: "IN", values: KNOWN_BDRS }];
+        const bdrFilters = () => repNames.length === 1
+          ? [{ propertyName: "assigned_bdr", operator: "EQ",  value:  repNames[0] }]
+          : repNames.length > 1
+          ? [{ propertyName: "assigned_bdr", operator: "IN",  values: repNames    }]
+          : [{ propertyName: "assigned_bdr", operator: "IN",  values: KNOWN_BDRS  }];
 
         // Generic count helper
         const countC = async (filterGroups) => {
