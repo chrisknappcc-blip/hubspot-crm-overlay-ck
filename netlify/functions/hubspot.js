@@ -992,13 +992,11 @@ export const handler = async (event, context) => {
           .sort((a, b) => new Date(b.replyDate) - new Date(a.replyDate));
 
         // ── Section 2: Upcoming sequences (currently enrolled) ────────────────
+        const seqFilterGroups = buildFilterGroups(qp, [
+          { propertyName: "hs_sequences_is_enrolled", operator: "EQ", value: "true" },
+        ]);
         const sequencesData = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
-          filterGroups: [{
-            filters: [
-              { propertyName: "hs_sequences_is_enrolled", operator: "EQ", value: "true" },
-              ...customFilters,
-            ],
-          }],
+          filterGroups: seqFilterGroups,
           properties: BASE_CONTACT_PROPS,
           sorts:  [{ propertyName: "hs_latest_sequence_enrolled_date", direction: "ASCENDING" }],
           limit:  200,
@@ -1454,80 +1452,74 @@ export const handler = async (event, context) => {
         // We hardcode these rather than fetching all 25 HubSpot owners (most of which
         // have zero contacts with their name as assigned_bdr, causing 25x unnecessary API calls).
         const KNOWN_BDRS = ["Chris Knapp", "Chiara Pate", "Matt Valin", "Joseph Haine", "Tim Grisham", "Irene Wong", "Cole Hooper", "John Hansel"];
+        const BDR_NAMES  = ["Chris Knapp", "Chiara Pate"]; // filter by assigned_bdr
+        const OWNER_ID_MAP = {
+          "Matt Valin":    "76104455",
+          "Joseph Haine":  "55217954",
+          "Tim Grisham":   "83862037",
+          "Irene Wong":    "289209454",
+          "Cole Hooper":   "85819247",
+          "John Hansel":   "743772047",
+        };
         const targetReps = repFilter ? [repFilter] : KNOWN_BDRS;
 
-        // Count contacts where assigned_bdr = repName AND dateProp >= since
-        async function countByBdr(dateProp, repName) {
+        // Count contacts with dateProp >= since, filtered by rep (assigned_bdr or owner_id)
+        async function countForRep(dateProp, repName) {
+          const ownerId = OWNER_ID_MAP[repName];
+          const filter  = ownerId
+            ? { propertyName: "hubspot_owner_id", operator: "EQ", value: ownerId }
+            : { propertyName: "assigned_bdr",     operator: "EQ", value: repName };
           try {
             const data = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
-              filterGroups: [{
-                filters: [
-                  { propertyName: "assigned_bdr", operator: "EQ",  value: repName },
-                  { propertyName: dateProp,        operator: "GTE", value: sinceISO },
-                ],
-              }],
+              filterGroups: [{ filters: [
+                filter,
+                { propertyName: dateProp, operator: "GTE", value: sinceISO },
+              ]}],
               properties: ["assigned_bdr"],
               limit: 1,
             });
             return data.total || 0;
           } catch (err) {
-            console.error(`[activity] countByBdr ${dateProp} ${repName}:`, err.message);
+            console.error(`[activity] countForRep ${dateProp} ${repName}:`, err.message);
             return 0;
           }
         }
 
-        // Count contacts where EITHER prop >= since AND assigned_bdr = repName (OR filter groups)
-        async function countEitherByBdr(propA, propB, repName) {
+        // Count contacts where EITHER propA or propB >= since, filtered by rep
+        async function countEitherForRep(propA, propB, repName) {
+          const ownerId = OWNER_ID_MAP[repName];
+          const filter  = ownerId
+            ? { propertyName: "hubspot_owner_id", operator: "EQ", value: ownerId }
+            : { propertyName: "assigned_bdr",     operator: "EQ", value: repName };
           try {
             const data = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
               filterGroups: [
-                { filters: [
-                  { propertyName: "assigned_bdr", operator: "EQ",  value: repName },
-                  { propertyName: propA,           operator: "GTE", value: sinceISO },
-                ]},
-                { filters: [
-                  { propertyName: "assigned_bdr", operator: "EQ",  value: repName },
-                  { propertyName: propB,           operator: "GTE", value: sinceISO },
-                ]},
+                { filters: [filter, { propertyName: propA, operator: "GTE", value: sinceISO }] },
+                { filters: [filter, { propertyName: propB, operator: "GTE", value: sinceISO }] },
               ],
               properties: ["assigned_bdr"],
               limit: 1,
             });
             return data.total || 0;
           } catch (err) {
-            console.error(`[activity] countEitherByBdr ${propA}/${propB} ${repName}:`, err.message);
+            console.error(`[activity] countEitherForRep ${propA}/${propB} ${repName}:`, err.message);
             return 0;
           }
         }
 
-        // AE view: count by hubspot_owner_id (for include_owned mode)
-        async function countByOwnerId(dateProp, ownerId) {
-          try {
-            const data = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
-              filterGroups: [{
-                filters: [
-                  { propertyName: "hubspot_owner_id", operator: "EQ",  value: String(ownerId) },
-                  { propertyName: dateProp,            operator: "GTE", value: sinceISO },
-                ],
-              }],
-              properties: ["hubspot_owner_id"],
-              limit: 1,
-            });
-            return data.total || 0;
-          } catch { return 0; }
-        }
-
-        // Run counts sequentially per rep to avoid rate limits.
-        // 2 reps × 5 queries each = 10 total -- sequential is fine here.
+        // Run counts SEQUENTIALLY per rep and per query to stay within rate limits.
+        // 8 reps × 5 queries = 40 calls -- sequential with gaps avoids 429s.
         const repResults = [];
         for (const repName of targetReps) {
-          const [emailsSent, sequencesStarted, replies, clicks, opens] = await Promise.all([
-            countEitherByBdr("hs_email_last_send_date", "hs_last_sales_activity_timestamp", repName),
-            countByBdr("hs_latest_sequence_enrolled_date", repName),
-            countEitherByBdr("hs_email_last_reply_date", "hs_sales_email_last_replied", repName),
-            countEitherByBdr("hs_email_last_click_date", "hs_sales_email_last_clicked", repName),
-            countEitherByBdr("hs_email_last_open_date",  "hs_sales_email_last_opened",  repName),
-          ]);
+          const emailsSent        = await countEitherForRep("hs_email_last_send_date", "hs_last_sales_activity_timestamp", repName);
+          await new Promise(r => setTimeout(r, 150));
+          const sequencesStarted  = await countForRep("hs_latest_sequence_enrolled_date", repName);
+          await new Promise(r => setTimeout(r, 150));
+          const replies           = await countEitherForRep("hs_email_last_reply_date", "hs_sales_email_last_replied", repName);
+          await new Promise(r => setTimeout(r, 150));
+          const clicks            = await countEitherForRep("hs_email_last_click_date", "hs_sales_email_last_clicked", repName);
+          await new Promise(r => setTimeout(r, 150));
+          const opens             = await countEitherForRep("hs_email_last_open_date", "hs_sales_email_last_opened", repName);
           console.log(`[activity] rep=${repName} emailsSent=${emailsSent} sequences=${sequencesStarted} replies=${replies} clicks=${clicks} opens=${opens}`);
           repResults.push({ repName, emailsSent, sequencesStarted, replies, clicks, opens });
           await new Promise(r => setTimeout(r, 200)); // gap between reps
@@ -1786,6 +1778,7 @@ export const handler = async (event, context) => {
       // Sales / 1:1 emails update hs_sales_email_last_opened / clicked / replied.
       // We run one search per date property and merge results.
       const customFilters = buildCustomFilters(qp);
+      const filterGroups  = buildFilterGroups(qp);
 
       const activityDateProps = [
         "hs_email_last_send_date",         // marketing + sequence sends
