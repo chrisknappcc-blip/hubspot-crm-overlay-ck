@@ -146,12 +146,30 @@ function MetricCard({ label, value, sub, subType }) {
 }
 
 function Select({ value, onChange, options, style = {} }) {
-  return (
+  // Support optgroups: if any option has a `group` field, render with optgroup headers
+  const hasGroups = options.some(o => o.group)
+  const selectEl = (
     <select value={value} onChange={e => onChange(e.target.value)}
       style={{ fontSize:12, color:'var(--text-secondary)', background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius)', padding:'5px 10px', cursor:'pointer', outline:'none', ...style }}>
-      {options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+      {hasGroups ? (() => {
+        const groups = {}
+        const ungrouped = []
+        options.forEach(o => {
+          if (o.group) { (groups[o.group] = groups[o.group] || []).push(o) }
+          else ungrouped.push(o)
+        })
+        return [
+          ...ungrouped.map(o => <option key={o.value} value={o.value}>{o.label}</option>),
+          ...Object.entries(groups).map(([g, opts]) => (
+            <optgroup key={g} label={g}>
+              {opts.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </optgroup>
+          ))
+        ]
+      })() : options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
     </select>
   )
+  return selectEl
 }
 
 // ─── Pager component ─────────────────────────────────────────────────────────
@@ -255,7 +273,9 @@ const REPORT_REP_OPTIONS = [
   { value: 'bdr',       label: 'All BDR' },
   { value: 'vp',        label: 'All VP' },
   { value: 'strategy',  label: 'All Strategy' },
-  ...TEAM_MEMBERS.map(m => ({ value: m.name, label: m.name })),
+  ...TEAM_MEMBERS.filter(m => m.group === 'bdr').map(m      => ({ value: m.name, label: m.name, group: 'BDR' })),
+  ...TEAM_MEMBERS.filter(m => m.group === 'vp').map(m       => ({ value: m.name, label: m.name, group: 'VP' })),
+  ...TEAM_MEMBERS.filter(m => m.group === 'strategy').map(m => ({ value: m.name, label: m.name, group: 'Strategy' })),
 ]
 
 const BDR_OPTIONS = [
@@ -263,7 +283,9 @@ const BDR_OPTIONS = [
   { value: 'bdr',       label: 'All BDR' },
   { value: 'vp',        label: 'All VP' },
   { value: 'strategy',  label: 'All Strategy' },
-  ...TEAM_MEMBERS.map(m => ({ value: m.name, label: m.name })),
+  ...TEAM_MEMBERS.filter(m => m.group === 'bdr').map(m      => ({ value: m.name, label: m.name, group: 'BDR' })),
+  ...TEAM_MEMBERS.filter(m => m.group === 'vp').map(m       => ({ value: m.name, label: m.name, group: 'VP' })),
+  ...TEAM_MEMBERS.filter(m => m.group === 'strategy').map(m => ({ value: m.name, label: m.name, group: 'Strategy' })),
 ]
 
 const TARGET_OPTIONS = [
@@ -271,16 +293,19 @@ const TARGET_OPTIONS = [
   { value: 'bdr',       label: 'All BDR' },
   { value: 'vp',        label: 'All VP' },
   { value: 'strategy',  label: 'All Strategy' },
-  ...TEAM_MEMBERS.map(m => ({ value: m.name, label: m.name })),
+  ...TEAM_MEMBERS.filter(m => m.group === 'bdr').map(m      => ({ value: m.name, label: m.name, group: 'BDR' })),
+  ...TEAM_MEMBERS.filter(m => m.group === 'vp').map(m       => ({ value: m.name, label: m.name, group: 'VP' })),
+  ...TEAM_MEMBERS.filter(m => m.group === 'strategy').map(m => ({ value: m.name, label: m.name, group: 'Strategy' })),
 ]
 
-// Expands a filter value (group key or individual name) to array of HubSpot names
+// Expands a filter value to { bdrNames, ownerIds } for backend
+// BDR members filter by assigned_bdr name; non-BDR members filter by hubspot_owner_id
 const expandFilter = (val) => {
-  if (!val || val === 'all') return []
-  if (TEAM_BY_GROUP[val]) return TEAM_BY_GROUP[val].map(hsName).filter(Boolean)
-  // Individual -- find member and return their HubSpot name
-  const member = TEAM_MEMBERS.find(m => m.name === val)
-  return member ? [hsName(member)] : [val]
+  if (!val || val === 'all') return { bdrNames: [], ownerIds: [] }
+  const members = TEAM_BY_GROUP[val] ? TEAM_BY_GROUP[val] : [TEAM_MEMBERS.find(m => m.name === val)].filter(Boolean)
+  const bdrNames = members.filter(m => m.group === 'bdr').map(hsName)
+  const ownerIds = members.filter(m => m.group !== 'bdr' && m.ownerId).map(m => m.ownerId)
+  return { bdrNames, ownerIds }
 }
 // ─── Sort options ─────────────────────────────────────────────────────────────
 const SIGNAL_SORT_OPTIONS = [
@@ -505,15 +530,16 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
       setContentEngagementLoading(false)
     }
   }, [filterBdr])
-  // Expand filterBdr (may be group key or individual name) to array of HubSpot names
-  const expandedBdrs = useMemo(() => expandFilter(filterBdr), [filterBdr])
+  // Expand filterBdr to bdrNames (assigned_bdr filter) and ownerIds (hubspot_owner_id filter)
+  const { bdrNames: expandedBdrs, ownerIds: expandedOwnerIds } = useMemo(() => expandFilter(filterBdr), [filterBdr])
 
   const filterParams = useMemo(() => [
-    expandedBdrs.length  ? `assigned_bdr=${expandedBdrs.map(encodeURIComponent).join(',')}` : '',
+    expandedBdrs.length     ? `assigned_bdr=${expandedBdrs.map(encodeURIComponent).join(',')}` : '',
+    expandedOwnerIds.length ? `owner_id=${expandedOwnerIds.join(',')}` : '',
     filterTerritory ? `territory=${encodeURIComponent(filterTerritory)}`           : '',
     filterTier      ? `priority_tier__bdr=${encodeURIComponent(filterTier)}`       : '',
     filterTarget    ? `target_account__bdr_led_outreach=${encodeURIComponent(filterTarget)}` : '',
-  ].filter(Boolean).join('&'), [expandedBdrs, filterTerritory, filterTier, filterTarget])
+  ].filter(Boolean).join('&'), [expandedBdrs, expandedOwnerIds, filterTerritory, filterTier, filterTarget])
 
   // ── Signals fetch with tiered pagination ─────────────────────────────────
   const fetchData = useCallback(async () => {
@@ -567,8 +593,9 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
   const fetchTasks = useCallback(async () => {
     setTaskLoading(true)
     try {
-      const bdrs = expandedBdrs.length ? expandedBdrs : []
-      const params = `days=${taskDays}${bdrs.length ? `&assigned_bdr=${bdrs.map(encodeURIComponent).join(',')}` : ''}`
+      const bdrPart   = expandedBdrs.length     ? `&assigned_bdr=${expandedBdrs.map(encodeURIComponent).join(',')}` : ''
+      const ownerPart = expandedOwnerIds.length ? `&owner_id=${expandedOwnerIds.join(',')}` : ''
+      const params = `days=${taskDays}${bdrPart}${ownerPart}`
       const data = await safeFetch(`/api/hubspot/tasks?${params}`)
       setTaskData({
         repliesAwaitingResponse: data.repliesAwaitingResponse || [],
@@ -587,7 +614,9 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
   const fetchGold = useCallback(async () => {
     setGoldLoading(true)
     try {
-      const params = expandedBdrs.length ? `assigned_bdr=${expandedBdrs.map(encodeURIComponent).join(',')}` : ''
+      const bdrPart   = expandedBdrs.length     ? `assigned_bdr=${expandedBdrs.map(encodeURIComponent).join(',')}` : ''
+      const ownerPart = expandedOwnerIds.length ? `owner_id=${expandedOwnerIds.join(',')}` : ''
+      const params = [bdrPart, ownerPart].filter(Boolean).join('&')
       const data = await safeFetch(`/api/hubspot/gold${params ? '?' + params : ''}`)
       setGoldAccounts(data.accounts || [])
     } catch (e) {
@@ -1619,11 +1648,10 @@ function ReportsTab({ safeFetch, owners }) {
     setActivityPage(0)
     setDealsPage(0)
     try {
-      // Expand group filter (e.g. 'bdr') to comma-separated names for backend
-      const expanded = expandFilter(rep)
-      const repQuery = expanded.length > 0 ? expanded.join(',') : ''
+      const { bdrNames, ownerIds } = expandFilter(rep)
       const params = new URLSearchParams({ section, period })
-      if (repQuery) params.set('rep', repQuery)
+      if (bdrNames.length)  params.set('rep', bdrNames.join(','))
+      if (ownerIds.length)  params.set('owner_id', ownerIds.join(','))
       if (owner) params.set('owner', owner)
       const result = await safeFetch(`/api/hubspot/reports?${params}`)
       setData(result)
