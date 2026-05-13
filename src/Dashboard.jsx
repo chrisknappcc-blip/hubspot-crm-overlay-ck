@@ -487,12 +487,15 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
   const [contentEngagement, setContentEngagement] = useState([])
   const [contentEngagementLoading, setContentEngagementLoading] = useState(false)
 
+  // Expand filterBdr to bdrNames (assigned_bdr filter) and ownerIds (hubspot_owner_id filter)
+  const { bdrNames: expandedBdrs, ownerIds: expandedOwnerIds } = useMemo(() => expandFilter(filterBdr), [filterBdr])
+
   const fetchContentEngagement = useCallback(async () => {
     setContentEngagementLoading(true)
     try {
-      // Fetch top 50 contacts by most recent click date, filtered by active BDR
-      const bdrParam = filterBdr ? `&assigned_bdr=${encodeURIComponent(filterBdr)}` : ''
-      const data = await safeFetch(`/api/hubspot/contacts?click_sort=true${bdrParam}`)
+      const bdrPart   = expandedBdrs.length     ? `&assigned_bdr=${expandedBdrs.map(encodeURIComponent).join(',')}` : ''
+      const ownerPart = expandedOwnerIds.length ? `&owner_id=${expandedOwnerIds.join(',')}` : ''
+      const data = await safeFetch(`/api/hubspot/contacts?click_sort=true${bdrPart}${ownerPart}`)
       // contacts endpoint returns all contacts -- filter client-side to those with click dates
       const clicked = (data.contacts || [])
         .filter(c => c.properties?.hs_email_last_click_date || c.properties?.hs_sales_email_last_clicked)
@@ -529,9 +532,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
     } finally {
       setContentEngagementLoading(false)
     }
-  }, [filterBdr])
-  // Expand filterBdr to bdrNames (assigned_bdr filter) and ownerIds (hubspot_owner_id filter)
-  const { bdrNames: expandedBdrs, ownerIds: expandedOwnerIds } = useMemo(() => expandFilter(filterBdr), [filterBdr])
+  }, [expandedBdrs, expandedOwnerIds])
 
   const filterParams = useMemo(() => [
     expandedBdrs.length     ? `assigned_bdr=${expandedBdrs.map(encodeURIComponent).join(',')}` : '',
