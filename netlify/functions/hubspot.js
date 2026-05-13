@@ -166,16 +166,30 @@ async function hsPost(userId, path, body) {
 // Filters stack (AND logic) -- each active filter adds to the group.
 
 function buildCustomFilters(qp, baseFilters = []) {
+  // assigned_bdr: comma-separated BDR names (contacts filtered by assigned_bdr property)
+  // owner_id: comma-separated HubSpot owner IDs (contacts filtered by hubspot_owner_id)
+  // When both are present, we use OR logic (multiple filterGroups in caller)
+  // When only one is present, single filter
+  const bdrVals = qp.assigned_bdr
+    ? decodeURIComponent(qp.assigned_bdr).split(',').map(s => s.trim()).filter(Boolean)
+    : [];
+  const ownerVals = qp.owner_id
+    ? String(qp.owner_id).split(',').map(s => s.trim()).filter(Boolean)
+    : [];
+
   const filters = [...baseFilters];
 
-  // assigned_bdr may be comma-separated for group filters (e.g. "Chris Knapp,Chiara Pate")
-  if (qp.assigned_bdr) {
-    const vals = decodeURIComponent(qp.assigned_bdr).split(',').map(s => s.trim()).filter(Boolean);
-    if (vals.length === 1) {
-      filters.push({ propertyName: "assigned_bdr", operator: "EQ",  value:  vals[0] });
-    } else if (vals.length > 1) {
-      filters.push({ propertyName: "assigned_bdr", operator: "IN",  values: vals   });
-    }
+  // If we have both BDR names AND owner IDs, caller needs to handle OR logic
+  // This function returns the BDR filter only -- owner filter returned separately
+  if (bdrVals.length === 1) {
+    filters.push({ propertyName: "assigned_bdr", operator: "EQ",  value:  bdrVals[0] });
+  } else if (bdrVals.length > 1) {
+    filters.push({ propertyName: "assigned_bdr", operator: "IN",  values: bdrVals   });
+  }
+  if (ownerVals.length === 1 && bdrVals.length === 0) {
+    filters.push({ propertyName: "hubspot_owner_id", operator: "EQ",  value:  ownerVals[0] });
+  } else if (ownerVals.length > 1 && bdrVals.length === 0) {
+    filters.push({ propertyName: "hubspot_owner_id", operator: "IN",  values: ownerVals   });
   }
 
   // Other contact filters
@@ -191,6 +205,35 @@ function buildCustomFilters(qp, baseFilters = []) {
   });
 
   return filters;
+}
+
+// Builds filterGroups that handle OR between assigned_bdr and hubspot_owner_id
+// Used when a mixed group (e.g. BDRs + VPs) is selected
+function buildFilterGroups(qp, extraFilters = []) {
+  const bdrVals = qp.assigned_bdr
+    ? decodeURIComponent(qp.assigned_bdr).split(',').map(s => s.trim()).filter(Boolean)
+    : [];
+  const ownerVals = qp.owner_id
+    ? String(qp.owner_id).split(',').map(s => s.trim()).filter(Boolean)
+    : [];
+
+  const baseExtra = extraFilters.filter(f => f.propertyName !== "assigned_bdr" && f.propertyName !== "hubspot_owner_id");
+
+  if (bdrVals.length > 0 && ownerVals.length > 0) {
+    // OR: either assigned_bdr matches OR hubspot_owner_id matches
+    const bdrFilter = bdrVals.length === 1
+      ? { propertyName: "assigned_bdr", operator: "EQ", value: bdrVals[0] }
+      : { propertyName: "assigned_bdr", operator: "IN", values: bdrVals };
+    const ownerFilter = ownerVals.length === 1
+      ? { propertyName: "hubspot_owner_id", operator: "EQ", value: ownerVals[0] }
+      : { propertyName: "hubspot_owner_id", operator: "IN", values: ownerVals };
+    return [
+      { filters: [...baseExtra, bdrFilter] },
+      { filters: [...baseExtra, ownerFilter] },
+    ];
+  }
+  // Single filter type
+  return [{ filters: buildCustomFilters(qp, baseExtra) }];
 }
 
 // Normalize a contact record into a clean info object
@@ -734,7 +777,8 @@ export const handler = async (event, context) => {
     // ── Contacts list (with custom property filters, paginated up to 500) ───────
     if (method === "GET" && path === "/contacts") {
       try {
-        const baseFilters = buildCustomFilters(qp);
+        const baseFilters  = buildCustomFilters(qp);
+        const filterGroups = buildFilterGroups(qp);
         let contacts = [];
 
         if (baseFilters.length > 0) {
@@ -864,33 +908,30 @@ export const handler = async (event, context) => {
           }
         } catch { /* use empty map */ }
 
-        // assigned_bdr may be a single name or comma-separated list
-        const assignedBdrRaw = qp.assigned_bdr ? decodeURIComponent(qp.assigned_bdr) : null;
-        const assignedBdrList = assignedBdrRaw
-          ? assignedBdrRaw.split(',').map(s => s.trim()).filter(Boolean)
+        // assigned_bdr: comma-separated BDR names
+        // owner_id: comma-separated owner IDs for non-BDR members
+        const assignedBdrList = qp.assigned_bdr
+          ? decodeURIComponent(qp.assigned_bdr).split(',').map(s => s.trim()).filter(Boolean)
+          : [];
+        const ownerIdList = qp.owner_id
+          ? String(qp.owner_id).split(',').map(s => s.trim()).filter(Boolean)
           : [];
 
-        // For owner-based filtering, collect all matching owner IDs
-        const selectedOwnerIds = assignedBdrList.length > 0
-          ? assignedBdrList
-              .map(name => OWNER_NAME_TO_ID[name])
-              .filter(Boolean)
-          : [];
-        const selectedRepOwnerId = assignedBdrList.length === 1
-          ? (OWNER_NAME_TO_ID[assignedBdrList[0]] || null)
-          : null;
+        // All selected owner IDs (from both bdr names and direct owner_id param)
+        const selectedOwnerIds = [
+          ...assignedBdrList.map(name => OWNER_NAME_TO_ID[name]).filter(Boolean),
+          ...ownerIdList,
+        ];
+        const selectedRepOwnerId = selectedOwnerIds.length === 1 ? selectedOwnerIds[0] : null;
+
+        // Build filter groups for replies -- OR between assigned_bdr and hubspot_owner_id
+        const replyFilterGroups = buildFilterGroups(qp).flatMap(g => [
+          { filters: [{ propertyName: "hs_sales_email_last_replied", operator: "GTE", value: sinceISO }, ...g.filters] },
+          { filters: [{ propertyName: "hs_email_last_reply_date",    operator: "GTE", value: sinceISO }, ...g.filters] },
+        ]);
 
         const repliesData = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
-          filterGroups: [
-            { filters: [
-              { propertyName: "hs_sales_email_last_replied", operator: "GTE", value: sinceISO },
-              ...customFilters,
-            ]},
-            { filters: [
-              { propertyName: "hs_email_last_reply_date", operator: "GTE", value: sinceISO },
-              ...customFilters,
-            ]},
-          ],
+          filterGroups: replyFilterGroups,
           properties: [
             ...BASE_CONTACT_PROPS,
             "hs_sales_email_last_replied",
@@ -1760,21 +1801,23 @@ export const handler = async (event, context) => {
       // and share the same HubSpot per-second rate limit bucket.
       const searchResults = [];
       for (const prop of activityDateProps) {
+        const dateFilter = { propertyName: prop, operator: "GTE", value: sinceISO };
+        // Build filterGroups: add date filter to each group from buildFilterGroups
+        const fGroups = filterGroups.map(g => ({
+          filters: [dateFilter, ...g.filters],
+        }));
         let attempts = 0;
         while (attempts < 2) {
           try {
             const result = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
-              filterGroups: [{ filters: [
-                { propertyName: prop, operator: "GTE", value: sinceISO },
-                ...customFilters,
-              ]}],
+              filterGroups: fGroups,
               properties: BASE_CONTACT_PROPS,
               sorts:      [{ propertyName: prop, direction: "DESCENDING" }],
               limit:      perPropLimit,
             });
             searchResults.push({ ...result, _prop: prop });
-            console.log(`[signals] prop=${prop} returned=${(result.results||[]).length} total=${result.total||0} filters=${JSON.stringify(customFilters)}`);
-            break; // success
+            console.log(`[signals] prop=${prop} returned=${(result.results||[]).length} total=${result.total||0} filters=${JSON.stringify(fGroups)}`);
+            break;
           } catch (err) {
             attempts++;
             const is429 = err.message?.includes("429");
@@ -1788,7 +1831,7 @@ export const handler = async (event, context) => {
             }
           }
         }
-        await new Promise(r => setTimeout(r, 300)); // increased from 150ms
+        await new Promise(r => setTimeout(r, 300));
       }
 
       // Merge and deduplicate across all three searches
@@ -2338,17 +2381,35 @@ export const handler = async (event, context) => {
         const sinceISO = sinceMs ? new Date(sinceMs).toISOString() : null;
 
         const KNOWN_BDRS = ["Chris Knapp", "Chiara Pate", "Matt Valin", "Joseph Haine", "Tim Grisham", "Irene Wong", "Cole Hooper", "John Hansel"];
-        // rep may be a single name or comma-separated list (group filter from frontend)
         const repNames = rep
           ? rep.split(',').map(s => s.trim()).filter(Boolean)
           : [];
+        const ownerIds = qp.owner_id
+          ? String(qp.owner_id).split(',').map(s => s.trim()).filter(Boolean)
+          : [];
         const targetReps = repNames.length > 0 ? repNames : KNOWN_BDRS;
 
-        const bdrFilters = () => repNames.length === 1
-          ? [{ propertyName: "assigned_bdr", operator: "EQ",  value:  repNames[0] }]
-          : repNames.length > 1
-          ? [{ propertyName: "assigned_bdr", operator: "IN",  values: repNames    }]
-          : [{ propertyName: "assigned_bdr", operator: "IN",  values: KNOWN_BDRS  }];
+        const bdrFilters = () => {
+          if (repNames.length === 0 && ownerIds.length === 0) {
+            return [{ propertyName: "assigned_bdr", operator: "IN", values: KNOWN_BDRS }];
+          }
+          if (repNames.length > 0 && ownerIds.length === 0) {
+            return repNames.length === 1
+              ? [{ propertyName: "assigned_bdr", operator: "EQ",  value:  repNames[0] }]
+              : [{ propertyName: "assigned_bdr", operator: "IN",  values: repNames    }];
+          }
+          if (repNames.length === 0 && ownerIds.length > 0) {
+            return ownerIds.length === 1
+              ? [{ propertyName: "hubspot_owner_id", operator: "EQ",  value:  ownerIds[0] }]
+              : [{ propertyName: "hubspot_owner_id", operator: "IN",  values: ownerIds    }];
+          }
+          // Both present -- caller must handle OR logic via filterGroups
+          return [
+            ...(repNames.length === 1
+              ? [{ propertyName: "assigned_bdr", operator: "EQ", value: repNames[0] }]
+              : [{ propertyName: "assigned_bdr", operator: "IN", values: repNames }]),
+          ];
+        };
 
         // Generic count helper
         const countC = async (filterGroups) => {
