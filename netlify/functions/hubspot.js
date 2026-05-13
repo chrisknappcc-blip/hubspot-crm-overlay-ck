@@ -781,11 +781,11 @@ export const handler = async (event, context) => {
         const filterGroups = buildFilterGroups(qp);
         let contacts = [];
 
-        if (baseFilters.length > 0) {
+        if (filterGroups.length > 0 && filterGroups[0].filters.length > 0) {
           let after = undefined;
           while (contacts.length < 500) {
             const body = {
-              filterGroups: [{ filters: baseFilters }],
+              filterGroups,
               properties:   BASE_CONTACT_PROPS,
               sorts:        [{ propertyName: "lastname", direction: "ASCENDING" }],
               limit:        100,
