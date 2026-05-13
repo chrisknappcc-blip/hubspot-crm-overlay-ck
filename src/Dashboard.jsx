@@ -227,24 +227,67 @@ const REPORT_PERIOD_OPTIONS = [
   { value:'alltime',  label:'All time' },
 ]
 
-const REPORT_REP_OPTIONS = [
-  { value:'all',          label:'All reps' },
-  { value:'Chris Knapp',  label:'Chris Knapp' },
-  { value:'Chiara Pate',  label:'Chiara Pate' },
+// ─── Team roster with HubSpot owner IDs ──────────────────────────────────────
+const TEAM_MEMBERS = [
+  { name: 'Chris Knapp',  ownerId: '78304576',  group: 'bdr'      },
+  { name: 'Chiara Pate',  ownerId: '87806380',  group: 'bdr'      },
+  { name: 'Matt Valin',   ownerId: '76104455',  group: 'vp'       },
+  { name: 'Joe Haine',    ownerId: '55217954',  group: 'vp',  hubspotName: 'Joseph Haine' },
+  { name: 'Tim Grisham',  ownerId: '83862037',  group: 'vp'       },
+  { name: 'Irene Wong',   ownerId: '289209454', group: 'strategy' },
+  { name: 'Cole Hooper',  ownerId: '85819247',  group: 'strategy' },
+  { name: 'John Hansel',  ownerId: '743772047', group: 'strategy' },
 ]
 
+const TEAM_BY_GROUP = {
+  bdr:      TEAM_MEMBERS.filter(m => m.group === 'bdr'),
+  vp:       TEAM_MEMBERS.filter(m => m.group === 'vp'),
+  strategy: TEAM_MEMBERS.filter(m => m.group === 'strategy'),
+  all:      TEAM_MEMBERS,
+}
+
+// Returns HubSpot-side name (hubspotName if set, otherwise name)
+const hsName = (m) => m.hubspotName || m.name
+
+// Group filter options -- value is a group key or individual name
+const REPORT_REP_OPTIONS = [
+  { value: 'all',       label: 'Everyone' },
+  { value: 'bdr',       label: 'All BDR' },
+  { value: 'vp',        label: 'All VP' },
+  { value: 'strategy',  label: 'All Strategy' },
+  ...TEAM_MEMBERS.map(m => ({ value: m.name, label: m.name })),
+]
+
+const BDR_OPTIONS = [
+  { value: '',          label: 'Everyone' },
+  { value: 'bdr',       label: 'All BDR' },
+  { value: 'vp',        label: 'All VP' },
+  { value: 'strategy',  label: 'All Strategy' },
+  ...TEAM_MEMBERS.map(m => ({ value: m.name, label: m.name })),
+]
+
+const TARGET_OPTIONS = [
+  { value: '',          label: 'All accounts' },
+  { value: 'bdr',       label: 'All BDR' },
+  { value: 'vp',        label: 'All VP' },
+  { value: 'strategy',  label: 'All Strategy' },
+  ...TEAM_MEMBERS.map(m => ({ value: m.name, label: m.name })),
+]
+
+// Expands a filter value (group key or individual name) to array of HubSpot names
+const expandFilter = (val) => {
+  if (!val || val === 'all') return []
+  if (TEAM_BY_GROUP[val]) return TEAM_BY_GROUP[val].map(hsName).filter(Boolean)
+  // Individual -- find member and return their HubSpot name
+  const member = TEAM_MEMBERS.find(m => m.name === val)
+  return member ? [hsName(member)] : [val]
+}
 // ─── Sort options ─────────────────────────────────────────────────────────────
 const SIGNAL_SORT_OPTIONS = [
   { value:'score_desc',  label:'Priority (high to low)' },
   { value:'score_asc',   label:'Priority (low to high)' },
   { value:'date_desc',   label:'Most recent first' },
   { value:'date_asc',    label:'Oldest first' },
-]
-
-const BDR_OPTIONS = [
-  { value:'', label:'All BDRs' },
-  { value:'Chris Knapp',  label:'Chris Knapp' },
-  { value:'Chiara Pate',  label:'Chiara Pate' },
 ]
 
 const TERRITORY_OPTIONS = [
@@ -268,12 +311,6 @@ const TIER_OPTIONS = [
   { value:'GOLD - 71-80',  label:'GOLD 71-80' },
   { value:'GOLD - 81-90',  label:'GOLD 81-90' },
   { value:'GOLD - 91-100', label:'GOLD 91-100' },
-]
-
-const TARGET_OPTIONS = [
-  { value:'', label:'All accounts' },
-  { value:'Chris Knapp',  label:'Chris Knapp' },
-  { value:'Chiara Pate',  label:'Chiara Pate' },
 ]
 
 const CONTACT_SORT_OPTIONS = [
@@ -468,12 +505,15 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
       setContentEngagementLoading(false)
     }
   }, [filterBdr])
-  const filterParams = [
-    filterBdr       ? `assigned_bdr=${encodeURIComponent(filterBdr)}`             : '',
+  // Expand filterBdr (may be group key or individual name) to array of HubSpot names
+  const expandedBdrs = useMemo(() => expandFilter(filterBdr), [filterBdr])
+
+  const filterParams = useMemo(() => [
+    expandedBdrs.length  ? `assigned_bdr=${expandedBdrs.map(encodeURIComponent).join(',')}` : '',
     filterTerritory ? `territory=${encodeURIComponent(filterTerritory)}`           : '',
     filterTier      ? `priority_tier__bdr=${encodeURIComponent(filterTier)}`       : '',
     filterTarget    ? `target_account__bdr_led_outreach=${encodeURIComponent(filterTarget)}` : '',
-  ].filter(Boolean).join('&')
+  ].filter(Boolean).join('&'), [expandedBdrs, filterTerritory, filterTier, filterTarget])
 
   // ── Signals fetch with tiered pagination ─────────────────────────────────
   const fetchData = useCallback(async () => {
@@ -527,7 +567,8 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
   const fetchTasks = useCallback(async () => {
     setTaskLoading(true)
     try {
-      const params = `days=${taskDays}${filterBdr ? `&assigned_bdr=${encodeURIComponent(filterBdr)}` : ''}`
+      const bdrs = expandedBdrs.length ? expandedBdrs : []
+      const params = `days=${taskDays}${bdrs.length ? `&assigned_bdr=${bdrs.map(encodeURIComponent).join(',')}` : ''}`
       const data = await safeFetch(`/api/hubspot/tasks?${params}`)
       setTaskData({
         repliesAwaitingResponse: data.repliesAwaitingResponse || [],
@@ -546,7 +587,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
   const fetchGold = useCallback(async () => {
     setGoldLoading(true)
     try {
-      const params = filterBdr ? `assigned_bdr=${encodeURIComponent(filterBdr)}` : ''
+      const params = expandedBdrs.length ? `assigned_bdr=${expandedBdrs.map(encodeURIComponent).join(',')}` : ''
       const data = await safeFetch(`/api/hubspot/gold${params ? '?' + params : ''}`)
       setGoldAccounts(data.accounts || [])
     } catch (e) {
@@ -1578,7 +1619,11 @@ function ReportsTab({ safeFetch, owners }) {
     setActivityPage(0)
     setDealsPage(0)
     try {
-      const params = new URLSearchParams({ section, period, rep })
+      // Expand group filter (e.g. 'bdr') to comma-separated names for backend
+      const expanded = expandFilter(rep)
+      const repQuery = expanded.length > 0 ? expanded.join(',') : ''
+      const params = new URLSearchParams({ section, period })
+      if (repQuery) params.set('rep', repQuery)
       if (owner) params.set('owner', owner)
       const result = await safeFetch(`/api/hubspot/reports?${params}`)
       setData(result)
