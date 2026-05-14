@@ -2385,12 +2385,18 @@ export const handler = async (event, context) => {
           for (const m of (meetings.results || [])) {
             const p = m.properties || {};
 
-            // Filter to meetings where user is owner OR listed as attendee
+            // Filter to meetings where user is the owner OR listed as an attendee.
+            // Note: Gong-synced meetings often only populate hubspot_owner_id (the AE),
+            // not hs_attendee_owner_ids. So we check both but prioritize owner match.
             if (currentOwnerIds.length > 0) {
               const owner     = String(p.hubspot_owner_id || "");
               const attendees = String(p.hs_attendee_owner_ids || "").split(";").map(s => s.trim()).filter(Boolean);
-              const isInvolved = currentOwnerIds.includes(owner) || attendees.some(id => currentOwnerIds.includes(id));
-              if (!isInvolved) continue;
+              const isOwner   = currentOwnerIds.includes(owner);
+              const isAttendee = attendees.some(id => currentOwnerIds.includes(id));
+              // Only include if this user owns it or is explicitly listed as attendee
+              // Skip Gong meetings (title starts with [Gong]) where user is not the owner
+              const isGong = (p.hs_meeting_title || "").startsWith("[Gong]");
+              if (!isOwner && (!isAttendee || isGong)) continue;
             }
 
             const start = p.hs_meeting_start_time
