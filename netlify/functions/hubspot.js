@@ -27,6 +27,7 @@
 import { withAuth } from "./utils/auth.js";
 import { getTokens, setTokens, isTokenValid } from "./utils/tokenStore.js";
 import { getTabsForUser, getAllTabsForUser, getRegistry, saveRegistry, getPersonalTabs, savePersonalTabs, slugify, fetchPageTitle } from "./utils/tabRegistry.js";
+import { getTodos, addTodo, updateTodo, deleteTodo, bulkUpsertAutoDetected } from "./utils/todoStore.js";
 
 // Admin user IDs -- comma-separated Clerk user IDs in ADMIN_USER_IDS env var
 // e.g. ADMIN_USER_IDS=user_abc123,user_def456
@@ -2221,6 +2222,105 @@ export const handler = async (event, context) => {
     // POST /tabs -- create or update a tab (admin only)
     // DELETE /tabs/:id -- remove a tab (admin only)
     // GET /tabs/preview?url= -- fetch page <title> for auto-naming (admin only)
+
+    // ── TODO LIST ──────────────────────────────────────────────────────────────
+    // GET    /todo        -- get all todos for user
+    // POST   /todo        -- add a manual todo
+    // POST   /todo/sync   -- pull auto-detected items from HubSpot
+    // PATCH  /todo/:id    -- update (complete, edit)
+    // DELETE /todo/:id    -- remove
+
+    if (method === "GET" && path === "/todo") {
+      try {
+        const items = await getTodos(user.userId);
+        return ok({ items });
+      } catch (err) {
+        console.error("[todo] GET error:", err.message);
+        return error(500, `Todo error: ${err.message}`);
+      }
+    }
+
+    if (method === "POST" && path === "/todo") {
+      try {
+        const body = JSON.parse(event.body || "{}");
+        if (!body.text?.trim()) return error(400, "text is required");
+        const item = await addTodo(user.userId, body);
+        return ok({ item });
+      } catch (err) {
+        console.error("[todo] POST error:", err.message);
+        return error(500, `Todo error: ${err.message}`);
+      }
+    }
+
+    if (method === "POST" && path === "/todo/sync") {
+      // Only sync meetings -- replies and tasks are promoted manually from the Task Queue
+      try {
+        const today  = new Date().toISOString().slice(0, 10);
+        const PORTAL = "39921549";
+        const autoItems = [];
+
+        try {
+          const todayStart = new Date(); todayStart.setHours(0,0,0,0);
+          const todayEnd   = new Date(); todayEnd.setHours(23,59,59,999);
+          const meetings = await hsPost(user.userId, "/crm/v3/objects/meetings/search", {
+            filterGroups: [{ filters: [
+              { propertyName: "hs_meeting_start_time", operator: "GTE", value: todayStart.toISOString() },
+              { propertyName: "hs_meeting_start_time", operator: "LTE", value: todayEnd.toISOString() },
+            ]}],
+            properties: ["hs_meeting_title","hs_meeting_start_time"],
+            sorts: [{ propertyName: "hs_meeting_start_time", direction: "ASCENDING" }],
+            limit: 20,
+          });
+          for (const m of (meetings.results || [])) {
+            const p     = m.properties || {};
+            const start = p.hs_meeting_start_time
+              ? new Date(p.hs_meeting_start_time).toLocaleTimeString("en-US", { hour:"numeric", minute:"2-digit" })
+              : "";
+            autoItems.push({
+              type:       "meeting",
+              text:       p.hs_meeting_title || "Meeting",
+              subtext:    start ? `Today at ${start}` : "Today",
+              hubspotUrl: `https://app.hubspot.com/contacts/${PORTAL}/objects/0-47/views/all/list`,
+              sourceId:   `meeting-${m.id}`,
+              date:       today,
+            });
+          }
+        } catch (e) { console.error("[todo/sync] meetings:", e.message); }
+
+        const items = await bulkUpsertAutoDetected(user.userId, autoItems);
+        return ok({ items, synced: autoItems.length });
+      } catch (err) {
+        console.error("[todo] sync error:", err.message);
+        return error(500, `Todo sync error: ${err.message}`);
+      }
+    }
+
+    if (method === "PATCH" && path.startsWith("/todo/") && !path.includes("/sync")) {
+      const todoId = path.split("/todo/")[1];
+      if (!todoId) return error(400, "Todo ID required");
+      try {
+        const body    = JSON.parse(event.body || "{}");
+        const allowed = ["completed","text","subtext"];
+        const changes = Object.fromEntries(Object.entries(body).filter(([k]) => allowed.includes(k)));
+        const item    = await updateTodo(user.userId, todoId, changes);
+        return ok({ item });
+      } catch (err) {
+        console.error("[todo] PATCH error:", err.message);
+        return error(500, `Todo error: ${err.message}`);
+      }
+    }
+
+    if (method === "DELETE" && path.startsWith("/todo/")) {
+      const todoId = path.split("/todo/")[1];
+      if (!todoId) return error(400, "Todo ID required");
+      try {
+        await deleteTodo(user.userId, todoId);
+        return ok({ deleted: todoId });
+      } catch (err) {
+        console.error("[todo] DELETE error:", err.message);
+        return error(500, `Todo error: ${err.message}`);
+      }
+    }
 
     if (method === "GET" && path === "/tabs") {
       try {
