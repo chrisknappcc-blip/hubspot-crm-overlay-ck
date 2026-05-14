@@ -2360,9 +2360,17 @@ export const handler = async (event, context) => {
         }
 
         // ── 2. Meetings (HubSpot only — Outlook pending) ─────────────────────
-        // NOTE: This will only show meetings logged directly in HubSpot.
-        // Full meeting sync activates when Outlook is connected.
+        // Only show meetings where the logged-in user is an attendee.
+        // Uses hs_attendee_owner_ids property to filter out Gong-synced meetings
+        // for contacts where the user is just the assigned BDR, not a participant.
         try {
+          // Get current user's HubSpot owner ID
+          let currentOwnerIds = [];
+          try {
+            const me = await hsGet(user.userId, "/crm/v3/owners/me", {});
+            if (me?.id) currentOwnerIds = [String(me.id)];
+          } catch { /* skip attendee filter if can't get owner */ }
+
           const todayStart = new Date(); todayStart.setHours(0,0,0,0);
           const todayEnd   = new Date(); todayEnd.setHours(23,59,59,999);
           const meetings = await hsPost(user.userId, "/crm/v3/objects/meetings/search", {
@@ -2370,12 +2378,21 @@ export const handler = async (event, context) => {
               { propertyName: "hs_meeting_start_time", operator: "GTE", value: todayStart.toISOString() },
               { propertyName: "hs_meeting_start_time", operator: "LTE", value: todayEnd.toISOString() },
             ]}],
-            properties: ["hs_meeting_title","hs_meeting_start_time"],
+            properties: ["hs_meeting_title","hs_meeting_start_time","hubspot_owner_id","hs_attendee_owner_ids"],
             sorts: [{ propertyName: "hs_meeting_start_time", direction: "ASCENDING" }],
-            limit: 20,
+            limit: 50,
           });
           for (const m of (meetings.results || [])) {
-            const p     = m.properties || {};
+            const p = m.properties || {};
+
+            // Filter to meetings where user is owner OR listed as attendee
+            if (currentOwnerIds.length > 0) {
+              const owner     = String(p.hubspot_owner_id || "");
+              const attendees = String(p.hs_attendee_owner_ids || "").split(";").map(s => s.trim()).filter(Boolean);
+              const isInvolved = currentOwnerIds.includes(owner) || attendees.some(id => currentOwnerIds.includes(id));
+              if (!isInvolved) continue;
+            }
+
             const start = p.hs_meeting_start_time
               ? new Date(p.hs_meeting_start_time).toLocaleTimeString("en-US", { hour:"numeric", minute:"2-digit" })
               : "";
