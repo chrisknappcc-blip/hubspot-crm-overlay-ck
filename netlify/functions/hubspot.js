@@ -2769,7 +2769,7 @@ export const handler = async (event, context) => {
         const countC = async (filterGroups) => {
           try {
             const d = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
-              filterGroups, properties: ["assigned_bdr"], limit: 1,
+              filterGroups, properties: ["assigned_bdr","hubspot_owner_id"], limit: 1,
             });
             return d.total || 0;
           } catch (e) {
@@ -2786,6 +2786,38 @@ export const handler = async (event, context) => {
           { filters: [...extraFilters, { propertyName: propA, operator: sinceISO ? "GTE" : "HAS_PROPERTY", ...(sinceISO ? { value: sinceISO } : {}) }] },
           { filters: [...extraFilters, { propertyName: propB, operator: sinceISO ? "GTE" : "HAS_PROPERTY", ...(sinceISO ? { value: sinceISO } : {}) }] },
         ]);
+
+        // Batch query: fetch counts for ALL reps at once for a single metric.
+        // Returns map of repName -> count. Uses 2 parallel queries (BDRs + AEs).
+        const BDR_NAMES_LIST   = ["Chris Knapp", "Chiara Pate"];
+        const AE_OWNER_IDS_LIST = Object.values(REP_OWNER_ID_MAP);
+        const ownerIdToRepName  = Object.fromEntries(Object.entries(REP_OWNER_ID_MAP).map(([n,id]) => [id, n]));
+
+        const countAllRepsForMetric = async (dateProp) => {
+          const dateF = sinceISO
+            ? [{ propertyName: dateProp, operator: "GTE", value: sinceISO }]
+            : [{ propertyName: dateProp, operator: "HAS_PROPERTY" }];
+          const [bdrRes, aeRes] = await Promise.all([
+            hsPost(user.userId, "/crm/v3/objects/contacts/search", {
+              filterGroups: [{ filters: [{ propertyName: "assigned_bdr", operator: "IN", values: BDR_NAMES_LIST }, ...dateF] }],
+              properties: ["assigned_bdr"], limit: 200,
+            }).catch(() => ({ results: [] })),
+            hsPost(user.userId, "/crm/v3/objects/contacts/search", {
+              filterGroups: [{ filters: [{ propertyName: "hubspot_owner_id", operator: "IN", values: AE_OWNER_IDS_LIST }, ...dateF] }],
+              properties: ["hubspot_owner_id"], limit: 200,
+            }).catch(() => ({ results: [] })),
+          ]);
+          const counts = {};
+          for (const c of (bdrRes.results || [])) {
+            const rep = c.properties?.assigned_bdr;
+            if (rep) counts[rep] = (counts[rep] || 0) + 1;
+          }
+          for (const c of (aeRes.results || [])) {
+            const rep = ownerIdToRepName[c.properties?.hubspot_owner_id];
+            if (rep) counts[rep] = (counts[rep] || 0) + 1;
+          }
+          return counts;
+        };
 
         // Date filter for a property
         const df = (prop) => sinceISO
@@ -2845,27 +2877,30 @@ export const handler = async (event, context) => {
           ]);
           const emailStats = emailStatsResult;
 
-          // Contact property counts (unique contacts) -- used for per-rep breakdown
-          // and as fallback totals if the stats API is unavailable
-          const repData = [];
-          for (const repName of targetReps) {
-            const sent       = await repCountOr("hs_email_last_send_date", "hs_last_sales_activity_timestamp", repName);
-            await new Promise(r => setTimeout(r, 150));
-            const opens      = await repCountOr("hs_email_last_open_date",  "hs_sales_email_last_opened", repName);
-            await new Promise(r => setTimeout(r, 150));
-            const clicks     = await repCountOr("hs_email_last_click_date", "hs_sales_email_last_clicked", repName);
-            await new Promise(r => setTimeout(r, 150));
-            const replies    = await repCountOr("hs_email_last_reply_date", "hs_sales_email_last_replied", repName);
-            await new Promise(r => setTimeout(r, 150));
-            const seqs       = await countC([{ filters: repFilter1(repName, "hs_latest_sequence_enrolled_date", sinceISO) }]);
-            repData.push({
+          // ── Per-rep breakdown (batch queries -- one per metric across all reps) ────
+          // Run all 5 metrics in parallel (10 total queries, not 40)
+          const [sentCounts, openCounts, clickCounts, replyCounts, seqCounts] = await Promise.all([
+            countAllRepsForMetric("hs_email_last_send_date"),
+            countAllRepsForMetric("hs_email_last_open_date"),
+            countAllRepsForMetric("hs_email_last_click_date"),
+            countAllRepsForMetric("hs_email_last_reply_date"),
+            countAllRepsForMetric("hs_latest_sequence_enrolled_date"),
+          ]);
+
+          const repData = targetReps.map(repName => {
+            const sent    = sentCounts[repName]  || 0;
+            const opens   = openCounts[repName]  || 0;
+            const clicks  = clickCounts[repName] || 0;
+            const replies = replyCounts[repName] || 0;
+            const seqs    = seqCounts[repName]   || 0;
+            return {
               rep: repName, sent, opens, clicks, replies, sequences: seqs,
               openRate:  sent > 0 ? +((opens   / sent) * 100).toFixed(1) : 0,
               clickRate: sent > 0 ? +((clicks  / sent) * 100).toFixed(1) : 0,
               replyRate: sent > 0 ? +((replies / sent) * 100).toFixed(1) : 0,
-            });
-            await new Promise(r => setTimeout(r, 200));
-          }
+            };
+          });
+
 
           // Team totals -- use stats API if available, otherwise sum rep data
           let T;
@@ -3156,23 +3191,25 @@ export const handler = async (event, context) => {
           const clickRate = enrolled > 0 ? +((seqClicked / enrolled) * 100).toFixed(1) : 0;
 
           // Per-rep breakdown
-          const repData = [];
-          for (const repName of targetReps) {
-            const rEnrolled = await countC([{ filters: repFilter1(repName, "hs_latest_sequence_enrolled_date", sinceISO) }]);
-            await new Promise(r => setTimeout(r, 150));
-            const rReplied  = await repCountOr("hs_email_last_reply_date", "hs_sales_email_last_replied", repName);
-            await new Promise(r => setTimeout(r, 150));
-            const rOpened   = await countC([{ filters: repFilter1(repName, "hs_email_last_open_date", sinceISO) }]);
-            await new Promise(r => setTimeout(r, 150));
-            const rClicked  = await countC([{ filters: repFilter1(repName, "hs_email_last_click_date", sinceISO) }]);
-            repData.push({
+          // Batch: one query per metric across all reps (10 queries vs 32 sequential)
+          const [seqEnrolledCounts, seqRepliedCounts, seqOpenedCounts, seqClickedCounts] = await Promise.all([
+            countAllRepsForMetric("hs_latest_sequence_enrolled_date"),
+            countAllRepsForMetric("hs_email_last_reply_date"),
+            countAllRepsForMetric("hs_email_last_open_date"),
+            countAllRepsForMetric("hs_email_last_click_date"),
+          ]);
+          const repData = targetReps.map(repName => {
+            const rEnrolled = seqEnrolledCounts[repName] || 0;
+            const rReplied  = seqRepliedCounts[repName]  || 0;
+            const rOpened   = seqOpenedCounts[repName]   || 0;
+            const rClicked  = seqClickedCounts[repName]  || 0;
+            return {
               rep: repName, enrolled: rEnrolled, replied: rReplied, opened: rOpened, clicked: rClicked,
               replyRate: rEnrolled > 0 ? +((rReplied / rEnrolled) * 100).toFixed(1) : 0,
               openRate:  rEnrolled > 0 ? +((rOpened  / rEnrolled) * 100).toFixed(1) : 0,
               clickRate: rEnrolled > 0 ? +((rClicked / rEnrolled) * 100).toFixed(1) : 0,
-            });
-            await new Promise(r => setTimeout(r, 200));
-          }
+            };
+          });
 
           // Per-sequence breakdown
           const bySequence = {};
