@@ -2707,6 +2707,34 @@ export const handler = async (event, context) => {
         const sinceISO = sinceMs ? new Date(sinceMs).toISOString() : null;
 
         const KNOWN_BDRS = ["Chris Knapp", "Chiara Pate", "Matt Valin", "Joseph Haine", "Tim Grisham", "Irene Wong", "Cole Hooper", "John Hansel"];
+
+        // Owner ID map for non-BDR members (filter by hubspot_owner_id instead of assigned_bdr)
+        const REP_OWNER_ID_MAP = {
+          "Matt Valin":   "76104455",
+          "Joseph Haine": "55217954",
+          "Tim Grisham":  "83862037",
+          "Irene Wong":   "289209454",
+          "Cole Hooper":  "85819247",
+          "John Hansel":  "743772047",
+        };
+
+        // Build filter for a single rep -- uses hubspot_owner_id for AEs, assigned_bdr for BDRs
+        const repFilter1 = (repName, dateProp, sinceVal) => {
+          const ownerId = REP_OWNER_ID_MAP[repName];
+          const repF = ownerId
+            ? { propertyName: "hubspot_owner_id", operator: "EQ", value: ownerId }
+            : { propertyName: "assigned_bdr",     operator: "EQ", value: repName };
+          const dateF = sinceVal
+            ? { propertyName: dateProp, operator: "GTE", value: sinceVal }
+            : { propertyName: dateProp, operator: "HAS_PROPERTY" };
+          return [repF, dateF];
+        };
+
+        // OR across two date props for a single rep
+        const repCountOr = (propA, propB, repName) => countC([
+          { filters: repFilter1(repName, propA, sinceISO) },
+          { filters: repFilter1(repName, propB, sinceISO) },
+        ]);
         const repNames = rep
           ? rep.split(',').map(s => s.trim()).filter(Boolean)
           : [];
@@ -2821,17 +2849,15 @@ export const handler = async (event, context) => {
           // and as fallback totals if the stats API is unavailable
           const repData = [];
           for (const repName of targetReps) {
-            const rf = [{ propertyName: "assigned_bdr", operator: "EQ", value: repName }];
-            const mf = (prop) => [...rf, ...df(prop)];
-            const [sent, opens, clicks, mktReplies, salesReplies, seqs] = await Promise.all([
-              count1(mf("hs_email_last_send_date")),
-              count1(mf("hs_email_last_open_date")),
-              count1(mf("hs_email_last_click_date")),
-              count1(mf("hs_email_last_reply_date")),
-              count1(mf("hs_sales_email_last_replied")),
-              count1(mf("hs_latest_sequence_enrolled_date")),
-            ]);
-            const replies   = Math.max(mktReplies, salesReplies);
+            const sent       = await repCountOr("hs_email_last_send_date", "hs_last_sales_activity_timestamp", repName);
+            await new Promise(r => setTimeout(r, 150));
+            const opens      = await repCountOr("hs_email_last_open_date",  "hs_sales_email_last_opened", repName);
+            await new Promise(r => setTimeout(r, 150));
+            const clicks     = await repCountOr("hs_email_last_click_date", "hs_sales_email_last_clicked", repName);
+            await new Promise(r => setTimeout(r, 150));
+            const replies    = await repCountOr("hs_email_last_reply_date", "hs_sales_email_last_replied", repName);
+            await new Promise(r => setTimeout(r, 150));
+            const seqs       = await countC([{ filters: repFilter1(repName, "hs_latest_sequence_enrolled_date", sinceISO) }]);
             repData.push({
               rep: repName, sent, opens, clicks, replies, sequences: seqs,
               openRate:  sent > 0 ? +((opens   / sent) * 100).toFixed(1) : 0,
@@ -2902,15 +2928,28 @@ export const handler = async (event, context) => {
 
           // Owner ID → user ID map (same for Chris; may differ for others)
           // We match on createdById which equals userId in HubSpot
+          // Maps owner ID → HubSpot user ID for marketing email author filtering
           const OWNER_TO_USER = {
-            "78304576": "78304576", // Chris Knapp
-            "87806380": "87806380", // Chiara Pate
+            "78304576":  "78304576",  // Chris Knapp
+            "87806380":  "87806380",  // Chiara Pate
+            "76104455":  "76104455",  // Matt Valin
+            "55217954":  "55217954",  // Joseph Haine
+            "83862037":  "83862037",  // Tim Grisham
+            "289209454": "289209454", // Irene Wong
+            "85819247":  "85819247",  // Cole Hooper
+            "743772047": "743772047", // John Hansel
           };
-          const repUserId = rep ? (OWNER_TO_USER[
-            // Look up owner ID from name
-            Object.entries({ "Chris Knapp":"78304576","Chiara Pate":"87806380" })
-              .find(([n]) => n === rep)?.[1] || ""
-          ] || rep) : null;
+          const NAME_TO_OWNER = {
+            "Chris Knapp":   "78304576",
+            "Chiara Pate":   "87806380",
+            "Matt Valin":    "76104455",
+            "Joseph Haine":  "55217954",
+            "Tim Grisham":   "83862037",
+            "Irene Wong":    "289209454",
+            "Cole Hooper":   "85819247",
+            "John Hansel":   "743772047",
+          };
+          const repUserId = rep ? (OWNER_TO_USER[NAME_TO_OWNER[rep] || ""] || rep) : null;
 
           // Step 1: Fetch email list
           let allEmails = [];
@@ -3041,10 +3080,7 @@ export const handler = async (event, context) => {
           // Per-rep breakdown
           const repData = [];
           for (const repName of targetReps) {
-            const rUserId = OWNER_TO_USER[
-              Object.entries({ "Chris Knapp":"78304576","Chiara Pate":"87806380" })
-                .find(([n]) => n === repName)?.[1] || ""
-            ] || "";
+            const rUserId = OWNER_TO_USER[NAME_TO_OWNER[repName] || ""] || "";
             const repEmails = rUserId
               ? inPeriod.filter(e => [
                   String(e.createdById || ""), String(e.authorId || ""),
@@ -3122,13 +3158,13 @@ export const handler = async (event, context) => {
           // Per-rep breakdown
           const repData = [];
           for (const repName of targetReps) {
-            const rf = [{ propertyName: "assigned_bdr", operator: "EQ", value: repName }];
-            const [rEnrolled, rReplied, rOpened, rClicked] = await Promise.all([
-              count1([...rf, ...df("hs_latest_sequence_enrolled_date")]),
-              countOr("hs_email_last_reply_date", "hs_sales_email_last_replied", rf),
-              count1([...rf, ...df("hs_email_last_open_date")]),
-              count1([...rf, ...df("hs_email_last_click_date")]),
-            ]);
+            const rEnrolled = await countC([{ filters: repFilter1(repName, "hs_latest_sequence_enrolled_date", sinceISO) }]);
+            await new Promise(r => setTimeout(r, 150));
+            const rReplied  = await repCountOr("hs_email_last_reply_date", "hs_sales_email_last_replied", repName);
+            await new Promise(r => setTimeout(r, 150));
+            const rOpened   = await countC([{ filters: repFilter1(repName, "hs_email_last_open_date", sinceISO) }]);
+            await new Promise(r => setTimeout(r, 150));
+            const rClicked  = await countC([{ filters: repFilter1(repName, "hs_email_last_click_date", sinceISO) }]);
             repData.push({
               rep: repName, enrolled: rEnrolled, replied: rReplied, opened: rOpened, clicked: rClicked,
               replyRate: rEnrolled > 0 ? +((rReplied / rEnrolled) * 100).toFixed(1) : 0,
