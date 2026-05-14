@@ -1056,10 +1056,14 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                     style={{ fontSize:11, color:'var(--text-tertiary)', background:'none', border:'1px solid var(--border)', borderRadius:'var(--radius)', padding:'4px 8px', cursor:'pointer' }}>
                     CSV
                   </button>
+                  <button onClick={syncTodos} disabled={todoSyncing}
+                    style={{ fontSize:11, color:'var(--accent)', background:'none', border:'1px solid var(--border)', borderRadius:'var(--radius)', padding:'4px 8px', cursor:'pointer', opacity: todoSyncing ? 0.5 : 1 }}>
+                    {todoSyncing ? 'Syncing…' : '↻ Refresh'}
+                  </button>
                 </div>
               </div>
               <div style={{ fontSize:11, color:'var(--text-tertiary)', marginBottom:10 }}>
-                Today's meetings sync automatically. Promote items from the Task Queue using the + button on each card.
+                ⭐ Gold Account contacts surface first. Meetings show HubSpot-logged only — full calendar sync available once Outlook is connected.
               </div>
 
               {/* Add item input */}
