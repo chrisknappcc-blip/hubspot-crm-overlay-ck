@@ -530,7 +530,13 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
   // Activity summary
   const [activityData, setActivityData]       = useState(null)
   const [activityDays, setActivityDays]       = useState('7')
-  const [activityRep, setActivityRep]         = useState('all')   // 'all' or rep name
+  const [activityRep, setActivityRep]         = useState(() => {
+    if (!user) return 'all'
+    const full = `${user.firstName || ''} ${user.lastName || ''}`.trim()
+    const match = TEAM_MEMBERS.find(m => m.name.toLowerCase() === full.toLowerCase() ||
+      (user.firstName && m.name.toLowerCase().startsWith(user.firstName.toLowerCase())))
+    return match?.name || 'all'
+  })
   const [activityIncludeOwned, setActivityIncludeOwned] = useState(false)
   const [activityLoading, setActivityLoading] = useState(false)
 
@@ -558,7 +564,26 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
   const [goldPage, setGoldPage]           = useState(0)
 
   // Filters
-  const [filterBdr, setFilterBdr]           = useState('')
+  // Default filter to current user -- match Clerk name against TEAM_MEMBERS
+  const currentUserName = useMemo(() => {
+    if (!user) return ''
+    const full = `${user.firstName || ''} ${user.lastName || ''}`.trim()
+    const match = TEAM_MEMBERS.find(m =>
+      m.name.toLowerCase() === full.toLowerCase() ||
+      (user.firstName && m.name.toLowerCase().startsWith(user.firstName.toLowerCase()))
+    )
+    return match?.name || ''
+  }, [user])
+
+  const [filterBdr, setFilterBdr] = useState(() => {
+    if (!user) return ''
+    const full = `${user.firstName || ''} ${user.lastName || ''}`.trim()
+    const match = TEAM_MEMBERS.find(m =>
+      m.name.toLowerCase() === full.toLowerCase() ||
+      (user.firstName && m.name.toLowerCase().startsWith(user.firstName.toLowerCase()))
+    )
+    return match?.name || ''
+  })
   const [filterTerritory, setFilterTerritory] = useState('')
   const [filterTier, setFilterTier]         = useState('')
   const [filterTarget, setFilterTarget]     = useState('')
@@ -866,7 +891,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
 
   // Fetch content engagement separately -- derived from contacts with click dates, not from signals
   useEffect(() => {
-    const t = setTimeout(() => fetchContentEngagement(), 4500)
+    const t = setTimeout(() => fetchContentEngagement(), 6000)
     return () => clearTimeout(t)
   }, [fetchContentEngagement])
 
@@ -1801,7 +1826,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
 
         {/* ── Reports tab ── */}
         {activeTab === 'reports' && (
-          <ReportsTab safeFetch={safeFetch} owners={owners} />
+          <ReportsTab safeFetch={safeFetch} owners={owners} currentUserName={currentUserName} />
         )}
 
         {/* ── Financial Analysis tab ── */}
@@ -1893,10 +1918,10 @@ const PORTAL    = '39921549'
 const HS_BASE   = 'https://app.hubspot.com'
 const DASHBOARD = `${HS_BASE}/reports-dashboard/${PORTAL}/view/19874520`
 
-function ReportsTab({ safeFetch, owners }) {
+function ReportsTab({ safeFetch, owners, currentUserName }) {
   const [section, setSection]     = useState('email_activity')
   const [period, setPeriod]       = useState('month')
-  const [rep, setRep]             = useState('all')
+  const [rep, setRep]             = useState(() => currentUserName || 'all')
   const [owner, setOwner]         = useState('')
   const [data, setData]           = useState(null)
   const [loading, setLoading]     = useState(false)
