@@ -2368,8 +2368,13 @@ export const handler = async (event, context) => {
           let currentOwnerIds = [];
           try {
             const me = await hsGet(user.userId, "/crm/v3/owners/me", {});
-            if (me?.id) currentOwnerIds = [String(me.id)];
-          } catch { /* skip attendee filter if can't get owner */ }
+            if (me?.id) {
+              currentOwnerIds = [String(me.id)];
+              console.log(`[todo/sync] current owner ID: ${me.id}`);
+            }
+          } catch (e) {
+            console.error("[todo/sync] owner lookup failed:", e.message);
+          }
 
           const todayStart = new Date(); todayStart.setHours(0,0,0,0);
           const todayEnd   = new Date(); todayEnd.setHours(23,59,59,999);
@@ -2385,18 +2390,20 @@ export const handler = async (event, context) => {
           for (const m of (meetings.results || [])) {
             const p = m.properties || {};
 
-            // Filter to meetings where user is the owner OR listed as an attendee.
-            // Note: Gong-synced meetings often only populate hubspot_owner_id (the AE),
-            // not hs_attendee_owner_ids. So we check both but prioritize owner match.
-            if (currentOwnerIds.length > 0) {
+            // Exclude Gong-synced meetings where current user is not the owner.
+            // hs_attendee_owner_ids is not populated by Gong so we can't use it.
+            // Rule: skip [Gong] meetings unless hubspot_owner_id === current user.
+            const isGong = (p.hs_meeting_title || "").startsWith("[Gong]");
+            if (isGong) {
+              if (!currentOwnerIds.length) continue; // can't verify, skip all Gong meetings
+              if (!currentOwnerIds.includes(String(p.hubspot_owner_id || ""))) continue;
+            } else if (currentOwnerIds.length > 0) {
+              // For non-Gong meetings: must own or be attendee
               const owner     = String(p.hubspot_owner_id || "");
               const attendees = String(p.hs_attendee_owner_ids || "").split(";").map(s => s.trim()).filter(Boolean);
               const isOwner   = currentOwnerIds.includes(owner);
               const isAttendee = attendees.some(id => currentOwnerIds.includes(id));
-              // Only include if this user owns it or is explicitly listed as attendee
-              // Skip Gong meetings (title starts with [Gong]) where user is not the owner
-              const isGong = (p.hs_meeting_title || "").startsWith("[Gong]");
-              if (!isOwner && (!isAttendee || isGong)) continue;
+              if (!isOwner && !isAttendee) continue;
             }
 
             const start = p.hs_meeting_start_time
