@@ -113,36 +113,46 @@ export async function deleteTodo(userId, itemId) {
 }
 
 export async function bulkUpsertAutoDetected(userId, autoItems) {
-  // Merge auto-detected items without duplicating existing ones.
-  // Match by sourceId -- if already present, update text/subtext but preserve completion.
+  // On each sync, REPLACE all auto-detected items with the fresh list.
+  // This ensures stale items (e.g. Gong meetings no longer qualifying) are removed.
+  // Manual items are always preserved regardless.
+  // Completion state is preserved for items that still appear in the new list.
   const items = applyArchive(await readTodos(userId));
   const now   = new Date().toISOString();
   const today = todayStr();
 
-  for (const incoming of autoItems) {
-    const existing = items.findIndex(i => i.sourceId && i.sourceId === incoming.sourceId);
-    if (existing >= 0) {
-      // Update text in case it changed, but don't touch completed state
-      items[existing].text    = incoming.text    || items[existing].text;
-      items[existing].subtext = incoming.subtext || items[existing].subtext;
-    } else {
-      items.push({
-        id:           Math.random().toString(36).slice(2, 10),
-        type:         incoming.type    || "task",
-        text:         (incoming.text   || "").trim().slice(0, 200),
-        subtext:      (incoming.subtext|| "").trim().slice(0, 200),
-        contactId:    incoming.contactId  || null,
-        hubspotUrl:   incoming.hubspotUrl || null,
-        completed:    false,
-        completedAt:  null,
-        createdAt:    now,
-        date:         today,
-        autoDetected: true,
-        sourceId:     incoming.sourceId || null,
-      });
+  // Keep all manual items
+  const manualItems = items.filter(i => !i.autoDetected);
+
+  // Build completion state map from existing auto-detected items
+  const completionMap = {};
+  for (const item of items) {
+    if (item.autoDetected && item.sourceId) {
+      completionMap[item.sourceId] = {
+        completed:   item.completed,
+        completedAt: item.completedAt,
+      };
     }
   }
 
-  await writeTodos(userId, items);
-  return items;
+  // Build fresh auto-detected list, preserving completion state
+  const freshAutoItems = autoItems.map(incoming => ({
+    id:           Math.random().toString(36).slice(2, 10),
+    type:         incoming.type      || "task",
+    text:         (incoming.text     || "").trim().slice(0, 200),
+    subtext:      (incoming.subtext  || "").trim().slice(0, 200),
+    contactId:    incoming.contactId  || null,
+    hubspotUrl:   incoming.hubspotUrl || null,
+    completed:    completionMap[incoming.sourceId]?.completed    || false,
+    completedAt:  completionMap[incoming.sourceId]?.completedAt  || null,
+    createdAt:    now,
+    date:         today,
+    autoDetected: true,
+    sourceId:     incoming.sourceId || null,
+    priority:     incoming.priority || 9,
+  }));
+
+  const updated = [...manualItems, ...freshAutoItems];
+  await writeTodos(userId, updated);
+  return updated;
 }
