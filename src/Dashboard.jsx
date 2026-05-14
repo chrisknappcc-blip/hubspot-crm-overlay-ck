@@ -797,15 +797,15 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
   // Stagger all fetches to avoid rate limit storm on filter change or mount.
   // Signals (fetchData) fires immediately ~2s, tasks at 1s, gold at 3s, activity at 5s, content at 4s.
   useEffect(() => {
-    const t = setTimeout(() => fetchTasks(), 1000)
+    const t = setTimeout(() => fetchTasks(), 1500)
     return () => clearTimeout(t)
   }, [fetchTasks])
   useEffect(() => {
-    const t = setTimeout(() => fetchGold(), 3000)
+    const t = setTimeout(() => fetchGold(), 4000)
     return () => clearTimeout(t)
   }, [fetchGold])
   useEffect(() => {
-    const t = setTimeout(() => fetchActivity(), 5000)
+    const t = setTimeout(() => fetchActivity(), 7000)
     return () => clearTimeout(t)
   }, [fetchActivity])
 
@@ -891,7 +891,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
 
   // Fetch content engagement separately -- derived from contacts with click dates, not from signals
   useEffect(() => {
-    const t = setTimeout(() => fetchContentEngagement(), 6000)
+    const t = setTimeout(() => fetchContentEngagement(), 9000)
     return () => clearTimeout(t)
   }, [fetchContentEngagement])
 
