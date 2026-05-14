@@ -2787,36 +2787,35 @@ export const handler = async (event, context) => {
           { filters: [...extraFilters, { propertyName: propB, operator: sinceISO ? "GTE" : "HAS_PROPERTY", ...(sinceISO ? { value: sinceISO } : {}) }] },
         ]);
 
-        // Batch query: fetch counts for ALL reps at once for a single metric.
-        // Returns map of repName -> count. Uses 2 parallel queries (BDRs + AEs).
-        const BDR_NAMES_LIST   = ["Chris Knapp", "Chiara Pate"];
+        // Batch query: get accurate counts for ALL reps for a single metric.
+        // Runs one count query per rep in parallel (uses limit:1 + total for accuracy).
+        // Returns map of repName -> count.
+        const BDR_NAMES_LIST    = ["Chris Knapp", "Chiara Pate"];
         const AE_OWNER_IDS_LIST = Object.values(REP_OWNER_ID_MAP);
         const ownerIdToRepName  = Object.fromEntries(Object.entries(REP_OWNER_ID_MAP).map(([n,id]) => [id, n]));
+        const ALL_REPS          = KNOWN_BDRS;
 
         const countAllRepsForMetric = async (dateProp) => {
           const dateF = sinceISO
-            ? [{ propertyName: dateProp, operator: "GTE", value: sinceISO }]
-            : [{ propertyName: dateProp, operator: "HAS_PROPERTY" }];
-          const [bdrRes, aeRes] = await Promise.all([
-            hsPost(user.userId, "/crm/v3/objects/contacts/search", {
-              filterGroups: [{ filters: [{ propertyName: "assigned_bdr", operator: "IN", values: BDR_NAMES_LIST }, ...dateF] }],
-              properties: ["assigned_bdr"], limit: 200,
-            }).catch(() => ({ results: [] })),
-            hsPost(user.userId, "/crm/v3/objects/contacts/search", {
-              filterGroups: [{ filters: [{ propertyName: "hubspot_owner_id", operator: "IN", values: AE_OWNER_IDS_LIST }, ...dateF] }],
-              properties: ["hubspot_owner_id"], limit: 200,
-            }).catch(() => ({ results: [] })),
-          ]);
-          const counts = {};
-          for (const c of (bdrRes.results || [])) {
-            const rep = c.properties?.assigned_bdr;
-            if (rep) counts[rep] = (counts[rep] || 0) + 1;
-          }
-          for (const c of (aeRes.results || [])) {
-            const rep = ownerIdToRepName[c.properties?.hubspot_owner_id];
-            if (rep) counts[rep] = (counts[rep] || 0) + 1;
-          }
-          return counts;
+            ? { propertyName: dateProp, operator: "GTE", value: sinceISO }
+            : { propertyName: dateProp, operator: "HAS_PROPERTY" };
+
+          // Run one count query per rep in parallel -- limit:1 so we just get total
+          const results = await Promise.all(ALL_REPS.map(async repName => {
+            const ownerId = REP_OWNER_ID_MAP[repName];
+            const repF = ownerId
+              ? { propertyName: "hubspot_owner_id", operator: "EQ", value: ownerId }
+              : { propertyName: "assigned_bdr",     operator: "EQ", value: repName };
+            try {
+              const d = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
+                filterGroups: [{ filters: [repF, dateF] }],
+                properties: ["hs_object_id"], limit: 1,
+              });
+              return [repName, d.total || 0];
+            } catch { return [repName, 0]; }
+          }));
+
+          return Object.fromEntries(results);
         };
 
         // Date filter for a property
