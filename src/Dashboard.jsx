@@ -421,6 +421,8 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
 
   // ── To-Do list state ────────────────────────────────────────────────────────
   const [todoItems, setTodoItems]     = useState([])
+  const [todoPage, setTodoPage]       = useState(0)
+  const TODO_PAGE_SIZE = 10
   const [todoLoading, setTodoLoading] = useState(false)
   const [todoInput, setTodoInput]     = useState('')
   const [todoSyncing, setTodoSyncing] = useState(false)
@@ -1090,10 +1092,15 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                 </div>
               )}
 
-              {!todoLoading && todoItems.length > 0 && (
+              {!todoLoading && todoItems.length > 0 && (() => {
+                const active    = todoItems.filter(t => !t.completed)
+                const done      = todoItems.filter(t => t.completed)
+                const pageActive = active.slice(todoPage * TODO_PAGE_SIZE, (todoPage + 1) * TODO_PAGE_SIZE)
+                return (
                 <div style={{ display:'flex', flexDirection:'column', gap:2 }}>
-                  {/* Active items first */}
-                  {todoItems.filter(t => !t.completed).map(item => (
+                  {/* Active items */}
+                  {active.length === 0 && <div style={{ fontSize:12, color:'var(--text-tertiary)', padding:'8px 0' }}>All caught up!</div>}
+                  {pageActive.map(item => (
                     <div key={item.id} style={{ display:'flex', alignItems:'center', gap:8, padding:'6px 4px', borderRadius:'var(--radius)', background:'transparent' }}
                       onMouseEnter={e => e.currentTarget.style.background='var(--bg-secondary)'}
                       onMouseLeave={e => e.currentTarget.style.background='transparent'}>
@@ -1133,13 +1140,30 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                     </div>
                   ))}
 
+                  {/* Pager for active items */}
+                  {active.length > TODO_PAGE_SIZE && (
+                    <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'8px 4px 4px', borderTop:'1px solid var(--border)', marginTop:4 }}>
+                      <button onClick={() => setTodoPage(p => Math.max(0, p-1))} disabled={todoPage === 0}
+                        style={{ fontSize:11, color: todoPage===0?'var(--text-tertiary)':'var(--accent)', background:'none', border:'none', cursor: todoPage===0?'default':'pointer', padding:0 }}>
+                        ← Prev
+                      </button>
+                      <span style={{ fontSize:11, color:'var(--text-tertiary)' }}>
+                        {todoPage * TODO_PAGE_SIZE + 1}–{Math.min((todoPage+1) * TODO_PAGE_SIZE, active.length)} of {active.length}
+                      </span>
+                      <button onClick={() => setTodoPage(p => p+1)} disabled={(todoPage+1)*TODO_PAGE_SIZE >= active.length}
+                        style={{ fontSize:11, color:(todoPage+1)*TODO_PAGE_SIZE>=active.length?'var(--text-tertiary)':'var(--accent)', background:'none', border:'none', cursor:(todoPage+1)*TODO_PAGE_SIZE>=active.length?'default':'pointer', padding:0 }}>
+                        Next →
+                      </button>
+                    </div>
+                  )}
+
                   {/* Completed items with strikethrough */}
-                  {todoItems.filter(t => t.completed).length > 0 && (
+                  {done.length > 0 && (
                     <>
                       <div style={{ fontSize:10, fontWeight:600, textTransform:'uppercase', letterSpacing:'.05em', color:'var(--text-tertiary)', padding:'8px 4px 4px', marginTop:4, borderTop:'1px solid var(--border)' }}>
                         Completed today
                       </div>
-                      {todoItems.filter(t => t.completed).map(item => (
+                      {done.map(item => (
                         <div key={item.id} style={{ display:'flex', alignItems:'center', gap:8, padding:'5px 4px', opacity:0.55 }}>
                           <input type="checkbox" checked={true} onChange={() => toggleTodo(item.id, false)}
                             style={{ flexShrink:0, cursor:'pointer', accentColor:'var(--accent)', width:15, height:15 }} />
@@ -1158,7 +1182,8 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                     </>
                   )}
                 </div>
-              )}
+                )
+              })()}
             </Panel>
 
             {/* Two columns: task queue + signals */}
