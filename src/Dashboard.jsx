@@ -418,6 +418,104 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
 
   // Task queue data (three sections)
   const [taskData, setTaskData]       = useState({ repliesAwaitingResponse:[], upcomingSequences:[], dueTasks:[], meta:{} })
+
+  // ── To-Do list state ────────────────────────────────────────────────────────
+  const [todoItems, setTodoItems]     = useState([])
+  const [todoLoading, setTodoLoading] = useState(false)
+  const [todoInput, setTodoInput]     = useState('')
+  const [todoSyncing, setTodoSyncing] = useState(false)
+
+  const fetchTodos = useCallback(async () => {
+    setTodoLoading(true)
+    try {
+      const data = await safeFetch('/api/hubspot/todo')
+      setTodoItems(data.items || [])
+    } catch (e) { console.error('[todo]', e) }
+    finally { setTodoLoading(false) }
+  }, [])
+
+  const syncTodos = useCallback(async () => {
+    setTodoSyncing(true)
+    try {
+      const data = await safeFetch('/api/hubspot/todo/sync', { method:'POST' })
+      setTodoItems(data.items || [])
+    } catch (e) { console.error('[todo/sync]', e) }
+    finally { setTodoSyncing(false) }
+  }, [])
+
+  const addTodoItem = useCallback(async (text, extraFields = {}) => {
+    if (!text?.trim()) return
+    try {
+      const data = await safeFetch('/api/hubspot/todo', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: text.trim(), type: 'manual', ...extraFields }),
+      })
+      setTodoItems(prev => {
+        // Don't duplicate if sourceId already exists
+        if (extraFields.sourceId && prev.some(t => t.sourceId === extraFields.sourceId)) return prev
+        return [...prev, data.item]
+      })
+      setTodoInput('')
+    } catch (e) { console.error('[todo/add]', e) }
+  }, [])
+
+  const toggleTodo = useCallback(async (id, completed) => {
+    // Optimistic update
+    setTodoItems(prev => prev.map(t => t.id === id ? { ...t, completed, completedAt: completed ? new Date().toISOString() : null } : t))
+    try {
+      await safeFetch(`/api/hubspot/todo/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ completed }),
+      })
+    } catch (e) { console.error('[todo/toggle]', e) }
+  }, [])
+
+  const deleteTodoItem = useCallback(async (id) => {
+    setTodoItems(prev => prev.filter(t => t.id !== id))
+    try {
+      await safeFetch(`/api/hubspot/todo/${id}`, { method: 'DELETE' })
+    } catch (e) { console.error('[todo/delete]', e) }
+  }, [])
+
+  const exportTodos = useCallback((format) => {
+    const today   = new Date().toLocaleDateString('en-US', { month:'long', day:'numeric', year:'numeric' })
+    const done    = todoItems.filter(t => t.completed)
+    const pending = todoItems.filter(t => !t.completed)
+    if (format === 'text') {
+      const lines = [
+        `Daily Recap — ${today}`,
+        '',
+        `COMPLETED (${done.length})`,
+        ...done.map(t => `✓ ${t.text}${t.subtext ? ` — ${t.subtext}` : ''}`),
+        '',
+        `PENDING (${pending.length})`,
+        ...pending.map(t => `○ ${t.text}${t.subtext ? ` — ${t.subtext}` : ''}`),
+      ]
+      navigator.clipboard.writeText(lines.join('\n')).then(() => alert('Copied to clipboard!'))
+    } else {
+      const rows = [
+        ['Status','Type','Task','Context','Created','Completed'],
+        ...todoItems.map(t => [
+          t.completed ? 'Done' : 'Pending',
+          t.type,
+          t.text,
+          t.subtext || '',
+          t.createdAt ? new Date(t.createdAt).toLocaleString() : '',
+          t.completedAt ? new Date(t.completedAt).toLocaleString() : '',
+        ])
+      ]
+      const csv  = rows.map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n')
+      const blob = new Blob([csv], { type:'text/csv' })
+      const url  = URL.createObjectURL(blob)
+      const a    = document.createElement('a')
+      a.href     = url
+      a.download = `todo-${new Date().toISOString().slice(0,10)}.csv`
+      a.click()
+      URL.revokeObjectURL(url)
+    }
+  }, [todoItems])
   const [taskDays, setTaskDays]       = useState('14')
   const [taskSection, setTaskSection] = useState('replies')
   const [taskLoading, setTaskLoading] = useState(false)
@@ -609,7 +707,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
     } finally {
       setTaskLoading(false)
     }
-  }, [taskDays, filterBdr])
+  }, [taskDays, expandedBdrs, expandedOwnerIds])
 
   // ── Gold accounts fetch ───────────────────────────────────────────────────
   const fetchGold = useCallback(async () => {
@@ -625,7 +723,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
     } finally {
       setGoldLoading(false)
     }
-  }, [filterBdr])
+  }, [expandedBdrs, expandedOwnerIds])
 
   // ── Activity summary fetch ────────────────────────────────────────────────
   const fetchActivity = useCallback(async () => {
@@ -668,15 +766,19 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
   }, [lastPollTime, filterBdr])
 
   useEffect(() => { fetchData() }, [fetchData])
-  useEffect(() => { fetchTasks() }, [fetchTasks])
-  // Stagger gold and activity well after signals completes.
-  // Signals takes ~2s (6 searches × 300ms). Gold at 2.5s, activity at 4s.
+  useEffect(() => { fetchTodos(); syncTodos() }, [fetchTodos, syncTodos])
+  // Stagger all fetches to avoid rate limit storm on filter change or mount.
+  // Signals (fetchData) fires immediately ~2s, tasks at 1s, gold at 3s, activity at 5s, content at 4s.
   useEffect(() => {
-    const t = setTimeout(() => fetchGold(), 2500)
+    const t = setTimeout(() => fetchTasks(), 1000)
+    return () => clearTimeout(t)
+  }, [fetchTasks])
+  useEffect(() => {
+    const t = setTimeout(() => fetchGold(), 3000)
     return () => clearTimeout(t)
   }, [fetchGold])
   useEffect(() => {
-    const t = setTimeout(() => fetchActivity(), 4000)
+    const t = setTimeout(() => fetchActivity(), 5000)
     return () => clearTimeout(t)
   }, [fetchActivity])
 
@@ -762,7 +864,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
 
   // Fetch content engagement separately -- derived from contacts with click dates, not from signals
   useEffect(() => {
-    const t = setTimeout(() => fetchContentEngagement(), 3000) // stagger 3s after mount
+    const t = setTimeout(() => fetchContentEngagement(), 4500)
     return () => clearTimeout(t)
   }, [fetchContentEngagement])
 
@@ -934,6 +1036,127 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
               )}
             </div>
 
+            {/* ── To-Do Section ── */}
+            <Panel style={{ marginBottom:12 }}>
+              <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:10 }}>
+                <SectionTitle style={{ margin:0 }}>
+                  To-Do
+                  {todoItems.filter(t=>!t.completed).length > 0 && (
+                    <span style={{ marginLeft:8, background:'var(--accent)', color:'#fff', borderRadius:10, padding:'1px 7px', fontSize:10, fontWeight:600 }}>
+                      {todoItems.filter(t=>!t.completed).length}
+                    </span>
+                  )}
+                </SectionTitle>
+                <div style={{ display:'flex', gap:6, alignItems:'center' }}>
+                  <button onClick={() => exportTodos('text')} title="Copy recap to clipboard"
+                    style={{ fontSize:11, color:'var(--text-tertiary)', background:'none', border:'1px solid var(--border)', borderRadius:'var(--radius)', padding:'4px 8px', cursor:'pointer' }}>
+                    Copy recap
+                  </button>
+                  <button onClick={() => exportTodos('csv')} title="Download CSV"
+                    style={{ fontSize:11, color:'var(--text-tertiary)', background:'none', border:'1px solid var(--border)', borderRadius:'var(--radius)', padding:'4px 8px', cursor:'pointer' }}>
+                    CSV
+                  </button>
+                </div>
+              </div>
+              <div style={{ fontSize:11, color:'var(--text-tertiary)', marginBottom:10 }}>
+                Today's meetings sync automatically. Promote items from the Task Queue using the + button on each card.
+              </div>
+
+              {/* Add item input */}
+              <div style={{ display:'flex', gap:8, marginBottom:12 }}>
+                <input
+                  type="text"
+                  value={todoInput}
+                  onChange={e => setTodoInput(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && addTodoItem(todoInput)}
+                  placeholder="Add a to-do… (press Enter)"
+                  style={{ flex:1, padding:'7px 10px', background:'var(--bg-secondary)', border:'1px solid var(--border)', borderRadius:'var(--radius)', fontSize:12, color:'var(--text)', outline:'none' }}
+                />
+                <button onClick={() => addTodoItem(todoInput)}
+                  style={{ padding:'7px 14px', background:'var(--accent)', color:'#fff', border:'none', borderRadius:'var(--radius)', fontSize:12, fontWeight:500, cursor:'pointer' }}>
+                  Add
+                </button>
+              </div>
+
+              {todoLoading && <div style={{ fontSize:12, color:'var(--text-tertiary)' }}>Loading…</div>}
+
+              {!todoLoading && todoItems.length === 0 && (
+                <div style={{ fontSize:12, color:'var(--text-tertiary)', textAlign:'center', padding:'12px 0' }}>
+                  No tasks today. Add one above or sync from HubSpot.
+                </div>
+              )}
+
+              {!todoLoading && todoItems.length > 0 && (
+                <div style={{ display:'flex', flexDirection:'column', gap:2 }}>
+                  {/* Active items first */}
+                  {todoItems.filter(t => !t.completed).map(item => (
+                    <div key={item.id} style={{ display:'flex', alignItems:'center', gap:8, padding:'6px 4px', borderRadius:'var(--radius)', background:'transparent' }}
+                      onMouseEnter={e => e.currentTarget.style.background='var(--bg-secondary)'}
+                      onMouseLeave={e => e.currentTarget.style.background='transparent'}>
+                      <input type="checkbox" checked={false} onChange={() => toggleTodo(item.id, true)}
+                        style={{ flexShrink:0, cursor:'pointer', accentColor:'var(--accent)', width:15, height:15 }} />
+                      <div style={{ flex:1, minWidth:0 }}>
+                        <div style={{ fontSize:13, color:'var(--text)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                          {item.text}
+                        </div>
+                        {item.subtext && (
+                          <div style={{ fontSize:11, color:'var(--text-tertiary)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                            {item.subtext}
+                          </div>
+                        )}
+                      </div>
+                      <div style={{ display:'flex', gap:4, flexShrink:0 }}>
+                        {['reply','meeting','task','sequence'].includes(item.type) && (
+                          <span style={{ fontSize:9, fontWeight:600, textTransform:'uppercase', letterSpacing:'.04em',
+                            color: item.type==='reply'?'var(--accent)':item.type==='meeting'?'var(--amber)':'var(--text-tertiary)',
+                            background:'var(--bg-secondary)', borderRadius:4, padding:'2px 5px' }}>
+                            {item.type}
+                          </span>
+                        )}
+                        {item.hubspotUrl && (
+                          <button onClick={() => window.open(item.hubspotUrl,'_blank','noopener,noreferrer')}
+                            style={{ background:'none', border:'none', cursor:'pointer', padding:0, color:'var(--text-tertiary)', lineHeight:1 }}>
+                            <HsIcon />
+                          </button>
+                        )}
+                        {!item.autoDetected && (
+                          <button onClick={() => deleteTodoItem(item.id)}
+                            style={{ background:'none', border:'none', cursor:'pointer', padding:'0 2px', color:'var(--text-tertiary)', fontSize:14, lineHeight:1 }}>
+                            ×
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+
+                  {/* Completed items with strikethrough */}
+                  {todoItems.filter(t => t.completed).length > 0 && (
+                    <>
+                      <div style={{ fontSize:10, fontWeight:600, textTransform:'uppercase', letterSpacing:'.05em', color:'var(--text-tertiary)', padding:'8px 4px 4px', marginTop:4, borderTop:'1px solid var(--border)' }}>
+                        Completed today
+                      </div>
+                      {todoItems.filter(t => t.completed).map(item => (
+                        <div key={item.id} style={{ display:'flex', alignItems:'center', gap:8, padding:'5px 4px', opacity:0.55 }}>
+                          <input type="checkbox" checked={true} onChange={() => toggleTodo(item.id, false)}
+                            style={{ flexShrink:0, cursor:'pointer', accentColor:'var(--accent)', width:15, height:15 }} />
+                          <div style={{ flex:1, minWidth:0 }}>
+                            <div style={{ fontSize:13, color:'var(--text-tertiary)', textDecoration:'line-through', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                              {item.text}
+                            </div>
+                          </div>
+                          {item.completedAt && (
+                            <div style={{ fontSize:10, color:'var(--text-tertiary)', flexShrink:0 }}>
+                              {new Date(item.completedAt).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'})}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </>
+                  )}
+                </div>
+              )}
+            </Panel>
+
             {/* Two columns: task queue + signals */}
             <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginBottom:12 }}>
 
@@ -996,6 +1219,15 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                               <span style={{ marginLeft:'auto', fontSize:11, color:'var(--red)', fontWeight:500 }}>
                                 {r.waitingHours < 24 ? `${r.waitingHours}h waiting` : `${Math.floor(r.waitingHours/24)}d waiting`}
                               </span>
+                              <button
+                                onClick={() => addTodoItem(`Reply to ${r.contact?.name || 'contact'}`, {
+                                  type: 'reply', subtext: r.contact?.company || '', contactId: r.contactId,
+                                  hubspotUrl: r.url, sourceId: `reply-${r.contactId}`
+                                })}
+                                title="Add to To-Do"
+                                style={{ flexShrink:0, background:'none', border:'1px solid var(--border)', borderRadius:4, cursor:'pointer', padding:'1px 6px', fontSize:11, color:'var(--accent)', lineHeight:1.4 }}>
+                                + To-Do
+                              </button>
                             </div>
                             <div style={{ fontSize:12, color:'var(--text-secondary)', marginBottom:4 }}>
                               {r.contact?.title}{r.contact?.company ? ` · ${r.contact.company}` : ''}
@@ -1040,6 +1272,15 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                                 <HsIcon />
                               </button>
                               <Badge label={s.signal} type={s.signal === 'Replied' ? 'reply' : s.signal === 'Clicked link' ? 'click' : 'default'} />
+                              <button
+                                onClick={() => addTodoItem(`Follow up: ${s.contact?.name || 'contact'}`, {
+                                  type: 'sequence', subtext: s.contact?.company || s.sequenceLabel || '',
+                                  contactId: s.contactId, hubspotUrl: s.url, sourceId: `seq-${s.contactId}`
+                                })}
+                                title="Add to To-Do"
+                                style={{ marginLeft:'auto', flexShrink:0, background:'none', border:'1px solid var(--border)', borderRadius:4, cursor:'pointer', padding:'1px 6px', fontSize:11, color:'var(--accent)', lineHeight:1.4 }}>
+                                + To-Do
+                              </button>
                             </div>
                             <div style={{ fontSize:12, color:'var(--text-secondary)', marginBottom:4 }}>
                               {s.contact?.title}{s.contact?.company ? ` · ${s.contact.company}` : ''}
@@ -1085,6 +1326,15 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                               <span style={{ fontWeight:500, fontSize:13, color:'var(--text)' }}>{t.subject}</span>
                               {t.overdue && <Badge label="Overdue" type="overdue" />}
                               {t.priority === 'HIGH' && !t.overdue && <Badge label="High priority" type="hot" />}
+                              <button
+                                onClick={() => addTodoItem(t.subject || 'HubSpot task', {
+                                  type: 'task', subtext: t.overdue ? 'Overdue' : `Due ${t.dueDate || ''}`,
+                                  hubspotUrl: t.url, sourceId: `task-${t.id || i}`
+                                })}
+                                title="Add to To-Do"
+                                style={{ marginLeft:'auto', flexShrink:0, background:'none', border:'1px solid var(--border)', borderRadius:4, cursor:'pointer', padding:'1px 6px', fontSize:11, color:'var(--accent)', lineHeight:1.4 }}>
+                                + To-Do
+                              </button>
                             </div>
                             {t.body && <div style={{ fontSize:12, color:'var(--text-secondary)', marginBottom:4 }}>{t.body}</div>}
                             <div style={{ display:'flex', alignItems:'center', gap:8 }}>
