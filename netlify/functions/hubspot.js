@@ -78,6 +78,7 @@ const BASE_CONTACT_PROPS = [
   "hs_email_last_reply_date",
   "hs_email_last_send_date",
   "hs_email_last_email_name",        // name of last marketing email sent
+  "primary_outreach_rep",                     // who is driving outreach (custom field, primary filter for To-Do)
   // Sales / 1:1 email timestamps (hs_sales_email_* prefix)
   "hs_sales_email_last_opened",      // last 1:1 sales email open date
   "hs_sales_email_last_clicked",     // last 1:1 sales email click date
@@ -2258,6 +2259,7 @@ export const handler = async (event, context) => {
       // 2. Meetings (HubSpot only until Outlook is connected)
       // 3. Regular replies needing response
       // 4. Regular sequence follow-ups
+      // All contact queries are filtered to the current user (by assigned_bdr OR hubspot_owner_id)
       try {
         const now      = Date.now();
         const today    = new Date().toISOString().slice(0, 10);
@@ -2268,6 +2270,45 @@ export const handler = async (event, context) => {
           "GOLD - 51-60","GOLD - 61-70","GOLD - 71-80","GOLD - 81-90","GOLD - 91-100",
         ];
         const autoItems = [];
+
+        // ── Identify current user ─────────────────────────────────────────────
+        // Look up the current user's HubSpot owner ID and name.
+        // All contact queries filter by assigned_bdr OR hubspot_owner_id.
+        let currentOwnerIds  = [];
+        let currentOwnerName = null;
+        try {
+          const me = await hsGet(user.userId, "/crm/v3/owners/me", {});
+          if (me?.id) {
+            currentOwnerIds  = [String(me.id)];
+            currentOwnerName = `${me.firstName||""} ${me.lastName||""}`.trim() || null;
+            console.log(`[todo/sync] current user: ${currentOwnerName} (${me.id})`);
+          }
+        } catch (e) { console.error("[todo/sync] owner lookup failed:", e.message); }
+
+        // Build filter groups for contact queries.
+        // Priority: primary_rep (custom field) → assigned_bdr (BDR) → hubspot_owner_id (AE/owner)
+        // OR logic across all three so contacts are caught regardless of which field is set.
+        const userContactFilters = () => {
+          const groups = [];
+          if (currentOwnerName) {
+            // Primary: custom primary_rep field (who is driving the outreach)
+            groups.push({ filters: [{ propertyName: "primary_outreach_rep", operator: "EQ", value: currentOwnerName }] });
+            // Fallback 1: assigned_bdr (catches BDR-assigned contacts not yet updated)
+            groups.push({ filters: [{ propertyName: "assigned_bdr", operator: "EQ", value: currentOwnerName }] });
+          }
+          if (currentOwnerIds.length) {
+            // Fallback 2: hubspot_owner_id (catches AE-owned contacts not yet updated)
+            groups.push({ filters: [{ propertyName: "hubspot_owner_id", operator: "EQ", value: currentOwnerIds[0] }] });
+          }
+          // If we have no identity at all, return empty filter (show nothing rather than everything)
+          return groups.length > 0 ? groups : null;
+        };
+
+        // If we can't identify the user, bail out -- don't sync a generic list
+        if (!currentOwnerName && !currentOwnerIds.length) {
+          console.error("[todo/sync] could not identify current user, aborting sync");
+          return ok({ items: await getTodos(user.userId), synced: 0 });
+        }
 
         // ── 1. Gold Account contacts ──────────────────────────────────────────
         // Find contacts associated with Gold tier companies
@@ -2299,12 +2340,15 @@ export const handler = async (event, context) => {
         // Gold replies needing response
         if (goldContactIds.size > 0) {
           try {
+            // Combine user filter with reply date filter using OR on reply props
+            const userGroups = userContactFilters();
+            const replyFilterGroups = userGroups.flatMap(g => [
+              { filters: [...g.filters, { propertyName: "hs_sales_email_last_replied", operator: "GTE", value: sinceISO }] },
+              { filters: [...g.filters, { propertyName: "hs_email_last_reply_date",    operator: "GTE", value: sinceISO }] },
+            ]);
             const goldReplies = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
-              filterGroups: [
-                { filters: [{ propertyName: "hs_sales_email_last_replied", operator: "GTE", value: sinceISO }] },
-                { filters: [{ propertyName: "hs_email_last_reply_date",    operator: "GTE", value: sinceISO }] },
-              ],
-              properties: ["firstname","lastname","company","hs_email_last_reply_date","hs_sales_email_last_replied","hs_last_sales_activity_timestamp","hs_email_last_send_date","notes_last_contacted"],
+              filterGroups: replyFilterGroups,
+              properties: ["firstname","lastname","company","hs_email_last_reply_date","hs_sales_email_last_replied","hs_last_sales_activity_timestamp","hs_email_last_send_date","notes_last_contacted","primary_outreach_rep"],
               sorts: [{ propertyName: "hs_sales_email_last_replied", direction: "DESCENDING" }],
               limit: 50,
             });
@@ -2336,10 +2380,12 @@ export const handler = async (event, context) => {
 
           // Gold sequence follow-ups
           try {
+            const userGroups = userContactFilters();
+            const seqGroups  = userGroups.map(g => ({
+              filters: [...g.filters, { propertyName: "hs_sequences_is_enrolled", operator: "EQ", value: "true" }],
+            }));
             const goldSeqs = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
-              filterGroups: [{ filters: [
-                { propertyName: "hs_sequences_is_enrolled", operator: "EQ", value: "true" },
-              ]}],
+              filterGroups: seqGroups,
               properties: ["firstname","lastname","company","hs_latest_sequence_enrolled","hs_latest_sequence_enrolled_date"],
               limit: 50,
             });
@@ -2360,21 +2406,7 @@ export const handler = async (event, context) => {
         }
 
         // ── 2. Meetings (HubSpot only — Outlook pending) ─────────────────────
-        // Only show meetings where the logged-in user is an attendee.
-        // Uses hs_attendee_owner_ids property to filter out Gong-synced meetings
-        // for contacts where the user is just the assigned BDR, not a participant.
         try {
-          // Get current user's HubSpot owner ID
-          let currentOwnerIds = [];
-          try {
-            const me = await hsGet(user.userId, "/crm/v3/owners/me", {});
-            if (me?.id) {
-              currentOwnerIds = [String(me.id)];
-              console.log(`[todo/sync] current owner ID: ${me.id}`);
-            }
-          } catch (e) {
-            console.error("[todo/sync] owner lookup failed:", e.message);
-          }
 
           const todayStart = new Date(); todayStart.setHours(0,0,0,0);
           const todayEnd   = new Date(); todayEnd.setHours(23,59,59,999);
@@ -2421,12 +2453,14 @@ export const handler = async (event, context) => {
 
         // ── 3. Regular replies needing response ───────────────────────────────
         try {
+          const userGroups = userContactFilters();
+          const replyFilterGroups = userGroups.flatMap(g => [
+            { filters: [...g.filters, { propertyName: "hs_sales_email_last_replied", operator: "GTE", value: sinceISO }] },
+            { filters: [...g.filters, { propertyName: "hs_email_last_reply_date",    operator: "GTE", value: sinceISO }] },
+          ]);
           const replies = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
-            filterGroups: [
-              { filters: [{ propertyName: "hs_sales_email_last_replied", operator: "GTE", value: sinceISO }] },
-              { filters: [{ propertyName: "hs_email_last_reply_date",    operator: "GTE", value: sinceISO }] },
-            ],
-            properties: ["firstname","lastname","company","hs_email_last_reply_date","hs_sales_email_last_replied","hs_last_sales_activity_timestamp","hs_email_last_send_date","notes_last_contacted"],
+            filterGroups: replyFilterGroups,
+            properties: ["firstname","lastname","company","hs_email_last_reply_date","hs_sales_email_last_replied","hs_last_sales_activity_timestamp","hs_email_last_send_date","notes_last_contacted","primary_outreach_rep"],
             sorts: [{ propertyName: "hs_sales_email_last_replied", direction: "DESCENDING" }],
             limit: 20,
           });
@@ -2458,10 +2492,12 @@ export const handler = async (event, context) => {
 
         // ── 4. Regular sequence follow-ups ────────────────────────────────────
         try {
+          const userGroups = userContactFilters();
+          const seqGroups  = userGroups.map(g => ({
+            filters: [...g.filters, { propertyName: "hs_sequences_is_enrolled", operator: "EQ", value: "true" }],
+          }));
           const seqs = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
-            filterGroups: [{ filters: [
-              { propertyName: "hs_sequences_is_enrolled", operator: "EQ", value: "true" },
-            ]}],
+            filterGroups: seqGroups,
             properties: ["firstname","lastname","company","hs_latest_sequence_enrolled_date"],
             sorts: [{ propertyName: "hs_latest_sequence_enrolled_date", direction: "DESCENDING" }],
             limit: 20,
