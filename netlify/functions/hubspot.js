@@ -2253,12 +2253,115 @@ export const handler = async (event, context) => {
     }
 
     if (method === "POST" && path === "/todo/sync") {
-      // Only sync meetings -- replies and tasks are promoted manually from the Task Queue
+      // Priority order:
+      // 1. Gold Account contacts needing reply or sequence follow-up
+      // 2. Meetings (HubSpot only until Outlook is connected)
+      // 3. Regular replies needing response
+      // 4. Regular sequence follow-ups
       try {
-        const today  = new Date().toISOString().slice(0, 10);
-        const PORTAL = "39921549";
+        const now      = Date.now();
+        const today    = new Date().toISOString().slice(0, 10);
+        const sinceISO = new Date(now - 7 * 24 * 60 * 60 * 1000).toISOString();
+        const PORTAL   = "39921549";
+        const GOLD_TIERS = [
+          "GOLD - 1-10","GOLD - 11-20","GOLD - 21-30","GOLD - 31-40","GOLD - 41-50",
+          "GOLD - 51-60","GOLD - 61-70","GOLD - 71-80","GOLD - 81-90","GOLD - 91-100",
+        ];
         const autoItems = [];
 
+        // ── 1. Gold Account contacts ──────────────────────────────────────────
+        // Find contacts associated with Gold tier companies
+        // that have unanswered replies or are in active sequences
+        let goldContactIds = new Set();
+        try {
+          const goldCompanies = await hsPost(user.userId, "/crm/v3/objects/companies/search", {
+            filterGroups: [{ filters: [
+              { propertyName: "priority_tier__bdr", operator: "IN", values: GOLD_TIERS },
+            ]}],
+            properties: ["name","priority_tier__bdr"],
+            limit: 200,
+          });
+
+          // Get contact IDs associated with Gold companies via batch associations
+          const companyIds = (goldCompanies.results || []).map(c => c.id);
+          if (companyIds.length > 0) {
+            const assocData = await hsPost(user.userId, "/crm/v4/associations/companies/contacts/batch/read", {
+              inputs: companyIds.slice(0, 100).map(id => ({ id })),
+            });
+            for (const result of (assocData.results || [])) {
+              for (const assoc of (result.to || [])) {
+                goldContactIds.add(assoc.toObjectId || assoc.id);
+              }
+            }
+          }
+        } catch (e) { console.error("[todo/sync] gold companies:", e.message); }
+
+        // Gold replies needing response
+        if (goldContactIds.size > 0) {
+          try {
+            const goldReplies = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
+              filterGroups: [
+                { filters: [{ propertyName: "hs_sales_email_last_replied", operator: "GTE", value: sinceISO }] },
+                { filters: [{ propertyName: "hs_email_last_reply_date",    operator: "GTE", value: sinceISO }] },
+              ],
+              properties: ["firstname","lastname","company","hs_email_last_reply_date","hs_sales_email_last_replied","hs_last_sales_activity_timestamp","hs_email_last_send_date","notes_last_contacted"],
+              sorts: [{ propertyName: "hs_sales_email_last_replied", direction: "DESCENDING" }],
+              limit: 50,
+            });
+            for (const c of (goldReplies.results || [])) {
+              if (!goldContactIds.has(String(c.id))) continue;
+              const p = c.properties || {};
+              const name = `${p.firstname||""} ${p.lastname||""}`.trim() || "Unknown";
+              const replyTs = Math.max(
+                p.hs_sales_email_last_replied ? new Date(p.hs_sales_email_last_replied).getTime() : 0,
+                p.hs_email_last_reply_date    ? new Date(p.hs_email_last_reply_date).getTime()    : 0,
+              );
+              const activityTs = Math.max(
+                p.hs_last_sales_activity_timestamp ? new Date(p.hs_last_sales_activity_timestamp).getTime() : 0,
+                p.hs_email_last_send_date          ? new Date(p.hs_email_last_send_date).getTime()           : 0,
+                p.notes_last_contacted             ? new Date(p.notes_last_contacted).getTime()              : 0,
+              );
+              if (replyTs > activityTs) {
+                autoItems.push({
+                  type: "reply", priority: 1,
+                  text: `⭐ Reply to ${name}`,
+                  subtext: `Gold · ${p.company || ""}`.trim().replace(/·\s*$/, ""),
+                  contactId: c.id,
+                  hubspotUrl: `https://app.hubspot.com/contacts/${PORTAL}/record/0-1/${c.id}`,
+                  sourceId: `reply-${c.id}`, date: today,
+                });
+              }
+            }
+          } catch (e) { console.error("[todo/sync] gold replies:", e.message); }
+
+          // Gold sequence follow-ups
+          try {
+            const goldSeqs = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
+              filterGroups: [{ filters: [
+                { propertyName: "hs_sequences_is_enrolled", operator: "EQ", value: "true" },
+              ]}],
+              properties: ["firstname","lastname","company","hs_latest_sequence_enrolled","hs_latest_sequence_enrolled_date"],
+              limit: 50,
+            });
+            for (const c of (goldSeqs.results || [])) {
+              if (!goldContactIds.has(String(c.id))) continue;
+              const p = c.properties || {};
+              const name = `${p.firstname||""} ${p.lastname||""}`.trim() || "Unknown";
+              autoItems.push({
+                type: "sequence", priority: 1,
+                text: `⭐ Follow up: ${name}`,
+                subtext: `Gold · ${p.company || ""}`.trim().replace(/·\s*$/, ""),
+                contactId: c.id,
+                hubspotUrl: `https://app.hubspot.com/contacts/${PORTAL}/record/0-1/${c.id}`,
+                sourceId: `seq-${c.id}`, date: today,
+              });
+            }
+          } catch (e) { console.error("[todo/sync] gold seqs:", e.message); }
+        }
+
+        // ── 2. Meetings (HubSpot only — Outlook pending) ─────────────────────
+        // NOTE: This will only show meetings logged directly in HubSpot.
+        // Full meeting sync activates when Outlook is connected.
         try {
           const todayStart = new Date(); todayStart.setHours(0,0,0,0);
           const todayEnd   = new Date(); todayEnd.setHours(23,59,59,999);
@@ -2277,15 +2380,79 @@ export const handler = async (event, context) => {
               ? new Date(p.hs_meeting_start_time).toLocaleTimeString("en-US", { hour:"numeric", minute:"2-digit" })
               : "";
             autoItems.push({
-              type:       "meeting",
-              text:       p.hs_meeting_title || "Meeting",
-              subtext:    start ? `Today at ${start}` : "Today",
+              type: "meeting", priority: 2,
+              text: p.hs_meeting_title || "Meeting",
+              subtext: start ? `Today at ${start}` : "Today",
               hubspotUrl: `https://app.hubspot.com/contacts/${PORTAL}/objects/0-47/views/all/list`,
-              sourceId:   `meeting-${m.id}`,
-              date:       today,
+              sourceId: `meeting-${m.id}`, date: today,
             });
           }
         } catch (e) { console.error("[todo/sync] meetings:", e.message); }
+
+        // ── 3. Regular replies needing response ───────────────────────────────
+        try {
+          const replies = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
+            filterGroups: [
+              { filters: [{ propertyName: "hs_sales_email_last_replied", operator: "GTE", value: sinceISO }] },
+              { filters: [{ propertyName: "hs_email_last_reply_date",    operator: "GTE", value: sinceISO }] },
+            ],
+            properties: ["firstname","lastname","company","hs_email_last_reply_date","hs_sales_email_last_replied","hs_last_sales_activity_timestamp","hs_email_last_send_date","notes_last_contacted"],
+            sorts: [{ propertyName: "hs_sales_email_last_replied", direction: "DESCENDING" }],
+            limit: 20,
+          });
+          for (const c of (replies.results || [])) {
+            if (goldContactIds.has(String(c.id))) continue; // already added above
+            const p = c.properties || {};
+            const name = `${p.firstname||""} ${p.lastname||""}`.trim() || "Unknown";
+            const replyTs = Math.max(
+              p.hs_sales_email_last_replied ? new Date(p.hs_sales_email_last_replied).getTime() : 0,
+              p.hs_email_last_reply_date    ? new Date(p.hs_email_last_reply_date).getTime()    : 0,
+            );
+            const activityTs = Math.max(
+              p.hs_last_sales_activity_timestamp ? new Date(p.hs_last_sales_activity_timestamp).getTime() : 0,
+              p.hs_email_last_send_date          ? new Date(p.hs_email_last_send_date).getTime()           : 0,
+              p.notes_last_contacted             ? new Date(p.notes_last_contacted).getTime()              : 0,
+            );
+            if (replyTs > activityTs) {
+              autoItems.push({
+                type: "reply", priority: 3,
+                text: `Reply to ${name}`,
+                subtext: p.company || "",
+                contactId: c.id,
+                hubspotUrl: `https://app.hubspot.com/contacts/${PORTAL}/record/0-1/${c.id}`,
+                sourceId: `reply-${c.id}`, date: today,
+              });
+            }
+          }
+        } catch (e) { console.error("[todo/sync] replies:", e.message); }
+
+        // ── 4. Regular sequence follow-ups ────────────────────────────────────
+        try {
+          const seqs = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
+            filterGroups: [{ filters: [
+              { propertyName: "hs_sequences_is_enrolled", operator: "EQ", value: "true" },
+            ]}],
+            properties: ["firstname","lastname","company","hs_latest_sequence_enrolled_date"],
+            sorts: [{ propertyName: "hs_latest_sequence_enrolled_date", direction: "DESCENDING" }],
+            limit: 20,
+          });
+          for (const c of (seqs.results || [])) {
+            if (goldContactIds.has(String(c.id))) continue; // already added above
+            const p = c.properties || {};
+            const name = `${p.firstname||""} ${p.lastname||""}`.trim() || "Unknown";
+            autoItems.push({
+              type: "sequence", priority: 4,
+              text: `Follow up: ${name}`,
+              subtext: p.company || "",
+              contactId: c.id,
+              hubspotUrl: `https://app.hubspot.com/contacts/${PORTAL}/record/0-1/${c.id}`,
+              sourceId: `seq-${c.id}`, date: today,
+            });
+          }
+        } catch (e) { console.error("[todo/sync] seqs:", e.message); }
+
+        // Sort by priority before upserting
+        autoItems.sort((a, b) => (a.priority || 9) - (b.priority || 9));
 
         const items = await bulkUpsertAutoDetected(user.userId, autoItems);
         return ok({ items, synced: autoItems.length });
