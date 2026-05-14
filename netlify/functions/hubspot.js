@@ -2757,11 +2757,38 @@ export const handler = async (event, context) => {
               ? [{ propertyName: "hubspot_owner_id", operator: "EQ",  value:  ownerIds[0] }]
               : [{ propertyName: "hubspot_owner_id", operator: "IN",  values: ownerIds    }];
           }
-          // Both present -- caller must handle OR logic via filterGroups
+          // Both present -- return assigned_bdr filter (OR handled via filterGroups below)
+          return repNames.length === 1
+            ? [{ propertyName: "assigned_bdr", operator: "EQ", value: repNames[0] }]
+            : [{ propertyName: "assigned_bdr", operator: "IN", values: repNames }];
+        };
+
+        // OR-aware filter groups for recent contacts fetch (handles mixed BDR + AE selections)
+        const contactFilterGroups = (extraDateFilter) => {
+          const dateF = extraDateFilter ? [extraDateFilter] : [];
+          if (repNames.length === 0 && ownerIds.length === 0) {
+            return [{ filters: [{ propertyName: "assigned_bdr", operator: "IN", values: KNOWN_BDRS }, ...dateF] }];
+          }
+          if (repNames.length > 0 && ownerIds.length === 0) {
+            return [{ filters: [
+              repNames.length === 1
+                ? { propertyName: "assigned_bdr", operator: "EQ", value: repNames[0] }
+                : { propertyName: "assigned_bdr", operator: "IN", values: repNames },
+              ...dateF
+            ]}];
+          }
+          if (repNames.length === 0 && ownerIds.length > 0) {
+            return [{ filters: [
+              ownerIds.length === 1
+                ? { propertyName: "hubspot_owner_id", operator: "EQ", value: ownerIds[0] }
+                : { propertyName: "hubspot_owner_id", operator: "IN", values: ownerIds },
+              ...dateF
+            ]}];
+          }
+          // Both: OR logic via two filter groups
           return [
-            ...(repNames.length === 1
-              ? [{ propertyName: "assigned_bdr", operator: "EQ", value: repNames[0] }]
-              : [{ propertyName: "assigned_bdr", operator: "IN", values: repNames }]),
+            { filters: [{ propertyName: "assigned_bdr", operator: repNames.length === 1 ? "EQ" : "IN", ...(repNames.length === 1 ? { value: repNames[0] } : { values: repNames }) }, ...dateF] },
+            { filters: [{ propertyName: "hubspot_owner_id", operator: ownerIds.length === 1 ? "EQ" : "IN", ...(ownerIds.length === 1 ? { value: ownerIds[0] } : { values: ownerIds }) }, ...dateF] },
           ];
         };
 
@@ -2866,7 +2893,7 @@ export const handler = async (event, context) => {
 
             // Recent activity contacts (runs in parallel, not blocked by rep counts)
             fetchC(
-              [{ filters: [...bdr, ...df("hs_email_last_send_date")] }],
+              contactFilterGroups(sinceISO ? { propertyName: "hs_email_last_send_date", operator: "GTE", value: sinceISO } : { propertyName: "hs_email_last_send_date", operator: "HAS_PROPERTY" }),
               ["firstname","lastname","email","company","assigned_bdr",
                "hs_email_last_send_date","hs_email_last_email_name",
                "hs_email_last_open_date","hs_email_last_click_date",
@@ -3179,7 +3206,7 @@ export const handler = async (event, context) => {
 
           // Sequence aggregate counts via contact properties
           const [enrolled, seqReplied, seqOpened, seqClicked] = await Promise.all([
-            count1([...bdr, ...df("hs_latest_sequence_enrolled_date")]),
+            count1([...bdrFilters(), ...df("hs_latest_sequence_enrolled_date")]),
             countOr("hs_email_last_reply_date", "hs_sales_email_last_replied", bdr),
             count1([...bdr, ...df("hs_email_last_open_date")]),
             count1([...bdr, ...df("hs_email_last_click_date")]),
@@ -3214,7 +3241,7 @@ export const handler = async (event, context) => {
           const bySequence = {};
           try {
             const seqContacts = await fetchC(
-              [{ filters: [...bdr, ...df("hs_latest_sequence_enrolled_date")] }],
+              contactFilterGroups(sinceISO ? { propertyName: "hs_latest_sequence_enrolled_date", operator: "GTE", value: sinceISO } : { propertyName: "hs_latest_sequence_enrolled_date", operator: "HAS_PROPERTY" }),
               ["assigned_bdr","hs_latest_sequence_enrolled","hs_latest_sequence_enrolled_date",
                "hs_email_last_reply_date","hs_sales_email_last_replied",
                "hs_email_last_open_date","hs_email_last_click_date"],
