@@ -426,6 +426,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
   const TODO_PAGE_SIZE = 10
   const [todoLoading, setTodoLoading] = useState(false)
   const [todoInput, setTodoInput]     = useState('')
+  const [todoDueDate, setTodoDueDate] = useState('')
   const [todoSyncing, setTodoSyncing] = useState(false)
 
   const fetchTodos = useCallback(async () => {
@@ -452,16 +453,20 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
       const data = await safeFetch('/api/hubspot/todo', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: text.trim(), type: 'manual', ...extraFields }),
+        body: JSON.stringify({
+          text: text.trim(), type: 'manual',
+          dueDate: todoDueDate || null,
+          ...extraFields,
+        }),
       })
       setTodoItems(prev => {
-        // Don't duplicate if sourceId already exists
         if (extraFields.sourceId && prev.some(t => t.sourceId === extraFields.sourceId)) return prev
         return [...prev, data.item]
       })
       setTodoInput('')
+      setTodoDueDate('')
     } catch (e) { console.error('[todo/add]', e) }
-  }, [])
+  }, [todoDueDate])
 
   const toggleTodo = useCallback(async (id, completed) => {
     // Optimistic update
@@ -1095,14 +1100,20 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
               </div>
 
               {/* Add item input */}
-              <div style={{ display:'flex', gap:8, marginBottom:12 }}>
+              <div style={{ display:'flex', gap:8, marginBottom:12, flexWrap:'wrap' }}>
                 <input
                   type="text"
                   value={todoInput}
                   onChange={e => setTodoInput(e.target.value)}
                   onKeyDown={e => e.key === 'Enter' && addTodoItem(todoInput)}
                   placeholder="Add a to-do… (press Enter)"
-                  style={{ flex:1, padding:'7px 10px', background:'var(--bg-secondary)', border:'1px solid var(--border)', borderRadius:'var(--radius)', fontSize:12, color:'var(--text)', outline:'none' }}
+                  style={{ flex:1, minWidth:160, padding:'7px 10px', background:'var(--bg-secondary)', border:'1px solid var(--border)', borderRadius:'var(--radius)', fontSize:12, color:'var(--text)', outline:'none' }}
+                />
+                <input
+                  type="datetime-local"
+                  value={todoDueDate}
+                  onChange={e => setTodoDueDate(e.target.value)}
+                  style={{ padding:'7px 8px', background:'var(--bg-secondary)', border:'1px solid var(--border)', borderRadius:'var(--radius)', fontSize:11, color:'var(--text)', outline:'none' }}
                 />
                 <button onClick={() => addTodoItem(todoInput)}
                   style={{ padding:'7px 14px', background:'var(--accent)', color:'#fff', border:'none', borderRadius:'var(--radius)', fontSize:12, fontWeight:500, cursor:'pointer' }}>
@@ -1139,6 +1150,11 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                         {item.subtext && (
                           <div style={{ fontSize:11, color:'var(--text-tertiary)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
                             {item.subtext}
+                          </div>
+                        )}
+                        {item.dueDate && (
+                          <div style={{ fontSize:10, color: new Date(item.dueDate) < new Date() ? 'var(--red)' : 'var(--text-tertiary)', marginTop:1 }}>
+                            Due {new Date(item.dueDate).toLocaleString('en-US', { month:'short', day:'numeric', hour:'numeric', minute:'2-digit' })}
                           </div>
                         )}
                       </div>
@@ -1199,8 +1215,8 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                             </div>
                           </div>
                           {item.completedAt && (
-                            <div style={{ fontSize:10, color:'var(--text-tertiary)', flexShrink:0 }}>
-                              {new Date(item.completedAt).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'})}
+                            <div style={{ fontSize:10, color:'var(--text-tertiary)', flexShrink:0, marginLeft:4 }}>
+                              ✓ {new Date(item.completedAt).toLocaleTimeString('en-US', { hour:'numeric', minute:'2-digit' })}
                             </div>
                           )}
                         </div>
