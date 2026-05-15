@@ -243,6 +243,7 @@ const REPORT_PERIOD_OPTIONS = [
   { value:'6months',  label:'Last 6 months' },
   { value:'year',     label:'Last year' },
   { value:'alltime',  label:'All time' },
+  { value:'custom',   label:'Custom range…' },
 ]
 
 // ─── Team roster with HubSpot owner IDs ──────────────────────────────────────
@@ -1929,10 +1930,46 @@ function ReportsTab({ safeFetch, owners, currentUserName }) {
   const [dealsPage, setDealsPage]       = useState(0)
   const PAGE_SIZE = 25
 
-  // When switching to deals, default to 1 year; switching away, reset to month
+  // Custom date range
+  const [customFrom, setCustomFrom] = useState('')
+  const [customTo, setCustomTo]     = useState('')
+
+  // Manual activity log
+  const [logInput, setLogInput]       = useState('')
+  const [logType, setLogType]         = useState('other')
+  const [logCompany, setLogCompany]   = useState('')
+  const [logSaving, setLogSaving]     = useState(false)
+
+  const LOG_TYPES = ['call','email','linkedin','meeting','note','other']
+
+  const addLogEntry = useCallback(async () => {
+    if (!logInput.trim()) return
+    setLogSaving(true)
+    try {
+      await safeFetch('/api/hubspot/activity-log', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: logInput.trim(), type: logType, company: logCompany.trim() }),
+      })
+      setLogInput('')
+      setLogCompany('')
+      fetchReport()
+    } catch (e) { console.error('[activity-log]', e) }
+    finally { setLogSaving(false) }
+  }, [logInput, logType, logCompany])
+
+  const removeLogEntry = useCallback(async (id) => {
+    try {
+      await safeFetch(`/api/hubspot/activity-log/${id}`, { method: 'DELETE' })
+      fetchReport()
+    } catch (e) { console.error('[activity-log delete]', e) }
+  }, [])
+
+  // When switching sections
   const handleSetSection = useCallback((s) => {
     setSection(s)
     if (s === 'deals') setPeriod('year')
+    else if (s === 'team_activity' || s === 'gold_activity') setPeriod('month')
     else setPeriod('month')
   }, [])
 
@@ -1957,7 +1994,9 @@ function ReportsTab({ safeFetch, owners, currentUserName }) {
       const params = new URLSearchParams({ section, period })
       if (bdrNames.length)  params.set('rep', bdrNames.join(','))
       if (ownerIds.length)  params.set('owner_id', ownerIds.join(','))
-      if (owner) params.set('owner', owner)
+      if (owner)            params.set('owner', owner)
+      if (period === 'custom' && customFrom) params.set('customFrom', customFrom)
+      if (period === 'custom' && customTo)   params.set('customTo',   customTo)
       const result = await safeFetch(`/api/hubspot/reports?${params}`)
       setData(result)
     } catch (e) {
@@ -1965,7 +2004,7 @@ function ReportsTab({ safeFetch, owners, currentUserName }) {
     } finally {
       setLoading(false)
     }
-  }, [section, period, rep, owner])
+  }, [section, period, rep, owner, customFrom, customTo])
 
   useEffect(() => {
     fetchReport()
@@ -1978,10 +2017,12 @@ function ReportsTab({ safeFetch, owners, currentUserName }) {
   const openHS   = url => window.open(url, '_blank', 'noopener,noreferrer')
 
   const SECTIONS = [
-    { key:'email_activity', label:'Email Activity' },
-    { key:'marketing',      label:'Marketing' },
-    { key:'sequences',      label:'Sequences' },
-    { key:'deals',          label:'Deals' },
+    { key:'email_activity',  label:'Email Activity' },
+    { key:'marketing',       label:'Marketing' },
+    { key:'sequences',       label:'Sequences' },
+    { key:'deals',           label:'Deals' },
+    { key:'team_activity',   label:'Team Activity' },
+    { key:'gold_activity',   label:'Gold Activity' },
   ]
 
   const KpiCard = ({ label, value, sub, href, accent }) => (
@@ -2029,6 +2070,15 @@ function ReportsTab({ safeFetch, owners, currentUserName }) {
         </div>
         <div style={{ marginLeft:'auto', display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
           <Select value={period} onChange={setPeriod} options={REPORT_PERIOD_OPTIONS} />
+          {period === 'custom' && (
+            <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+              <input type="date" value={customFrom} onChange={e => setCustomFrom(e.target.value)}
+                style={{ fontSize:12, padding:'5px 8px', background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius)', color:'var(--text)', outline:'none' }} />
+              <span style={{ fontSize:12, color:'var(--text-tertiary)' }}>to</span>
+              <input type="date" value={customTo} onChange={e => setCustomTo(e.target.value)}
+                style={{ fontSize:12, padding:'5px 8px', background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius)', color:'var(--text)', outline:'none' }} />
+            </div>
+          )}
           {section !== 'deals' && (
             <Select value={rep} onChange={setRep} options={REPORT_REP_OPTIONS} />
           )}
@@ -2423,6 +2473,176 @@ function ReportsTab({ safeFetch, owners, currentUserName }) {
           </div>
         )
       })()}
+
+      {/* ── Team Activity ── */}
+      {!loading && data && section === 'team_activity' && (() => {
+        const t = data.totals || {}
+        const byRep = data.byRep || []
+        return (
+          <div style={{ display:'flex', flexDirection:'column', gap:16 }}>
+            {/* KPI strip */}
+            <div style={{ display:'grid', gridTemplateColumns:'repeat(7,1fr)', gap:10 }}>
+              <KpiCard label="Emails Sent"    value={fmtN(t.sent)}    />
+              <KpiCard label="Opens"          value={fmtN(t.opens)}   />
+              <KpiCard label="Open Rate"      value={`${t.openRate||0}%`} />
+              <KpiCard label="Clicks"         value={fmtN(t.clicks)}  />
+              <KpiCard label="Replies"        value={fmtN(t.replies)} />
+              <KpiCard label="Sequences"      value={fmtN(t.sequences)} />
+              <KpiCard label="To-Do Completed" value={fmtN(t.completedTodos)} accent />
+            </div>
+
+            {/* byRep table */}
+            <Panel>
+              <SectionTitle>By Rep</SectionTitle>
+              <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
+                <THead cols={['Rep','Sent','Opens','Open%','Clicks','Click%','Replies','Reply%','Sequences']} />
+                <tbody>
+                  {byRep.map((r,i) => (
+                    <tr key={i} style={{ borderBottom:'1px solid var(--border)' }}>
+                      <td style={{ padding:'8px 10px 8px 0', fontWeight:500 }}>{r.rep}</td>
+                      <td style={{ padding:'8px 10px 8px 0' }}>{fmtN(r.sent)}</td>
+                      <td style={{ padding:'8px 10px 8px 0' }}>{fmtN(r.opens)}</td>
+                      <td style={{ padding:'8px 10px 8px 0', color:'var(--text-secondary)' }}>{r.openRate}%</td>
+                      <td style={{ padding:'8px 10px 8px 0' }}>{fmtN(r.clicks)}</td>
+                      <td style={{ padding:'8px 10px 8px 0', color:'var(--text-secondary)' }}>{r.clickRate}%</td>
+                      <td style={{ padding:'8px 10px 8px 0' }}>{fmtN(r.replies)}</td>
+                      <td style={{ padding:'8px 10px 8px 0', color:'var(--text-secondary)' }}>{r.replyRate}%</td>
+                      <td style={{ padding:'8px 0' }}>{fmtN(r.sequences)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </Panel>
+
+            {/* Completed To-Do items */}
+            {(data.completedTodos||[]).length > 0 && (
+              <Panel>
+                <SectionTitle>Completed To-Do Items ({data.completedTodos.length})</SectionTitle>
+                <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
+                  <THead cols={['Task','Type','Completed']} />
+                  <tbody>
+                    {data.completedTodos.slice(0,50).map((t,i) => (
+                      <tr key={i} style={{ borderBottom:'1px solid var(--border)' }}>
+                        <td style={{ padding:'7px 10px 7px 0' }}>{t.text}{t.subtext ? <span style={{ color:'var(--text-tertiary)', marginLeft:6 }}>{t.subtext}</span> : null}</td>
+                        <td style={{ padding:'7px 10px 7px 0', color:'var(--text-secondary)' }}>{t.type}</td>
+                        <td style={{ padding:'7px 0', color:'var(--text-tertiary)', whiteSpace:'nowrap' }}>{t.completedAt ? new Date(t.completedAt).toLocaleString() : '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </Panel>
+            )}
+
+            {/* Manual activity log */}
+            <Panel>
+              <SectionTitle>Activity Log ({(data.activityLog||[]).length})</SectionTitle>
+              {/* Add entry */}
+              <div style={{ display:'flex', gap:8, marginBottom:14, flexWrap:'wrap' }}>
+                <select value={logType} onChange={e => setLogType(e.target.value)}
+                  style={{ fontSize:12, padding:'7px 10px', background:'var(--bg-secondary)', border:'1px solid var(--border)', borderRadius:'var(--radius)', color:'var(--text)', outline:'none' }}>
+                  {LOG_TYPES.map(t => <option key={t} value={t}>{t.charAt(0).toUpperCase()+t.slice(1)}</option>)}
+                </select>
+                <input type="text" value={logCompany} onChange={e => setLogCompany(e.target.value)}
+                  placeholder="Company (optional)"
+                  style={{ width:160, padding:'7px 10px', background:'var(--bg-secondary)', border:'1px solid var(--border)', borderRadius:'var(--radius)', fontSize:12, color:'var(--text)', outline:'none' }} />
+                <input type="text" value={logInput} onChange={e => setLogInput(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && addLogEntry()}
+                  placeholder="Describe the activity… (Enter to add)"
+                  style={{ flex:1, minWidth:200, padding:'7px 10px', background:'var(--bg-secondary)', border:'1px solid var(--border)', borderRadius:'var(--radius)', fontSize:12, color:'var(--text)', outline:'none' }} />
+                <button onClick={addLogEntry} disabled={logSaving || !logInput.trim()}
+                  style={{ padding:'7px 16px', background:'var(--accent)', color:'#fff', border:'none', borderRadius:'var(--radius)', fontSize:12, fontWeight:500, cursor:'pointer', opacity: logSaving||!logInput.trim() ? 0.6 : 1 }}>
+                  {logSaving ? 'Adding…' : 'Add'}
+                </button>
+              </div>
+              {(data.activityLog||[]).length === 0 && (
+                <div style={{ fontSize:12, color:'var(--text-tertiary)', padding:'8px 0' }}>No manual entries for this period. Add one above.</div>
+              )}
+              {(data.activityLog||[]).length > 0 && (
+                <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
+                  <THead cols={['Activity','Type','Company','Rep','Date','']} />
+                  <tbody>
+                    {data.activityLog.slice(0,100).map((e,i) => (
+                      <tr key={i} style={{ borderBottom:'1px solid var(--border)' }}>
+                        <td style={{ padding:'7px 10px 7px 0' }}>{e.text}</td>
+                        <td style={{ padding:'7px 10px 7px 0', color:'var(--text-secondary)' }}>{e.type}</td>
+                        <td style={{ padding:'7px 10px 7px 0', color:'var(--text-tertiary)' }}>{e.company||'—'}</td>
+                        <td style={{ padding:'7px 10px 7px 0', color:'var(--text-tertiary)' }}>{e.rep||'—'}</td>
+                        <td style={{ padding:'7px 10px 7px 0', color:'var(--text-tertiary)', whiteSpace:'nowrap' }}>{e.date}</td>
+                        <td style={{ padding:'7px 0' }}>
+                          <button onClick={() => removeLogEntry(e.id)}
+                            style={{ background:'none', border:'none', cursor:'pointer', color:'var(--text-tertiary)', fontSize:14, padding:0 }}>×</button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </Panel>
+          </div>
+        )
+      })()}
+
+      {/* ── Gold Activity ── */}
+      {!loading && data && section === 'gold_activity' && (() => {
+        const t = data.totals || {}
+        const byRep = data.byRep || []
+        const byAccount = data.byAccount || []
+        return (
+          <div style={{ display:'flex', flexDirection:'column', gap:16 }}>
+            {/* KPI strip */}
+            <div style={{ display:'grid', gridTemplateColumns:'repeat(6,1fr)', gap:10 }}>
+              <KpiCard label="Gold Accounts"  value={fmtN(data.goldAccountCount||0)} accent />
+              <KpiCard label="Gold Contacts"  value={fmtN(data.goldContactCount||0)} />
+              <KpiCard label="Emails Sent"    value={fmtN(t.sent)}    />
+              <KpiCard label="Opens"          value={fmtN(t.opens)}   />
+              <KpiCard label="Open Rate"      value={`${t.openRate||0}%`} />
+              <KpiCard label="Replies"        value={fmtN(t.replies)} />
+            </div>
+
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16 }}>
+              {/* byRep */}
+              <Panel>
+                <SectionTitle>By Rep</SectionTitle>
+                <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
+                  <THead cols={['Rep','Sent','Opens','Clicks','Replies','Sequences']} />
+                  <tbody>
+                    {byRep.map((r,i) => (
+                      <tr key={i} style={{ borderBottom:'1px solid var(--border)' }}>
+                        <td style={{ padding:'8px 10px 8px 0', fontWeight:500 }}>{r.rep}</td>
+                        <td style={{ padding:'8px 10px 8px 0' }}>{fmtN(r.sent)}</td>
+                        <td style={{ padding:'8px 10px 8px 0' }}>{fmtN(r.opens)}</td>
+                        <td style={{ padding:'8px 10px 8px 0' }}>{fmtN(r.clicks)}</td>
+                        <td style={{ padding:'8px 10px 8px 0' }}>{fmtN(r.replies)}</td>
+                        <td style={{ padding:'8px 0' }}>{fmtN(r.sequences)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </Panel>
+
+              {/* byAccount */}
+              <Panel>
+                <SectionTitle>Gold Accounts</SectionTitle>
+                <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
+                  <THead cols={['Account','Tier']} />
+                  <tbody>
+                    {byAccount.map((a,i) => (
+                      <tr key={i} style={{ borderBottom:'1px solid var(--border)' }}>
+                        <td style={{ padding:'7px 10px 7px 0' }}>
+                          <a href={a.url} target="_blank" rel="noopener noreferrer"
+                            style={{ color:'var(--accent)', textDecoration:'none', fontWeight:500 }}>{a.name}</a>
+                        </td>
+                        <td style={{ padding:'7px 0', color:'var(--text-tertiary)', fontSize:11 }}>{a.tier}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </Panel>
+            </div>
+          </div>
+        )
+      })()}
+
     </div>
   )
 }
