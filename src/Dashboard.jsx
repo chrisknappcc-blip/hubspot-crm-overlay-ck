@@ -2482,13 +2482,13 @@ function ReportsTab({ safeFetch, owners, currentUserName }) {
           <div style={{ display:'flex', flexDirection:'column', gap:16 }}>
             {/* KPI strip */}
             <div style={{ display:'grid', gridTemplateColumns:'repeat(7,1fr)', gap:10 }}>
-              <KpiCard label="Emails Sent"    value={fmtN(t.sent)}    />
-              <KpiCard label="Opens"          value={fmtN(t.opens)}   />
+              <KpiCard label="Emails Sent"    value={fmt(t.sent)}    />
+              <KpiCard label="Opens"          value={fmt(t.opens)}   />
               <KpiCard label="Open Rate"      value={`${t.openRate||0}%`} />
-              <KpiCard label="Clicks"         value={fmtN(t.clicks)}  />
-              <KpiCard label="Replies"        value={fmtN(t.replies)} />
-              <KpiCard label="Sequences"      value={fmtN(t.sequences)} />
-              <KpiCard label="To-Do Completed" value={fmtN(t.completedTodos)} accent />
+              <KpiCard label="Clicks"         value={fmt(t.clicks)}  />
+              <KpiCard label="Replies"        value={fmt(t.replies)} />
+              <KpiCard label="Sequences"      value={fmt(t.sequences)} />
+              <KpiCard label="To-Do Completed" value={fmt(t.completedTodos)} accent />
             </div>
 
             {/* byRep table */}
@@ -2500,14 +2500,14 @@ function ReportsTab({ safeFetch, owners, currentUserName }) {
                   {byRep.map((r,i) => (
                     <tr key={i} style={{ borderBottom:'1px solid var(--border)' }}>
                       <td style={{ padding:'8px 10px 8px 0', fontWeight:500 }}>{r.rep}</td>
-                      <td style={{ padding:'8px 10px 8px 0' }}>{fmtN(r.sent)}</td>
-                      <td style={{ padding:'8px 10px 8px 0' }}>{fmtN(r.opens)}</td>
+                      <td style={{ padding:'8px 10px 8px 0' }}>{fmt(r.sent)}</td>
+                      <td style={{ padding:'8px 10px 8px 0' }}>{fmt(r.opens)}</td>
                       <td style={{ padding:'8px 10px 8px 0', color:'var(--text-secondary)' }}>{r.openRate}%</td>
-                      <td style={{ padding:'8px 10px 8px 0' }}>{fmtN(r.clicks)}</td>
+                      <td style={{ padding:'8px 10px 8px 0' }}>{fmt(r.clicks)}</td>
                       <td style={{ padding:'8px 10px 8px 0', color:'var(--text-secondary)' }}>{r.clickRate}%</td>
-                      <td style={{ padding:'8px 10px 8px 0' }}>{fmtN(r.replies)}</td>
+                      <td style={{ padding:'8px 10px 8px 0' }}>{fmt(r.replies)}</td>
                       <td style={{ padding:'8px 10px 8px 0', color:'var(--text-secondary)' }}>{r.replyRate}%</td>
-                      <td style={{ padding:'8px 0' }}>{fmtN(r.sequences)}</td>
+                      <td style={{ padding:'8px 0' }}>{fmt(r.sequences)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -2591,12 +2591,12 @@ function ReportsTab({ safeFetch, owners, currentUserName }) {
           <div style={{ display:'flex', flexDirection:'column', gap:16 }}>
             {/* KPI strip */}
             <div style={{ display:'grid', gridTemplateColumns:'repeat(6,1fr)', gap:10 }}>
-              <KpiCard label="Gold Accounts"  value={fmtN(data.goldAccountCount||0)} accent />
-              <KpiCard label="Gold Contacts"  value={fmtN(data.goldContactCount||0)} />
-              <KpiCard label="Emails Sent"    value={fmtN(t.sent)}    />
-              <KpiCard label="Opens"          value={fmtN(t.opens)}   />
+              <KpiCard label="Gold Accounts"  value={fmt(data.goldAccountCount||0)} accent />
+              <KpiCard label="Gold Contacts"  value={fmt(data.goldContactCount||0)} />
+              <KpiCard label="Emails Sent"    value={fmt(t.sent)}    />
+              <KpiCard label="Opens"          value={fmt(t.opens)}   />
               <KpiCard label="Open Rate"      value={`${t.openRate||0}%`} />
-              <KpiCard label="Replies"        value={fmtN(t.replies)} />
+              <KpiCard label="Replies"        value={fmt(t.replies)} />
             </div>
 
             <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16 }}>
@@ -2609,11 +2609,11 @@ function ReportsTab({ safeFetch, owners, currentUserName }) {
                     {byRep.map((r,i) => (
                       <tr key={i} style={{ borderBottom:'1px solid var(--border)' }}>
                         <td style={{ padding:'8px 10px 8px 0', fontWeight:500 }}>{r.rep}</td>
-                        <td style={{ padding:'8px 10px 8px 0' }}>{fmtN(r.sent)}</td>
-                        <td style={{ padding:'8px 10px 8px 0' }}>{fmtN(r.opens)}</td>
-                        <td style={{ padding:'8px 10px 8px 0' }}>{fmtN(r.clicks)}</td>
-                        <td style={{ padding:'8px 10px 8px 0' }}>{fmtN(r.replies)}</td>
-                        <td style={{ padding:'8px 0' }}>{fmtN(r.sequences)}</td>
+                        <td style={{ padding:'8px 10px 8px 0' }}>{fmt(r.sent)}</td>
+                        <td style={{ padding:'8px 10px 8px 0' }}>{fmt(r.opens)}</td>
+                        <td style={{ padding:'8px 10px 8px 0' }}>{fmt(r.clicks)}</td>
+                        <td style={{ padding:'8px 10px 8px 0' }}>{fmt(r.replies)}</td>
+                        <td style={{ padding:'8px 0' }}>{fmt(r.sequences)}</td>
                       </tr>
                     ))}
                   </tbody>
