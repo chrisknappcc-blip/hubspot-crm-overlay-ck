@@ -3474,8 +3474,6 @@ export const handler = async (event, context) => {
           });
         }
 
-        return error(400, `Unknown section: ${section}`);
-
         // ── TEAM ACTIVITY ─────────────────────────────────────────────────────
         // All activity across the team with optional rep filter + manual log entries
         if (section === "team_activity") {
@@ -3643,6 +3641,8 @@ export const handler = async (event, context) => {
             byAccount,
           });
         }
+
+        return error(400, `Unknown section: ${section}`);
 
       } catch (err) {
         console.error("[reports] Error:", err.message);
