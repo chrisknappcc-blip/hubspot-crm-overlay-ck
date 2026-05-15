@@ -1138,10 +1138,12 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                   {/* Active items */}
                   {active.length === 0 && <div style={{ fontSize:12, color:'var(--text-tertiary)', padding:'8px 0' }}>All caught up!</div>}
                   {pageActive.map(item => (
-                    <div key={item.id} style={{ display:'flex', alignItems:'center', gap:8, padding:'6px 4px', borderRadius:'var(--radius)', background:'transparent' }}
-                      onMouseEnter={e => e.currentTarget.style.background='var(--bg-secondary)'}
-                      onMouseLeave={e => e.currentTarget.style.background='transparent'}>
-                      <input type="checkbox" checked={false} onChange={() => toggleTodo(item.id, true)}
+                    <div key={item.id}
+                      onClick={() => item.hubspotUrl && window.open(item.hubspotUrl, '_blank', 'noopener,noreferrer')}
+                      style={{ display:'flex', alignItems:'center', gap:8, padding:'6px 4px', borderRadius:'var(--radius)', background:'transparent', cursor: item.hubspotUrl ? 'pointer' : 'default' }}
+                      onMouseEnter={e => { e.currentTarget.style.background='var(--bg-secondary)' }}
+                      onMouseLeave={e => { e.currentTarget.style.background='transparent' }}>
+                      <input type="checkbox" checked={false} onChange={e => { e.stopPropagation(); toggleTodo(item.id, true) }}
                         style={{ flexShrink:0, cursor:'pointer', accentColor:'var(--accent)', width:15, height:15 }} />
                       <div style={{ flex:1, minWidth:0 }}>
                         <div style={{ fontSize:13, color:'var(--text)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
@@ -1167,13 +1169,10 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                           </span>
                         )}
                         {item.hubspotUrl && (
-                          <button onClick={() => window.open(item.hubspotUrl,'_blank','noopener,noreferrer')}
-                            style={{ background:'none', border:'none', cursor:'pointer', padding:0, color:'var(--text-tertiary)', lineHeight:1 }}>
-                            <HsIcon />
-                          </button>
+                          <span style={{ fontSize:9, color:'var(--text-tertiary)', padding:'2px 4px' }}>↗</span>
                         )}
                         {!item.autoDetected && (
-                          <button onClick={() => deleteTodoItem(item.id)}
+                          <button onClick={e => { e.stopPropagation(); deleteTodoItem(item.id) }}
                             style={{ background:'none', border:'none', cursor:'pointer', padding:'0 2px', color:'var(--text-tertiary)', fontSize:14, lineHeight:1 }}>
                             ×
                           </button>
