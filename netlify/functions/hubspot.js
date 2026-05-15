@@ -3568,26 +3568,43 @@ export const handler = async (event, context) => {
             } catch (e) { console.error("[gold_activity] assoc:", e.message); }
           }
 
-          // Build Gold-specific countAllRepsForMetric that adds Gold contact ID filter
+          // Count Gold activity per rep using direct contact association filter
+          // Rather than fetching all contacts and filtering client-side (capped at 200),
+          // query per-rep with Gold contact IDs as an IN filter for accuracy
           const countAllRepsForGoldMetric = async (dateProp) => {
             if (!goldContactIds.length) return {};
             const dateF = sinceISO
               ? { propertyName: dateProp, operator: "GTE", value: sinceISO }
               : { propertyName: dateProp, operator: "HAS_PROPERTY" };
+
+            // Chunk goldContactIds into batches of 100 for IN filter
+            const CHUNK = 100;
+            const idChunks = [];
+            for (let i = 0; i < goldContactIds.length; i += CHUNK) {
+              idChunks.push(goldContactIds.slice(i, i + CHUNK));
+            }
+
             const results = await Promise.all(ALL_REPS.map(async repName => {
               const ownerId = REP_OWNER_ID_MAP[repName];
               const repF = ownerId
                 ? { propertyName: "hubspot_owner_id", operator: "EQ", value: ownerId }
                 : { propertyName: "assigned_bdr",     operator: "EQ", value: repName };
-              try {
-                const d = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
-                  filterGroups: [{ filters: [repF, dateF] }],
-                  properties: ["hs_object_id","assigned_bdr","hubspot_owner_id"], limit: 200,
-                });
-                // Filter to Gold contacts only
-                const goldCount = (d.results||[]).filter(c => goldContactIds.includes(c.id)).length;
-                return [repName, goldCount];
-              } catch { return [repName, 0]; }
+              let total = 0;
+              // Query each chunk of Gold contact IDs
+              for (const chunk of idChunks) {
+                try {
+                  const d = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
+                    filterGroups: [{ filters: [
+                      repF,
+                      dateF,
+                      { propertyName: "hs_object_id", operator: "IN", values: chunk },
+                    ]}],
+                    properties: ["hs_object_id"], limit: 1,
+                  });
+                  total += d.total || 0;
+                } catch { /* skip chunk */ }
+              }
+              return [repName, total];
             }));
             return Object.fromEntries(results);
           };
