@@ -28,6 +28,7 @@ import { withAuth } from "./utils/auth.js";
 import { getTokens, setTokens, isTokenValid } from "./utils/tokenStore.js";
 import { getTabsForUser, getAllTabsForUser, getRegistry, saveRegistry, getPersonalTabs, savePersonalTabs, slugify, fetchPageTitle } from "./utils/tabRegistry.js";
 import { getTodos, addTodo, updateTodo, deleteTodo, bulkUpsertAutoDetected } from "./utils/todoStore.js";
+import { getActivityLog, addActivityEntry, deleteActivityEntry } from "./utils/activityLog.js";
 
 // Admin user IDs -- comma-separated Clerk user IDs in ADMIN_USER_IDS env var
 // e.g. ADMIN_USER_IDS=user_abc123,user_def456
@@ -2224,6 +2225,55 @@ export const handler = async (event, context) => {
     // DELETE /tabs/:id -- remove a tab (admin only)
     // GET /tabs/preview?url= -- fetch page <title> for auto-naming (admin only)
 
+    // ── ACTIVITY LOG ────────────────────────────────────────────────────────────
+    // GET    /activity-log          -- get entries (supports ?since=&until=&rep=)
+    // POST   /activity-log          -- add a manual entry
+    // DELETE /activity-log/:id      -- delete an entry
+
+    if (method === "GET" && path === "/activity-log") {
+      try {
+        const entries = await getActivityLog(user.userId, {
+          since: qp.since || null,
+          until: qp.until || null,
+          rep:   qp.rep   || null,
+        });
+        return ok({ entries });
+      } catch (err) {
+        console.error("[activity-log] GET error:", err.message);
+        return error(500, `Activity log error: ${err.message}`);
+      }
+    }
+
+    if (method === "POST" && path === "/activity-log") {
+      try {
+        const body = JSON.parse(event.body || "{}");
+        if (!body.text?.trim()) return error(400, "text is required");
+        // Get current user's name for rep field
+        let repName = "";
+        try {
+          const me = await hsGet(user.userId, "/crm/v3/owners/me", {});
+          repName = `${me.firstName||""} ${me.lastName||""}`.trim();
+        } catch { /* use empty */ }
+        const entry = await addActivityEntry(user.userId, body, repName);
+        return ok({ entry });
+      } catch (err) {
+        console.error("[activity-log] POST error:", err.message);
+        return error(500, `Activity log error: ${err.message}`);
+      }
+    }
+
+    if (method === "DELETE" && path.startsWith("/activity-log/")) {
+      const entryId = path.split("/activity-log/")[1];
+      if (!entryId) return error(400, "Entry ID required");
+      try {
+        await deleteActivityEntry(user.userId, entryId);
+        return ok({ deleted: entryId });
+      } catch (err) {
+        console.error("[activity-log] DELETE error:", err.message);
+        return error(500, `Activity log error: ${err.message}`);
+      }
+    }
+
     // ── TODO LIST ──────────────────────────────────────────────────────────────
     // GET    /todo        -- get all todos for user
     // POST   /todo        -- add a manual todo
@@ -2695,16 +2745,19 @@ export const handler = async (event, context) => {
 
         const now = Date.now();
         const PERIOD_MS = {
-          today:   () => now - (now % 86400000),           // midnight today
-          week:    () => now - 7   * 86400000,
-          month:   () => now - 30  * 86400000,
-          quarter: () => now - 90  * 86400000,
-          "6months": () => now - 180 * 86400000,
-          year:    () => now - 365 * 86400000,
-          alltime: () => null,
+          today:    () => now - (now % 86400000),
+          week:     () => now - 7   * 86400000,
+          month:    () => now - 30  * 86400000,
+          quarter:  () => now - 90  * 86400000,
+          "6months":() => now - 180 * 86400000,
+          year:     () => now - 365 * 86400000,
+          alltime:  () => null,
+          custom:   () => qp.customFrom ? new Date(qp.customFrom).getTime() : now - 30 * 86400000,
         };
         const sinceMs  = (PERIOD_MS[period] ?? PERIOD_MS.month)();
+        const untilMs  = (period === 'custom' && qp.customTo) ? new Date(qp.customTo).getTime() + 86400000 : null;
         const sinceISO = sinceMs ? new Date(sinceMs).toISOString() : null;
+        const untilISO = untilMs ? new Date(untilMs).toISOString() : null;
 
         const KNOWN_BDRS = ["Chris Knapp", "Chiara Pate", "Matt Valin", "Joseph Haine", "Tim Grisham", "Irene Wong", "Cole Hooper", "John Hansel"];
 
@@ -3422,6 +3475,174 @@ export const handler = async (event, context) => {
         }
 
         return error(400, `Unknown section: ${section}`);
+
+        // ── TEAM ACTIVITY ─────────────────────────────────────────────────────
+        // All activity across the team with optional rep filter + manual log entries
+        if (section === "team_activity") {
+          // Fetch HubSpot activity counts for all reps in parallel
+          const [sentCounts, openCounts, clickCounts, replyCounts, seqCounts] = await Promise.all([
+            countAllRepsForMetric("hs_email_last_send_date"),
+            countAllRepsForMetric("hs_email_last_open_date"),
+            countAllRepsForMetric("hs_email_last_click_date"),
+            countAllRepsForMetric("hs_email_last_reply_date"),
+            countAllRepsForMetric("hs_latest_sequence_enrolled_date"),
+          ]);
+
+          // Fetch completed To-Do items and manual activity log entries
+          const todos = await getTodos(user.userId);
+          const completedTodos = todos.filter(t => t.completed &&
+            (!sinceISO || (t.completedAt && t.completedAt >= sinceISO))
+          );
+          const logEntries = await getActivityLog(user.userId, {
+            since: sinceISO || null,
+            rep: repNames.length === 1 ? repNames[0] : (ownerIds.length === 0 && repNames.length === 0 ? null : undefined),
+          });
+
+          const repData = targetReps.map(repName => {
+            const sent    = sentCounts[repName]  || 0;
+            const opens   = openCounts[repName]  || 0;
+            const clicks  = clickCounts[repName] || 0;
+            const replies = replyCounts[repName] || 0;
+            const seqs    = seqCounts[repName]   || 0;
+            return {
+              rep: repName, sent, opens, clicks, replies, sequences: seqs,
+              openRate:  sent > 0 ? +((opens   / sent) * 100).toFixed(1) : 0,
+              clickRate: sent > 0 ? +((clicks  / sent) * 100).toFixed(1) : 0,
+              replyRate: sent > 0 ? +((replies / sent) * 100).toFixed(1) : 0,
+            };
+          });
+
+          const totals = repData.reduce((acc, r) => ({
+            sent:      acc.sent      + r.sent,
+            opens:     acc.opens     + r.opens,
+            clicks:    acc.clicks    + r.clicks,
+            replies:   acc.replies   + r.replies,
+            sequences: acc.sequences + r.sequences,
+          }), { sent:0, opens:0, clicks:0, replies:0, sequences:0 });
+
+          return ok({
+            section: "team_activity", period,
+            totals: {
+              ...totals,
+              openRate:  totals.sent > 0 ? +((totals.opens   / totals.sent) * 100).toFixed(1) : 0,
+              clickRate: totals.sent > 0 ? +((totals.clicks  / totals.sent) * 100).toFixed(1) : 0,
+              replyRate: totals.sent > 0 ? +((totals.replies / totals.sent) * 100).toFixed(1) : 0,
+              completedTodos: completedTodos.length,
+              manualEntries:  logEntries.length,
+            },
+            byRep: repData,
+            completedTodos: completedTodos.slice(0, 100),
+            activityLog: logEntries.slice(0, 200),
+          });
+        }
+
+        // ── GOLD ACTIVITY ─────────────────────────────────────────────────────
+        // Activity specifically on Gold tier contacts, sliced by rep and by account
+        if (section === "gold_activity") {
+          const GOLD_TIERS = [
+            "GOLD - 1-10","GOLD - 11-20","GOLD - 21-30","GOLD - 41-50","GOLD - 51-60",
+            "GOLD - 61-70","GOLD - 71-80","GOLD - 81-90","GOLD - 91-100",
+          ];
+
+          // Get Gold company IDs and names
+          const goldCompanies = await hsPost(user.userId, "/crm/v3/objects/companies/search", {
+            filterGroups: [{ filters: [{ propertyName: "priority_tier__bdr", operator: "IN", values: GOLD_TIERS }] }],
+            properties: ["name","priority_tier__bdr","domain"],
+            sorts: [{ propertyName: "priority_tier__bdr", direction: "ASCENDING" }],
+            limit: 200,
+          }).catch(() => ({ results: [] }));
+
+          const goldCompanyIds = (goldCompanies.results||[]).map(c => c.id);
+          const goldCompanyMap = Object.fromEntries((goldCompanies.results||[]).map(c => [c.id, { name: c.properties?.name || "", tier: c.properties?.priority_tier__bdr || "" }]));
+
+          // Get contacts at Gold companies via batch associations
+          let goldContactIds = [];
+          if (goldCompanyIds.length > 0) {
+            try {
+              const assocData = await hsPost(user.userId, "/crm/v4/associations/companies/contacts/batch/read", {
+                inputs: goldCompanyIds.slice(0, 100).map(id => ({ id })),
+              });
+              for (const result of (assocData.results||[])) {
+                for (const assoc of (result.to||[])) {
+                  goldContactIds.push(String(assoc.toObjectId || assoc.id));
+                }
+              }
+            } catch (e) { console.error("[gold_activity] assoc:", e.message); }
+          }
+
+          // Build Gold-specific countAllRepsForMetric that adds Gold contact ID filter
+          const countAllRepsForGoldMetric = async (dateProp) => {
+            if (!goldContactIds.length) return {};
+            const dateF = sinceISO
+              ? { propertyName: dateProp, operator: "GTE", value: sinceISO }
+              : { propertyName: dateProp, operator: "HAS_PROPERTY" };
+            const results = await Promise.all(ALL_REPS.map(async repName => {
+              const ownerId = REP_OWNER_ID_MAP[repName];
+              const repF = ownerId
+                ? { propertyName: "hubspot_owner_id", operator: "EQ", value: ownerId }
+                : { propertyName: "assigned_bdr",     operator: "EQ", value: repName };
+              try {
+                const d = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
+                  filterGroups: [{ filters: [repF, dateF] }],
+                  properties: ["hs_object_id","assigned_bdr","hubspot_owner_id"], limit: 200,
+                });
+                // Filter to Gold contacts only
+                const goldCount = (d.results||[]).filter(c => goldContactIds.includes(c.id)).length;
+                return [repName, goldCount];
+              } catch { return [repName, 0]; }
+            }));
+            return Object.fromEntries(results);
+          };
+
+          const [gSent, gOpens, gClicks, gReplies, gSeqs] = await Promise.all([
+            countAllRepsForGoldMetric("hs_email_last_send_date"),
+            countAllRepsForGoldMetric("hs_email_last_open_date"),
+            countAllRepsForGoldMetric("hs_email_last_click_date"),
+            countAllRepsForGoldMetric("hs_email_last_reply_date"),
+            countAllRepsForGoldMetric("hs_latest_sequence_enrolled_date"),
+          ]);
+
+          const byRep = targetReps.map(repName => ({
+            rep:      repName,
+            sent:     gSent[repName]    || 0,
+            opens:    gOpens[repName]   || 0,
+            clicks:   gClicks[repName]  || 0,
+            replies:  gReplies[repName] || 0,
+            sequences:gSeqs[repName]    || 0,
+          }));
+
+          // By account: fetch recent contacts at each Gold company with activity
+          const byAccount = (goldCompanies.results||[]).slice(0, 50).map(co => {
+            const p = co.properties||{};
+            return {
+              companyId: co.id,
+              name:      p.name || "",
+              tier:      p.priority_tier__bdr || "",
+              url:       `https://app.hubspot.com/contacts/39921549/record/0-2/${co.id}`,
+            };
+          });
+
+          const totals = byRep.reduce((acc, r) => ({
+            sent:      acc.sent      + r.sent,
+            opens:     acc.opens     + r.opens,
+            clicks:    acc.clicks    + r.clicks,
+            replies:   acc.replies   + r.replies,
+            sequences: acc.sequences + r.sequences,
+          }), { sent:0, opens:0, clicks:0, replies:0, sequences:0 });
+
+          return ok({
+            section: "gold_activity", period,
+            goldAccountCount: goldCompanyIds.length,
+            goldContactCount: goldContactIds.length,
+            totals: {
+              ...totals,
+              openRate:  totals.sent > 0 ? +((totals.opens   / totals.sent) * 100).toFixed(1) : 0,
+              replyRate: totals.sent > 0 ? +((totals.replies / totals.sent) * 100).toFixed(1) : 0,
+            },
+            byRep,
+            byAccount,
+          });
+        }
 
       } catch (err) {
         console.error("[reports] Error:", err.message);
