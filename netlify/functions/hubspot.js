@@ -3658,6 +3658,69 @@ export const handler = async (event, context) => {
           });
         }
 
+        // ── WEEKLY RECAP ──────────────────────────────────────────────────────
+        if (section === "weekly_recap") {
+          // Collect all activity for the period across the team (or filtered rep)
+          const sentCounts  = await countAllRepsForMetric("hs_email_last_send_date");
+          await new Promise(r => setTimeout(r, 300));
+          const openCounts  = await countAllRepsForMetric("hs_email_last_open_date");
+          await new Promise(r => setTimeout(r, 300));
+          const clickCounts = await countAllRepsForMetric("hs_email_last_click_date");
+          await new Promise(r => setTimeout(r, 300));
+          const replyCounts = await countAllRepsForMetric("hs_email_last_reply_date");
+          await new Promise(r => setTimeout(r, 300));
+          const seqCounts   = await countAllRepsForMetric("hs_latest_sequence_enrolled_date");
+
+          const byRep = targetReps.map(repName => ({
+            rep:       repName,
+            sent:      sentCounts[repName]  || 0,
+            opens:     openCounts[repName]  || 0,
+            clicks:    clickCounts[repName] || 0,
+            replies:   replyCounts[repName] || 0,
+            sequences: seqCounts[repName]   || 0,
+          }));
+
+          // Completed To-Do items for the period
+          const todos = await getTodos(user.userId);
+          const completedTodos = todos.filter(t =>
+            t.completed && t.completedAt &&
+            (!sinceISO || t.completedAt >= sinceISO) &&
+            (!untilISO || t.completedAt <= untilISO)
+          );
+
+          // Manual activity log entries for the period
+          const logEntries = await getActivityLog(user.userId, {
+            since: sinceISO || null,
+            until: untilISO || null,
+          });
+
+          const totals = byRep.reduce((acc, r) => ({
+            sent:      acc.sent      + r.sent,
+            opens:     acc.opens     + r.opens,
+            clicks:    acc.clicks    + r.clicks,
+            replies:   acc.replies   + r.replies,
+            sequences: acc.sequences + r.sequences,
+          }), { sent:0, opens:0, clicks:0, replies:0, sequences:0 });
+
+          return ok({
+            section: "weekly_recap",
+            period,
+            periodLabel: sinceISO
+              ? `${new Date(sinceISO).toLocaleDateString("en-US",{month:"short",day:"numeric"})} – ${new Date().toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"})}`
+              : "All time",
+            totals: {
+              ...totals,
+              openRate:       totals.sent > 0 ? +((totals.opens   / totals.sent) * 100).toFixed(1) : 0,
+              replyRate:      totals.sent > 0 ? +((totals.replies / totals.sent) * 100).toFixed(1) : 0,
+              completedTodos: completedTodos.length,
+              manualEntries:  logEntries.length,
+            },
+            byRep,
+            completedTodos,
+            activityLog: logEntries,
+          });
+        }
+
         return error(400, `Unknown section: ${section}`);
 
       } catch (err) {
