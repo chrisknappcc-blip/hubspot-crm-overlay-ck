@@ -1154,11 +1154,18 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                             {item.subtext}
                           </div>
                         )}
-                        {item.dueDate && (
-                          <div style={{ fontSize:10, color: new Date(item.dueDate) < new Date() ? 'var(--red)' : 'var(--text-tertiary)', marginTop:1 }}>
-                            Due {new Date(item.dueDate).toLocaleString('en-US', { month:'short', day:'numeric', hour:'numeric', minute:'2-digit' })}
-                          </div>
-                        )}
+                        <div style={{ display:'flex', gap:8, marginTop:2, flexWrap:'wrap' }}>
+                          {item.createdAt && (
+                            <span style={{ fontSize:10, color:'var(--text-tertiary)' }}>
+                              Added {new Date(item.createdAt).toLocaleString('en-US', { month:'short', day:'numeric', hour:'numeric', minute:'2-digit' })}
+                            </span>
+                          )}
+                          {item.dueDate && (
+                            <span style={{ fontSize:10, fontWeight:600, color: new Date(item.dueDate) < new Date() ? 'var(--red)' : 'var(--amber)' }}>
+                              Due {new Date(item.dueDate).toLocaleString('en-US', { month:'short', day:'numeric', hour:'numeric', minute:'2-digit' })}
+                            </span>
+                          )}
+                        </div>
                       </div>
                       <div style={{ display:'flex', gap:4, flexShrink:0 }}>
                         {['reply','meeting','task','sequence'].includes(item.type) && (
@@ -1214,8 +1221,8 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                             </div>
                           </div>
                           {item.completedAt && (
-                            <div style={{ fontSize:10, color:'var(--text-tertiary)', flexShrink:0, marginLeft:4 }}>
-                              ✓ {new Date(item.completedAt).toLocaleTimeString('en-US', { hour:'numeric', minute:'2-digit' })}
+                            <div style={{ fontSize:10, color:'var(--text-tertiary)', flexShrink:0, marginLeft:4, whiteSpace:'nowrap' }}>
+                              ✓ {new Date(item.completedAt).toLocaleString('en-US', { month:'short', day:'numeric', hour:'numeric', minute:'2-digit' })}
                             </div>
                           )}
                         </div>
