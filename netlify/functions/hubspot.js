@@ -2956,15 +2956,16 @@ export const handler = async (event, context) => {
           ]);
           const emailStats = emailStatsResult;
 
-          // ── Per-rep breakdown (batch queries -- one per metric across all reps) ────
-          // Run all 5 metrics in parallel (10 total queries, not 40)
-          const [sentCounts, openCounts, clickCounts, replyCounts, seqCounts] = await Promise.all([
-            countAllRepsForMetric("hs_email_last_send_date"),
-            countAllRepsForMetric("hs_email_last_open_date"),
-            countAllRepsForMetric("hs_email_last_click_date"),
-            countAllRepsForMetric("hs_email_last_reply_date"),
-            countAllRepsForMetric("hs_latest_sequence_enrolled_date"),
-          ]);
+          // ── Per-rep breakdown -- sequential with 300ms gaps to avoid 429s ────
+          const sentCounts  = await countAllRepsForMetric("hs_email_last_send_date");
+          await new Promise(r => setTimeout(r, 300));
+          const openCounts  = await countAllRepsForMetric("hs_email_last_open_date");
+          await new Promise(r => setTimeout(r, 300));
+          const clickCounts = await countAllRepsForMetric("hs_email_last_click_date");
+          await new Promise(r => setTimeout(r, 300));
+          const replyCounts = await countAllRepsForMetric("hs_email_last_reply_date");
+          await new Promise(r => setTimeout(r, 300));
+          const seqCounts   = await countAllRepsForMetric("hs_latest_sequence_enrolled_date");
 
           const repData = targetReps.map(repName => {
             const sent    = sentCounts[repName]  || 0;
@@ -3271,12 +3272,13 @@ export const handler = async (event, context) => {
 
           // Per-rep breakdown
           // Batch: one query per metric across all reps (10 queries vs 32 sequential)
-          const [seqEnrolledCounts, seqRepliedCounts, seqOpenedCounts, seqClickedCounts] = await Promise.all([
-            countAllRepsForMetric("hs_latest_sequence_enrolled_date"),
-            countAllRepsForMetric("hs_email_last_reply_date"),
-            countAllRepsForMetric("hs_email_last_open_date"),
-            countAllRepsForMetric("hs_email_last_click_date"),
-          ]);
+          const seqEnrolledCounts = await countAllRepsForMetric("hs_latest_sequence_enrolled_date");
+          await new Promise(r => setTimeout(r, 300));
+          const seqRepliedCounts  = await countAllRepsForMetric("hs_email_last_reply_date");
+          await new Promise(r => setTimeout(r, 300));
+          const seqOpenedCounts   = await countAllRepsForMetric("hs_email_last_open_date");
+          await new Promise(r => setTimeout(r, 300));
+          const seqClickedCounts  = await countAllRepsForMetric("hs_email_last_click_date");
           const repData = targetReps.map(repName => {
             const rEnrolled = seqEnrolledCounts[repName] || 0;
             const rReplied  = seqRepliedCounts[repName]  || 0;
@@ -3477,14 +3479,17 @@ export const handler = async (event, context) => {
         // ── TEAM ACTIVITY ─────────────────────────────────────────────────────
         // All activity across the team with optional rep filter + manual log entries
         if (section === "team_activity") {
-          // Fetch HubSpot activity counts for all reps in parallel
-          const [sentCounts, openCounts, clickCounts, replyCounts, seqCounts] = await Promise.all([
-            countAllRepsForMetric("hs_email_last_send_date"),
-            countAllRepsForMetric("hs_email_last_open_date"),
-            countAllRepsForMetric("hs_email_last_click_date"),
-            countAllRepsForMetric("hs_email_last_reply_date"),
-            countAllRepsForMetric("hs_latest_sequence_enrolled_date"),
-          ]);
+          // Fetch HubSpot activity counts -- sequential with gaps to avoid 429s
+          // (each countAllRepsForMetric fires 8 parallel queries; 5 in parallel = 40 simultaneous)
+          const sentCounts  = await countAllRepsForMetric("hs_email_last_send_date");
+          await new Promise(r => setTimeout(r, 300));
+          const openCounts  = await countAllRepsForMetric("hs_email_last_open_date");
+          await new Promise(r => setTimeout(r, 300));
+          const clickCounts = await countAllRepsForMetric("hs_email_last_click_date");
+          await new Promise(r => setTimeout(r, 300));
+          const replyCounts = await countAllRepsForMetric("hs_email_last_reply_date");
+          await new Promise(r => setTimeout(r, 300));
+          const seqCounts   = await countAllRepsForMetric("hs_latest_sequence_enrolled_date");
 
           // Fetch completed To-Do items and manual activity log entries
           const todos = await getTodos(user.userId);
@@ -3560,11 +3565,16 @@ export const handler = async (event, context) => {
               const assocData = await hsPost(user.userId, "/crm/v4/associations/companies/contacts/batch/read", {
                 inputs: goldCompanyIds.slice(0, 100).map(id => ({ id })),
               });
+              console.log("[gold_activity] assoc response sample:", JSON.stringify(assocData).slice(0, 300));
               for (const result of (assocData.results||[])) {
-                for (const assoc of (result.to||[])) {
-                  goldContactIds.push(String(assoc.toObjectId || assoc.id));
+                // v4 API: result.to contains array of { toObjectId, associationTypes }
+                const toItems = result.to || result.results || [];
+                for (const assoc of toItems) {
+                  const id = assoc.toObjectId || assoc.id || assoc.objectId;
+                  if (id) goldContactIds.push(String(id));
                 }
               }
+              console.log("[gold_activity] gold contact IDs found:", goldContactIds.length);
             } catch (e) { console.error("[gold_activity] assoc:", e.message); }
           }
 
@@ -3596,13 +3606,15 @@ export const handler = async (event, context) => {
             }));
             return Object.fromEntries(results);
           };
-          const [gSent, gOpens, gClicks, gReplies, gSeqs] = await Promise.all([
-            countGoldMetric("hs_email_last_send_date"),
-            countGoldMetric("hs_email_last_open_date"),
-            countGoldMetric("hs_email_last_click_date"),
-            countGoldMetric("hs_email_last_reply_date"),
-            countGoldMetric("hs_latest_sequence_enrolled_date"),
-          ]);
+          const gSent    = await countGoldMetric("hs_email_last_send_date");
+          await new Promise(r => setTimeout(r, 300));
+          const gOpens   = await countGoldMetric("hs_email_last_open_date");
+          await new Promise(r => setTimeout(r, 300));
+          const gClicks  = await countGoldMetric("hs_email_last_click_date");
+          await new Promise(r => setTimeout(r, 300));
+          const gReplies = await countGoldMetric("hs_email_last_reply_date");
+          await new Promise(r => setTimeout(r, 300));
+          const gSeqs    = await countGoldMetric("hs_latest_sequence_enrolled_date");
 
           const byRep = targetReps.map(repName => ({
             rep:      repName,
