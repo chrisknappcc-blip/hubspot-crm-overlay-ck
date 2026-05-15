@@ -2583,7 +2583,7 @@ export const handler = async (event, context) => {
       if (!todoId) return error(400, "Todo ID required");
       try {
         const body    = JSON.parse(event.body || "{}");
-        const allowed = ["completed","text","subtext"];
+        const allowed = ["completed","text","subtext","dueDate"];
         const changes = Object.fromEntries(Object.entries(body).filter(([k]) => allowed.includes(k)));
         const item    = await updateTodo(user.userId, todoId, changes);
         return ok({ item });
