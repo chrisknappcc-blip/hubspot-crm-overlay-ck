@@ -1991,7 +1991,7 @@ function ReportsTab({ safeFetch, owners, currentUserName }) {
   const handleSetSection = useCallback((s) => {
     setSection(s)
     if (s === 'deals') setPeriod('year')
-    else if (s === 'team_activity' || s === 'gold_activity') setPeriod('month')
+    else if (s === 'weekly_recap') setPeriod('week')
     else setPeriod('month')
   }, [])
 
@@ -2045,6 +2045,7 @@ function ReportsTab({ safeFetch, owners, currentUserName }) {
     { key:'deals',           label:'Deals' },
     { key:'team_activity',   label:'Team Activity' },
     { key:'gold_activity',   label:'Gold Activity' },
+    { key:'weekly_recap',    label:'Weekly Recap' },
   ]
 
   const KpiCard = ({ label, value, sub, href, accent }) => (
@@ -2659,6 +2660,170 @@ function ReportsTab({ safeFetch, owners, currentUserName }) {
                     ))}
                   </tbody>
                 </table>
+              </Panel>
+            </div>
+          </div>
+        )
+      })()}
+
+      {/* ── Weekly Recap ── */}
+      {!loading && data && section === 'weekly_recap' && (() => {
+        const t = data.totals || {}
+        const byRep = data.byRep || []
+
+        const exportText = () => {
+          const lines = [
+            `CarePathIQ Weekly Activity Recap`,
+            `Period: ${data.periodLabel || period}`,
+            `Generated: ${new Date().toLocaleString()}`,
+            ``,
+            `── OUTREACH TOTALS ──`,
+            `Emails Sent:       ${t.sent}`,
+            `Opens:             ${t.opens} (${t.openRate}%)`,
+            `Clicks:            ${t.clicks}`,
+            `Replies:           ${t.replies} (${t.replyRate}%)`,
+            `Sequences Started: ${t.sequences}`,
+            `To-Do Completed:   ${t.completedTodos}`,
+            `Manual Logged:     ${t.manualEntries}`,
+            ``,
+            `── BY REP ──`,
+            ...byRep.map(r => `${r.rep.padEnd(20)} Sent: ${String(r.sent).padStart(4)}  Opens: ${String(r.opens).padStart(4)}  Replies: ${String(r.replies).padStart(4)}  Sequences: ${String(r.sequences).padStart(3)}`),
+            ``,
+            `── COMPLETED TO-DO ITEMS (${(data.completedTodos||[]).length}) ──`,
+            ...(data.completedTodos||[]).map(t => `✓ [${t.type}] ${t.text}${t.subtext ? ` — ${t.subtext}` : ''}${t.completedAt ? ` (${new Date(t.completedAt).toLocaleString()})` : ''}`),
+            ``,
+            `── ACTIVITY LOG (${(data.activityLog||[]).length}) ──`,
+            ...(data.activityLog||[]).map(e => `• [${e.type}] ${e.text}${e.company ? ` — ${e.company}` : ''}${e.rep ? ` (${e.rep})` : ''} ${e.date}`),
+          ]
+          navigator.clipboard.writeText(lines.join('\n')).then(() => alert('Recap copied to clipboard!'))
+        }
+
+        const exportCSV = () => {
+          const rows = [
+            ['Type','Rep','Metric','Value','Date'],
+            // HubSpot activity
+            ...byRep.flatMap(r => [
+              ['HubSpot','rep','Emails Sent',r.sent,''],
+              ['HubSpot',r.rep,'Opens',r.opens,''],
+              ['HubSpot',r.rep,'Clicks',r.clicks,''],
+              ['HubSpot',r.rep,'Replies',r.replies,''],
+              ['HubSpot',r.rep,'Sequences',r.sequences,''],
+            ]),
+            // Completed To-Do
+            ...(data.completedTodos||[]).map(t => ['To-Do','',t.text,t.type,t.completedAt||'']),
+            // Activity log
+            ...(data.activityLog||[]).map(e => ['Manual Log',e.rep||'',e.text,e.type,e.date||'']),
+          ]
+          const csv = rows.map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n')
+          const a = document.createElement('a')
+          a.href = URL.createObjectURL(new Blob([csv], {type:'text/csv'}))
+          a.download = `weekly-recap-${new Date().toISOString().slice(0,10)}.csv`
+          a.click()
+        }
+
+        return (
+          <div style={{ display:'flex', flexDirection:'column', gap:16 }}>
+            {/* Header + export */}
+            <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between' }}>
+              <div>
+                <div style={{ fontSize:18, fontWeight:600, color:'var(--text)' }}>Weekly Activity Recap</div>
+                <div style={{ fontSize:12, color:'var(--text-tertiary)', marginTop:2 }}>{data.periodLabel}</div>
+              </div>
+              <div style={{ display:'flex', gap:8 }}>
+                <button onClick={exportText}
+                  style={{ padding:'8px 16px', background:'none', border:'1px solid var(--border)', borderRadius:'var(--radius)', fontSize:12, color:'var(--text-secondary)', cursor:'pointer' }}>
+                  Copy recap
+                </button>
+                <button onClick={exportCSV}
+                  style={{ padding:'8px 16px', background:'var(--accent)', color:'#fff', border:'none', borderRadius:'var(--radius)', fontSize:12, fontWeight:500, cursor:'pointer' }}>
+                  Export CSV
+                </button>
+              </div>
+            </div>
+
+            {/* KPI strip */}
+            <div style={{ display:'grid', gridTemplateColumns:'repeat(7,1fr)', gap:10 }}>
+              <KpiCard label="Emails Sent"    value={fmt(t.sent)}     />
+              <KpiCard label="Opens"          value={fmt(t.opens)}    />
+              <KpiCard label="Open Rate"      value={`${t.openRate||0}%`} />
+              <KpiCard label="Replies"        value={fmt(t.replies)}  />
+              <KpiCard label="Reply Rate"     value={`${t.replyRate||0}%`} />
+              <KpiCard label="Sequences"      value={fmt(t.sequences)} />
+              <KpiCard label="To-Do Done"     value={fmt(t.completedTodos)} accent />
+            </div>
+
+            {/* byRep table */}
+            <Panel>
+              <SectionTitle>Activity by Rep</SectionTitle>
+              <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
+                <THead cols={['Rep','Sent','Opens','Open%','Clicks','Replies','Reply%','Sequences']} />
+                <tbody>
+                  {byRep.map((r,i) => (
+                    <tr key={i} style={{ borderBottom:'1px solid var(--border)' }}>
+                      <td style={{ padding:'8px 10px 8px 0', fontWeight:500 }}>{r.rep}</td>
+                      <td style={{ padding:'8px 10px 8px 0' }}>{fmt(r.sent)}</td>
+                      <td style={{ padding:'8px 10px 8px 0' }}>{fmt(r.opens)}</td>
+                      <td style={{ padding:'8px 10px 8px 0', color:'var(--text-secondary)' }}>
+                        {r.sent > 0 ? ((r.opens/r.sent)*100).toFixed(1) : 0}%
+                      </td>
+                      <td style={{ padding:'8px 10px 8px 0' }}>{fmt(r.clicks)}</td>
+                      <td style={{ padding:'8px 10px 8px 0' }}>{fmt(r.replies)}</td>
+                      <td style={{ padding:'8px 10px 8px 0', color:'var(--text-secondary)' }}>
+                        {r.sent > 0 ? ((r.replies/r.sent)*100).toFixed(1) : 0}%
+                      </td>
+                      <td style={{ padding:'8px 0' }}>{fmt(r.sequences)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </Panel>
+
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16 }}>
+              {/* Completed To-Do */}
+              <Panel>
+                <SectionTitle>Completed To-Do ({(data.completedTodos||[]).length})</SectionTitle>
+                {(data.completedTodos||[]).length === 0
+                  ? <div style={{ fontSize:12, color:'var(--text-tertiary)' }}>None completed this period.</div>
+                  : <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
+                    {(data.completedTodos||[]).map((t,i) => (
+                      <div key={i} style={{ display:'flex', gap:8, alignItems:'flex-start', paddingBottom:6, borderBottom:'1px solid var(--border)' }}>
+                        <span style={{ fontSize:12, color:'var(--accent)', flexShrink:0 }}>✓</span>
+                        <div style={{ flex:1, minWidth:0 }}>
+                          <div style={{ fontSize:12, color:'var(--text)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{t.text}</div>
+                          {t.subtext && <div style={{ fontSize:11, color:'var(--text-tertiary)' }}>{t.subtext}</div>}
+                        </div>
+                        {t.completedAt && (
+                          <div style={{ fontSize:10, color:'var(--text-tertiary)', flexShrink:0 }}>
+                            {new Date(t.completedAt).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                }
+              </Panel>
+
+              {/* Activity Log */}
+              <Panel>
+                <SectionTitle>Activity Log ({(data.activityLog||[]).length})</SectionTitle>
+                {(data.activityLog||[]).length === 0
+                  ? <div style={{ fontSize:12, color:'var(--text-tertiary)' }}>No manual entries this period. Add them in Team Activity.</div>
+                  : <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
+                    {(data.activityLog||[]).map((e,i) => (
+                      <div key={i} style={{ display:'flex', gap:8, alignItems:'flex-start', paddingBottom:6, borderBottom:'1px solid var(--border)' }}>
+                        <span style={{ fontSize:9, fontWeight:600, textTransform:'uppercase', color:'var(--text-tertiary)', background:'var(--bg-secondary)', borderRadius:4, padding:'2px 5px', flexShrink:0, marginTop:2 }}>{e.type}</span>
+                        <div style={{ flex:1, minWidth:0 }}>
+                          <div style={{ fontSize:12, color:'var(--text)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{e.text}</div>
+                          {e.company && <div style={{ fontSize:11, color:'var(--text-tertiary)' }}>{e.company}</div>}
+                        </div>
+                        <div style={{ fontSize:10, color:'var(--text-tertiary)', flexShrink:0, textAlign:'right' }}>
+                          <div>{e.rep}</div>
+                          <div>{e.date}</div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                }
               </Panel>
             </div>
           </div>
