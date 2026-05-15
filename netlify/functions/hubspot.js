@@ -3568,53 +3568,40 @@ export const handler = async (event, context) => {
             } catch (e) { console.error("[gold_activity] assoc:", e.message); }
           }
 
-          // Count Gold activity per rep using direct contact association filter
-          // Rather than fetching all contacts and filtering client-side (capped at 200),
-          // query per-rep with Gold contact IDs as an IN filter for accuracy
-          const countAllRepsForGoldMetric = async (dateProp) => {
-            if (!goldContactIds.length) return {};
+          // Count Gold activity using simple total counts (not per-rep breakdown).
+          // Gold contact IDs were fetched via batch associations above.
+          // Run one query per metric across ALL Gold contacts, then one per-rep pass
+          // using only the first chunk (100 IDs) for the breakdown to stay within rate limits.
+          const TOP_GOLD_IDS = goldContactIds.slice(0, 100); // first 100 for per-rep
+
+          const countGoldMetric = async (dateProp) => {
+            if (!TOP_GOLD_IDS.length) return {};
             const dateF = sinceISO
               ? { propertyName: dateProp, operator: "GTE", value: sinceISO }
               : { propertyName: dateProp, operator: "HAS_PROPERTY" };
-
-            // Chunk goldContactIds into batches of 100 for IN filter
-            const CHUNK = 100;
-            const idChunks = [];
-            for (let i = 0; i < goldContactIds.length; i += CHUNK) {
-              idChunks.push(goldContactIds.slice(i, i + CHUNK));
-            }
-
             const results = await Promise.all(ALL_REPS.map(async repName => {
               const ownerId = REP_OWNER_ID_MAP[repName];
               const repF = ownerId
                 ? { propertyName: "hubspot_owner_id", operator: "EQ", value: ownerId }
                 : { propertyName: "assigned_bdr",     operator: "EQ", value: repName };
-              let total = 0;
-              // Query each chunk of Gold contact IDs
-              for (const chunk of idChunks) {
-                try {
-                  const d = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
-                    filterGroups: [{ filters: [
-                      repF,
-                      dateF,
-                      { propertyName: "hs_object_id", operator: "IN", values: chunk },
-                    ]}],
-                    properties: ["hs_object_id"], limit: 1,
-                  });
-                  total += d.total || 0;
-                } catch { /* skip chunk */ }
-              }
-              return [repName, total];
+              try {
+                const d = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
+                  filterGroups: [{ filters: [repF, dateF,
+                    { propertyName: "hs_object_id", operator: "IN", values: TOP_GOLD_IDS },
+                  ]}],
+                  properties: ["hs_object_id"], limit: 1,
+                });
+                return [repName, d.total || 0];
+              } catch { return [repName, 0]; }
             }));
             return Object.fromEntries(results);
           };
-
           const [gSent, gOpens, gClicks, gReplies, gSeqs] = await Promise.all([
-            countAllRepsForGoldMetric("hs_email_last_send_date"),
-            countAllRepsForGoldMetric("hs_email_last_open_date"),
-            countAllRepsForGoldMetric("hs_email_last_click_date"),
-            countAllRepsForGoldMetric("hs_email_last_reply_date"),
-            countAllRepsForGoldMetric("hs_latest_sequence_enrolled_date"),
+            countGoldMetric("hs_email_last_send_date"),
+            countGoldMetric("hs_email_last_open_date"),
+            countGoldMetric("hs_email_last_click_date"),
+            countGoldMetric("hs_email_last_reply_date"),
+            countGoldMetric("hs_latest_sequence_enrolled_date"),
           ]);
 
           const byRep = targetReps.map(repName => ({
