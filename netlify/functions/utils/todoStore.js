@@ -88,6 +88,7 @@ export async function addTodo(userId, item) {
     hubspotUrl:   item.hubspotUrl   || null,
     completed:    false,
     completedAt:  null,
+    dueDate:      entry.dueDate || null,
     createdAt:    now,
     date:         item.date         || todayStr(),
     autoDetected: item.autoDetected || false,
