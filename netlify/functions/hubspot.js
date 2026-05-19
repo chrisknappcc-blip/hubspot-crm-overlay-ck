@@ -3421,35 +3421,38 @@ export const handler = async (event, context) => {
         if (section === "sequences") {
           const bdr = bdrFilters();
           const seqActiveF = { propertyName: "hs_sequences_is_enrolled", operator: "EQ", value: "true" };
+          const isEveryoneFilter = repNames.length === 0 && ownerIds.length === 0;
 
-          // Build OR filter groups: assigned_bdr OR hubspot_owner_id, each with seqActive
-          // count1() only does AND within one group — need countC() for OR across groups
-          const seqFilterGroups = (extraFilter) => {
-            const groups = contactFilterGroups(extraFilter);
-            return groups.map(g => ({
-              filters: [...g.filters, seqActiveF]
-            }));
+          // Build filterGroups for sequence metrics:
+          // - For "Everyone": just seqActive + optional date (no rep filter, avoids excluding AEs)
+          // - For specific rep: OR across assigned_bdr / hubspot_owner_id + seqActive + date
+          const seqTotalGroups = (extraFilter) => {
+            const dateF = extraFilter ? [extraFilter] : [];
+            if (isEveryoneFilter) {
+              return [{ filters: [seqActiveF, ...dateF] }];
+            }
+            // Per-rep: OR across bdr/owner with seqActive
+            const baseGroups = contactFilterGroups(extraFilter);
+            return baseGroups.map(g => ({ filters: [...g.filters, seqActiveF] }));
           };
 
-          const enrolledGroups = sinceISO
-            ? contactFilterGroups({ propertyName: "hs_latest_sequence_enrolled_date", operator: "GTE", value: sinceISO })
-            : seqFilterGroups(null);
+          const repliedF = { propertyName: "hs_sales_email_last_replied", operator: sinceISO ? "GTE" : "HAS_PROPERTY", ...(sinceISO ? { value: sinceISO } : {}) };
+          const openedF  = { propertyName: "hs_email_last_open_date",     operator: sinceISO ? "GTE" : "HAS_PROPERTY", ...(sinceISO ? { value: sinceISO } : {}) };
+          const clickedF = { propertyName: "hs_email_last_click_date",    operator: sinceISO ? "GTE" : "HAS_PROPERTY", ...(sinceISO ? { value: sinceISO } : {}) };
 
-          const repliedF  = sinceISO
-            ? { propertyName: "hs_sales_email_last_replied", operator: "GTE", value: sinceISO }
-            : { propertyName: "hs_sales_email_last_replied", operator: "HAS_PROPERTY" };
-          const openedF   = sinceISO
-            ? { propertyName: "hs_email_last_open_date", operator: "GTE", value: sinceISO }
-            : { propertyName: "hs_email_last_open_date", operator: "HAS_PROPERTY" };
-          const clickedF  = sinceISO
-            ? { propertyName: "hs_email_last_click_date", operator: "GTE", value: sinceISO }
-            : { propertyName: "hs_email_last_click_date", operator: "HAS_PROPERTY" };
+          const enrolledGroups = sinceISO
+            ? (() => {
+                const dateF = { propertyName: "hs_latest_sequence_enrolled_date", operator: "GTE", value: sinceISO };
+                if (isEveryoneFilter) return [{ filters: [dateF] }];
+                return contactFilterGroups(dateF);
+              })()
+            : seqTotalGroups(null);
 
           const [enrolled, seqReplied, seqOpened, seqClicked] = await Promise.all([
             countC(enrolledGroups),
-            countC(seqFilterGroups(repliedF)),
-            countC(seqFilterGroups(openedF)),
-            countC(seqFilterGroups(clickedF)),
+            countC(seqTotalGroups(repliedF)),
+            countC(seqTotalGroups(openedF)),
+            countC(seqTotalGroups(clickedF)),
           ]);
 
           const replyRate = enrolled > 0 ? +((seqReplied / enrolled) * 100).toFixed(1) : 0;
@@ -3485,8 +3488,19 @@ export const handler = async (event, context) => {
           // Per-sequence breakdown
           const bySequence = {};
           try {
+            // For Everyone: fetch all enrolled contacts without rep filter
+            // For specific rep: use contactFilterGroups with enrollment date filter
+            const seqContactGroups = isEveryoneFilter
+              ? [{ filters: sinceISO
+                  ? [{ propertyName: "hs_latest_sequence_enrolled_date", operator: "GTE", value: sinceISO }]
+                  : [seqActiveF]
+                }]
+              : contactFilterGroups(sinceISO
+                  ? { propertyName: "hs_latest_sequence_enrolled_date", operator: "GTE", value: sinceISO }
+                  : null);
+
             const seqContacts = await fetchC(
-              contactFilterGroups(sinceISO ? { propertyName: "hs_latest_sequence_enrolled_date", operator: "GTE", value: sinceISO } : { propertyName: "hs_latest_sequence_enrolled_date", operator: "HAS_PROPERTY" }),
+              seqContactGroups,
               ["assigned_bdr","hs_latest_sequence_enrolled","hs_latest_sequence_enrolled_date",
                "hs_email_last_reply_date","hs_sales_email_last_replied",
                "hs_email_last_open_date","hs_email_last_click_date"],
