@@ -3389,10 +3389,10 @@ export const handler = async (event, context) => {
           let totals;
           if (usedFallback) {
             const [fbReached, fbOpened, fbClicked, fbReplied] = await Promise.all([
-              count1(df("hs_email_last_send_date")),
-              count1(df("hs_email_last_open_date")),
-              count1(df("hs_email_last_click_date")),
-              count1(df("hs_email_last_reply_date")),
+              countC(contactFilterGroups(sinceISO ? { propertyName: "hs_email_last_send_date",  operator: "GTE", value: sinceISO } : { propertyName: "hs_email_last_send_date",  operator: "HAS_PROPERTY" })),
+              countC(contactFilterGroups(sinceISO ? { propertyName: "hs_email_last_open_date",  operator: "GTE", value: sinceISO } : { propertyName: "hs_email_last_open_date",  operator: "HAS_PROPERTY" })),
+              countC(contactFilterGroups(sinceISO ? { propertyName: "hs_email_last_click_date", operator: "GTE", value: sinceISO } : { propertyName: "hs_email_last_click_date", operator: "HAS_PROPERTY" })),
+              countC(contactFilterGroups(sinceISO ? { propertyName: "hs_email_last_reply_date", operator: "GTE", value: sinceISO } : { propertyName: "hs_email_last_reply_date", operator: "HAS_PROPERTY" })),
             ]);
             totals = {
               totalReached: fbReached, totalOpened: fbOpened,
@@ -3420,24 +3420,36 @@ export const handler = async (event, context) => {
         // matching HubSpot's "Sequence Enrollments - Sales Team" report.
         if (section === "sequences") {
           const bdr = bdrFilters();
-
-          // ── Totals ────────────────────────────────────────────────────────────
-          // cipher_sequence_sends: accurate enrollment count from HubSpot workflow
-          // Falls back to hs_latest_sequence_enrolled_date if cipher field is 0
           const seqActiveF = { propertyName: "hs_sequences_is_enrolled", operator: "EQ", value: "true" };
 
-          // Use cipher_sequence_sends > 0 as the enrolled count (workflow-accurate)
-          // Also get currently active enrolled for comparison
-          const cipherEnrolledFilters = sinceISO
-            ? [...bdr, { propertyName: "hs_latest_sequence_enrolled_date", operator: "GTE", value: sinceISO }]
-            : [...bdr, seqActiveF];
+          // Build OR filter groups: assigned_bdr OR hubspot_owner_id, each with seqActive
+          // count1() only does AND within one group — need countC() for OR across groups
+          const seqFilterGroups = (extraFilter) => {
+            const groups = contactFilterGroups(extraFilter);
+            return groups.map(g => ({
+              filters: [...g.filters, seqActiveF]
+            }));
+          };
 
-          // Run enrolled + engagement counts in parallel
+          const enrolledGroups = sinceISO
+            ? contactFilterGroups({ propertyName: "hs_latest_sequence_enrolled_date", operator: "GTE", value: sinceISO })
+            : seqFilterGroups(null);
+
+          const repliedF  = sinceISO
+            ? { propertyName: "hs_sales_email_last_replied", operator: "GTE", value: sinceISO }
+            : { propertyName: "hs_sales_email_last_replied", operator: "HAS_PROPERTY" };
+          const openedF   = sinceISO
+            ? { propertyName: "hs_email_last_open_date", operator: "GTE", value: sinceISO }
+            : { propertyName: "hs_email_last_open_date", operator: "HAS_PROPERTY" };
+          const clickedF  = sinceISO
+            ? { propertyName: "hs_email_last_click_date", operator: "GTE", value: sinceISO }
+            : { propertyName: "hs_email_last_click_date", operator: "HAS_PROPERTY" };
+
           const [enrolled, seqReplied, seqOpened, seqClicked] = await Promise.all([
-            count1(cipherEnrolledFilters),
-            count1([...bdr, seqActiveF, { propertyName: "hs_sales_email_last_replied", operator: sinceISO ? "GTE" : "HAS_PROPERTY", ...(sinceISO ? { value: sinceISO } : {}) }]),
-            count1([...bdr, seqActiveF, { propertyName: "hs_email_last_open_date",     operator: sinceISO ? "GTE" : "HAS_PROPERTY", ...(sinceISO ? { value: sinceISO } : {}) }]),
-            count1([...bdr, seqActiveF, { propertyName: "hs_email_last_click_date",    operator: sinceISO ? "GTE" : "HAS_PROPERTY", ...(sinceISO ? { value: sinceISO } : {}) }]),
+            countC(enrolledGroups),
+            countC(seqFilterGroups(repliedF)),
+            countC(seqFilterGroups(openedF)),
+            countC(seqFilterGroups(clickedF)),
           ]);
 
           const replyRate = enrolled > 0 ? +((seqReplied / enrolled) * 100).toFixed(1) : 0;
@@ -3452,12 +3464,14 @@ export const handler = async (event, context) => {
             const repF = ownerId
               ? { propertyName: "hubspot_owner_id", operator: "EQ", value: ownerId }
               : { propertyName: "assigned_bdr",     operator: "EQ", value: repName };
-            const periodF = sinceISO ? { propertyName: "hs_latest_sequence_enrolled_date", operator: "GTE", value: sinceISO } : seqActiveF;
+            const periodF = sinceISO
+              ? { propertyName: "hs_latest_sequence_enrolled_date", operator: "GTE", value: sinceISO }
+              : seqActiveF;
             const [rEnrolled, rReplied, rOpened, rClicked] = await Promise.all([
               count1([repF, periodF]),
-              count1([repF, seqActiveF, { propertyName: "hs_sales_email_last_replied", operator: sinceISO ? "GTE" : "HAS_PROPERTY", ...(sinceISO ? { value: sinceISO } : {}) }]),
-              count1([repF, seqActiveF, { propertyName: "hs_email_last_open_date",     operator: sinceISO ? "GTE" : "HAS_PROPERTY", ...(sinceISO ? { value: sinceISO } : {}) }]),
-              count1([repF, seqActiveF, { propertyName: "hs_email_last_click_date",    operator: sinceISO ? "GTE" : "HAS_PROPERTY", ...(sinceISO ? { value: sinceISO } : {}) }]),
+              count1([repF, seqActiveF, repliedF]),
+              count1([repF, seqActiveF, openedF]),
+              count1([repF, seqActiveF, clickedF]),
             ]);
             repData.push({
               rep: repName, enrolled: rEnrolled, replied: rReplied, opened: rOpened, clicked: rClicked,
@@ -3524,11 +3538,11 @@ export const handler = async (event, context) => {
             clickRate: s.enrolled > 0 ? +((s.clicked / s.enrolled) * 100).toFixed(1) : 0,
           })).sort((a,b) => b.enrolled - a.enrolled).slice(0, 30);
 
-          // Compliance counts -- opted out and bounced contacts
+          // Compliance counts -- opted out and bounced contacts (OR across bdr/owner)
           const [optedOut, bounced, badAddress] = await Promise.all([
-            count1([...bdrFilters(), { propertyName: "hs_email_optout", operator: "EQ", value: "true" }]),
-            count1([...bdrFilters(), { propertyName: "hs_email_bounce", operator: "EQ", value: "true" }]),
-            count1([...bdrFilters(), { propertyName: "hs_email_bad_address", operator: "EQ", value: "true" }]),
+            countC(contactFilterGroups({ propertyName: "hs_email_optout",      operator: "EQ", value: "true" })),
+            countC(contactFilterGroups({ propertyName: "hs_email_bounce",      operator: "EQ", value: "true" })),
+            countC(contactFilterGroups({ propertyName: "hs_email_bad_address", operator: "EQ", value: "true" })),
           ]);
 
           return ok({
