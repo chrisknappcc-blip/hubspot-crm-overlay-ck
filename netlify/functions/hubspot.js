@@ -1165,12 +1165,29 @@ export const handler = async (event, context) => {
         const companyFilters = [
           { propertyName: "priority_tier__bdr", operator: "IN", values: GOLD_TIERS },
         ];
+
+        // Support owner_id filter for non-BDR reps
+        const ownerIdFilter = qp.owner_id ? String(qp.owner_id).split(',').map(s => s.trim()).filter(Boolean) : [];
         if (qp.assigned_bdr) {
           companyFilters.push({
             propertyName: "assigned_bdr",
-            operator:     "EQ",
-            value:        decodeURIComponent(qp.assigned_bdr).trim(),
+            operator:     qp.assigned_bdr.includes(',') ? "IN" : "EQ",
+            ...(qp.assigned_bdr.includes(',')
+              ? { values: qp.assigned_bdr.split(',').map(s => decodeURIComponent(s).trim()) }
+              : { value:  decodeURIComponent(qp.assigned_bdr).trim() }),
           });
+        }
+        if (ownerIdFilter.length > 0 && !qp.assigned_bdr) {
+          companyFilters.push({
+            propertyName: "hubspot_owner_id",
+            operator:     ownerIdFilter.length === 1 ? "EQ" : "IN",
+            ...(ownerIdFilter.length === 1 ? { value: ownerIdFilter[0] } : { values: ownerIdFilter }),
+          });
+        }
+        // Tier filter
+        if (qp.tier) {
+          const tierVals = qp.tier.split(',').map(s => decodeURIComponent(s).trim()).filter(Boolean);
+          companyFilters[0] = { propertyName: "priority_tier__bdr", operator: "IN", values: tierVals };
         }
 
         // Paginate through Gold companies
@@ -1180,9 +1197,12 @@ export const handler = async (event, context) => {
           const body = {
             filterGroups: [{ filters: companyFilters }],
             properties: [
-              "name", "domain", "industry", "assigned_bdr", "territory",
+              "name", "domain", "industry", "city", "state", "assigned_bdr", "territory",
               "priority_tier__bdr", "target_account__bdr_led_outreach",
               "notes_last_contacted", "hs_last_sales_activity_timestamp",
+              "hubspot_owner_id", "num_associated_contacts", "num_contacted_notes",
+              "hs_last_logged_call_date", "hs_last_booked_meeting_date",
+              "hs_last_logged_outgoing_email_date", "hs_lead_status",
             ],
             sorts:  [{ propertyName: "priority_tier__bdr", direction: "ASCENDING" }],
             limit:  100,
@@ -1207,7 +1227,8 @@ export const handler = async (event, context) => {
           "hs_email_last_open_date","hs_email_last_click_date",
           "hs_email_last_reply_date","hs_email_last_send_date","hs_email_last_email_name",
           "hs_sales_email_last_opened","hs_sales_email_last_clicked","hs_sales_email_last_replied",
-          "notes_last_contacted",
+          "notes_last_contacted","hs_persona","target_persona","hs_buying_role",
+          "hs_sequences_is_enrolled","hs_lead_status",
         ];
 
         const bdrFilterValue = qp.assigned_bdr
@@ -1362,17 +1383,67 @@ export const handler = async (event, context) => {
           const lastActivityTs   = allDates.length > 0 ? Math.max(...allDates) : 0;
           const lastActivityDate = lastActivityTs > 0 ? new Date(lastActivityTs).toISOString() : null;
 
+          // Gap analysis: which key personas are missing from contacts
+          const KEY_PERSONAS = ["CMO","CNO","CFO","COO","CIO","VP","Chief","Director","Manager","President","SVP","EVP"];
+          const contactTitles = contacts.map(c => (c.properties?.jobtitle || "").toLowerCase());
+          const hasPersonaData = contacts.filter(c => c.properties?.hs_persona || c.properties?.target_persona || c.properties?.hs_buying_role).length;
+          const missingPersonas = [];
+          if (!contacts.some(c => {
+            const t = (c.properties?.jobtitle || "").toLowerCase();
+            return t.includes("chief") || t.includes("cmo") || t.includes("cno") || t.includes("ceo") || t.includes("coo") || t.includes("cfo");
+          })) missingPersonas.push("C-Suite");
+          if (!contacts.some(c => (c.properties?.jobtitle || "").toLowerCase().includes("vp") || (c.properties?.jobtitle || "").toLowerCase().includes("vice president")))
+            missingPersonas.push("VP-level");
+          if (!contacts.some(c => (c.properties?.jobtitle || "").toLowerCase().includes("director")))
+            missingPersonas.push("Director");
+          if (!lastEngagement) missingPersonas.push("No replies yet");
+          if (!p.hs_last_booked_meeting_date) missingPersonas.push("No meetings booked");
+
+          // Health score: 0-100 based on recency of activity and engagement depth
+          let health = 0;
+          const daysSinceActivity = lastActivityTs > 0
+            ? Math.floor((Date.now() - lastActivityTs) / (1000 * 60 * 60 * 24))
+            : 999;
+          if (daysSinceActivity <= 7)  health += 35;
+          else if (daysSinceActivity <= 14) health += 25;
+          else if (daysSinceActivity <= 30) health += 15;
+          else if (daysSinceActivity <= 60) health += 5;
+          if (lastEngagement?.type === "replied") health += 30;
+          else if (lastEngagement?.type === "clicked") health += 15;
+          else if (lastEngagement?.type === "opened") health += 8;
+          if (contacts.length >= 10) health += 15;
+          else if (contacts.length >= 5) health += 10;
+          else if (contacts.length >= 2) health += 5;
+          if (p.hs_last_booked_meeting_date) health += 15;
+          if (hasPersonaData > 0) health += 5;
+          health = Math.min(100, health);
+
+          const healthStatus = health >= 65 ? "active" : health >= 35 ? "attention" : health > 0 ? "risk" : "cold";
+
           return {
             id:              company.id,
             name:            p.name       || "",
             domain:          p.domain     || "",
             industry:        p.industry   || "",
+            city:            p.city       || "",
+            state:           p.state      || "",
             tier,
             tierRank:        tierRank(tier),
             assignedBdr:     p.assigned_bdr || "",
+            ownerId:         p.hubspot_owner_id || "",
             territory:       p.territory    || "",
+            leadStatus:      p.hs_lead_status || "",
+            numContacts:     parseInt(p.num_associated_contacts || "0"),
+            numNotes:        parseInt(p.num_contacted_notes || "0"),
             lastActivityDate,
+            daysSinceActivity: daysSinceActivity < 999 ? daysSinceActivity : null,
             signal,
+            health,
+            healthStatus,
+            missingPersonas,
+            hasPersonaData,
+            lastBooked:      p.hs_last_booked_meeting_date || null,
+            lastCall:        p.hs_last_logged_call_date || null,
             // Last send across all contacts
             lastSent: lastSentTs > 0 ? {
               date:    new Date(lastSentTs).toISOString(),
@@ -1384,19 +1455,22 @@ export const handler = async (event, context) => {
             contacts: contacts.map(c => {
               const cp = c.properties || {};
               return {
-                id:       c.id,
-                name:     `${cp.firstname||""} ${cp.lastname||""}`.trim(),
-                title:    cp.jobtitle || "",
-                email:    cp.email    || "",
-                lastSent: cp.hs_email_last_send_date || null,
-                lastOpen: cp.hs_email_last_open_date || cp.hs_sales_email_last_opened || null,
-                lastReply:cp.hs_email_last_reply_date || cp.hs_sales_email_last_replied || null,
-                lastClick:cp.hs_email_last_click_date || cp.hs_sales_email_last_clicked || null,
-                emailName:cp.hs_email_last_email_name || null,
-                url:      `https://app.hubspot.com/contacts/39921549/record/0-1/${c.id}`,
+                id:           c.id,
+                name:         `${cp.firstname||""} ${cp.lastname||""}`.trim(),
+                title:        cp.jobtitle || "",
+                email:        cp.email    || "",
+                persona:      cp.hs_persona || cp.target_persona || "",
+                buyingRole:   cp.hs_buying_role || "",
+                inSequence:   cp.hs_sequences_is_enrolled === "true",
+                lastSent:     cp.hs_email_last_send_date || null,
+                lastOpen:     cp.hs_email_last_open_date || cp.hs_sales_email_last_opened || null,
+                lastReply:    cp.hs_email_last_reply_date || cp.hs_sales_email_last_replied || null,
+                lastClick:    cp.hs_email_last_click_date || cp.hs_sales_email_last_clicked || null,
+                emailName:    cp.hs_email_last_email_name || null,
+                url:          `https://app.hubspot.com/contacts/39921549/record/0-1/${c.id}`,
               };
             }),
-            url: `https://app.hubspot.com/companies/39921549/company/${company.id}`,
+            url: `https://app.hubspot.com/contacts/39921549/record/0-2/${company.id}`,
           };
         });
 
@@ -1411,12 +1485,30 @@ export const handler = async (event, context) => {
         const byTier = {};
         normalized.forEach(c => { byTier[c.tier] = (byTier[c.tier] || 0) + 1; });
 
+        // Aggregate portfolio stats
+        const activeAccounts   = normalized.filter(a => a.healthStatus === "active").length;
+        const atRiskAccounts   = normalized.filter(a => a.healthStatus === "risk" || a.healthStatus === "cold").length;
+        const avgHealth        = normalized.length > 0 ? Math.round(normalized.reduce((s,a) => s + a.health, 0) / normalized.length) : 0;
+        const withReplies      = normalized.filter(a => a.lastEngagement?.type === "replied").length;
+        const noActivity30d    = normalized.filter(a => a.daysSinceActivity === null || a.daysSinceActivity > 30).length;
+        const totalContacts    = normalized.reduce((s,a) => s + a.numContacts, 0);
+
         return ok({
           accounts: normalized,
           meta: {
             total: normalized.length,
             byTier,
-            filters: { assigned_bdr: qp.assigned_bdr || null },
+            avgHealth,
+            activeAccounts,
+            atRiskAccounts,
+            withReplies,
+            noActivity30d,
+            totalContacts,
+            filters: {
+              assigned_bdr: qp.assigned_bdr || null,
+              owner_id:     qp.owner_id     || null,
+              tier:         qp.tier         || null,
+            },
           },
         });
       } catch (err) {
