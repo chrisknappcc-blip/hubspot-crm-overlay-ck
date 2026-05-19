@@ -1383,23 +1383,78 @@ export const handler = async (event, context) => {
           const lastActivityTs   = allDates.length > 0 ? Math.max(...allDates) : 0;
           const lastActivityDate = lastActivityTs > 0 ? new Date(lastActivityTs).toISOString() : null;
 
-          // Gap analysis: which key personas are missing from contacts
-          const KEY_PERSONAS = ["CMO","CNO","CFO","COO","CIO","VP","Chief","Director","Manager","President","SVP","EVP"];
-          const contactTitles = contacts.map(c => (c.properties?.jobtitle || "").toLowerCase());
-          const hasPersonaData = contacts.filter(c => c.properties?.hs_persona || c.properties?.target_persona || c.properties?.hs_buying_role).length;
-          const missingPersonas = [];
-          if (!contacts.some(c => {
-            const t = (c.properties?.jobtitle || "").toLowerCase();
-            return t.includes("chief") || t.includes("cmo") || t.includes("cno") || t.includes("ceo") || t.includes("coo") || t.includes("cfo");
-          })) missingPersonas.push("C-Suite");
-          if (!contacts.some(c => (c.properties?.jobtitle || "").toLowerCase().includes("vp") || (c.properties?.jobtitle || "").toLowerCase().includes("vice president")))
-            missingPersonas.push("VP-level");
-          if (!contacts.some(c => (c.properties?.jobtitle || "").toLowerCase().includes("director")))
-            missingPersonas.push("Director");
-          if (!lastEngagement) missingPersonas.push("No replies yet");
-          if (!p.hs_last_booked_meeting_date) missingPersonas.push("No meetings booked");
+          // All 22 target personas from HubSpot -- each Gold account should have coverage
+          const TARGET_PERSONAS = [
+            { value:"Access/Patient Access",  label:"Access/Patient Access",  priority:"high" },
+            { value:"Ambulatory/Urgent Care", label:"Ambulatory/Urgent Care", priority:"medium" },
+            { value:"Business Development",   label:"Business Development",   priority:"medium" },
+            { value:"Case Management",        label:"Case Management",        priority:"high" },
+            { value:"Chief Clinical Officer", label:"Chief Clinical Officer", priority:"critical" },
+            { value:"Clinical Operations",    label:"Clinical Operations",    priority:"high" },
+            { value:"Emergency Department",   label:"Emergency Department",   priority:"medium" },
+            { value:"Executive/Leadership",   label:"Executive/Leadership",   priority:"critical" },
+            { value:"Finance",                label:"Finance",                priority:"high" },
+            { value:"Innovation",             label:"Innovation",             priority:"medium" },
+            { value:"Medical Group",          label:"Medical Group",          priority:"medium" },
+            { value:"Medical",                label:"Medical Information",    priority:"medium" },
+            { value:"Medical Officer",        label:"Medical Officer",        priority:"critical" },
+            { value:"Nursing Officer",        label:"Nursing Officer",        priority:"critical" },
+            { value:"Operating Officer",      label:"Operating Officer",      priority:"critical" },
+            { value:"Patient Experience",     label:"Patient Experience",     priority:"high" },
+            { value:"Physician Executive",    label:"Physician Executive",    priority:"critical" },
+            { value:"Population Health",      label:"Population Health",      priority:"high" },
+            { value:"Quality Officer",        label:"Quality Officer",        priority:"high" },
+            { value:"Service Line",           label:"Service Line",           priority:"medium" },
+            { value:"Strategy",               label:"Strategy",               priority:"high" },
+            { value:"Value Based Care",       label:"Value Based Care",       priority:"high" },
+          ];
 
-          // Health score: 0-100 based on recency of activity and engagement depth
+          // Build persona coverage map: which personas are covered by contacts at this account
+          const coveredPersonas = new Set(
+            contacts
+              .map(c => c.properties?.target_persona)
+              .filter(Boolean)
+              .flatMap(v => v.split(";").map(s => s.trim()))
+          );
+
+          // Gaps = personas with no contact assigned, sorted by priority
+          const priorityOrder = { critical:0, high:1, medium:2 };
+          const missingPersonas = TARGET_PERSONAS
+            .filter(p => !coveredPersonas.has(p.value))
+            .sort((a,b) => priorityOrder[a.priority] - priorityOrder[b.priority])
+            .map(p => ({ value: p.value, label: p.label, priority: p.priority }));
+
+          // Persona heatmap: for each persona, who is assigned and their engagement status
+          const personaCoverage = TARGET_PERSONAS.map(persona => {
+            const assigned = contacts.filter(c => {
+              const val = c.properties?.target_persona || "";
+              return val.split(";").map(s => s.trim()).includes(persona.value);
+            });
+            const hasReply = assigned.some(c =>
+              c.properties?.hs_email_last_reply_date || c.properties?.hs_sales_email_last_replied
+            );
+            const hasSent = assigned.some(c => c.properties?.hs_email_last_send_date);
+            return {
+              persona: persona.value,
+              label:   persona.label,
+              priority: persona.priority,
+              covered: assigned.length > 0,
+              contacts: assigned.map(c => ({
+                name:  `${c.properties?.firstname||""} ${c.properties?.lastname||""}`.trim(),
+                title: c.properties?.jobtitle || "",
+                replied: !!(c.properties?.hs_email_last_reply_date || c.properties?.hs_sales_email_last_replied),
+                sent:    !!c.properties?.hs_email_last_send_date,
+              })),
+              engagement: assigned.length === 0 ? "none" : hasReply ? "replied" : hasSent ? "contacted" : "mapped",
+            };
+          });
+
+          // Gap analysis: missing personas + engagement gaps
+          const criticalGaps    = missingPersonas.filter(p => p.priority === "critical").length;
+          const highGaps        = missingPersonas.filter(p => p.priority === "high").length;
+          const personasWithNoEngagement = personaCoverage.filter(p => p.covered && p.engagement === "mapped").length;
+
+          // Health score: 0-100
           let health = 0;
           const daysSinceActivity = lastActivityTs > 0
             ? Math.floor((Date.now() - lastActivityTs) / (1000 * 60 * 60 * 24))
@@ -1415,7 +1470,9 @@ export const handler = async (event, context) => {
           else if (contacts.length >= 5) health += 10;
           else if (contacts.length >= 2) health += 5;
           if (p.hs_last_booked_meeting_date) health += 15;
-          if (hasPersonaData > 0) health += 5;
+          // Persona coverage bonus (up to 5 pts)
+          const coveragePct = coveredPersonas.size / TARGET_PERSONAS.length;
+          health += Math.round(coveragePct * 5);
           health = Math.min(100, health);
 
           const healthStatus = health >= 65 ? "active" : health >= 35 ? "attention" : health > 0 ? "risk" : "cold";
@@ -1440,7 +1497,13 @@ export const handler = async (event, context) => {
             signal,
             health,
             healthStatus,
-            missingPersonas,
+            missingPersonas:  missingPersonas.map(p => ({ value:p.value, label:p.label, priority:p.priority })),
+            personaCoverage,
+            criticalGaps,
+            highGaps,
+            personasWithNoEngagement,
+            coveredPersonaCount: coveredPersonas.size,
+            totalPersonas: TARGET_PERSONAS.length,
             hasPersonaData,
             lastBooked:      p.hs_last_booked_meeting_date || null,
             lastCall:        p.hs_last_logged_call_date || null,
@@ -1492,6 +1555,11 @@ export const handler = async (event, context) => {
         const withReplies      = normalized.filter(a => a.lastEngagement?.type === "replied").length;
         const noActivity30d    = normalized.filter(a => a.daysSinceActivity === null || a.daysSinceActivity > 30).length;
         const totalContacts    = normalized.reduce((s,a) => s + a.numContacts, 0);
+        const totalCriticalGaps = normalized.reduce((s,a) => s + (a.criticalGaps||0), 0);
+        const totalHighGaps     = normalized.reduce((s,a) => s + (a.highGaps||0), 0);
+        const avgPersonaCoverage = normalized.length > 0
+          ? Math.round(normalized.reduce((s,a) => s + (a.coveredPersonaCount||0), 0) / normalized.length)
+          : 0;
 
         return ok({
           accounts: normalized,
@@ -1504,6 +1572,10 @@ export const handler = async (event, context) => {
             withReplies,
             noActivity30d,
             totalContacts,
+            totalCriticalGaps,
+            totalHighGaps,
+            avgPersonaCoverage,
+            totalPersonas: 22,
             filters: {
               assigned_bdr: qp.assigned_bdr || null,
               owner_id:     qp.owner_id     || null,
