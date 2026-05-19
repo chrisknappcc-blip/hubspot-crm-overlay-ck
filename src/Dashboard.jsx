@@ -1991,7 +1991,7 @@ function ReportsTab({ safeFetch, owners, currentUserName }) {
   const handleSetSection = useCallback((s) => {
     setSection(s)
     if (s === 'deals') setPeriod('year')
-    else if (s === 'weekly_recap') setPeriod('week')
+    else if (s === 'weekly_recap' || s === 'gold_work_log') setPeriod('week')
     else setPeriod('month')
   }, [])
 
@@ -2045,6 +2045,7 @@ function ReportsTab({ safeFetch, owners, currentUserName }) {
     { key:'deals',           label:'Deals' },
     { key:'team_activity',   label:'Team Activity' },
     { key:'gold_activity',   label:'Gold Activity' },
+    { key:'gold_work_log',   label:'Gold Work Log' },
     { key:'weekly_recap',    label:'Weekly Recap' },
   ]
 
@@ -2749,6 +2750,145 @@ function ReportsTab({ safeFetch, owners, currentUserName }) {
                 </table>
               </Panel>
             </div>
+          </div>
+        )
+      })()}
+
+      {/* ── Gold Work Log ── */}
+      {!loading && data && section === 'gold_work_log' && (() => {
+        const S = data.summary || {}
+        const accounts = data.accounts || []
+        const activeAccounts = accounts.filter(a => a.activityInPeriod)
+        const inactiveAccounts = accounts.filter(a => !a.activityInPeriod)
+
+        const scoreColor = (score) => score >= 75 ? 'var(--green)' : score >= 50 ? 'var(--amber)' : 'var(--red)'
+        const ScoreBadge = ({ score }) => (
+          <span style={{ fontSize:11, fontWeight:600, color: scoreColor(score), background:'var(--bg-secondary)', borderRadius:4, padding:'2px 6px' }}>
+            {score}%
+          </span>
+        )
+
+        const exportText = () => {
+          const lines = [
+            `Gold Account Work Log — ${data.period}`,
+            `Generated: ${new Date().toLocaleString()}`,
+            ``,
+            `SUMMARY`,
+            `Total Gold Accounts: ${S.totalAccounts}`,
+            `Active This Period:  ${S.activeThisPeriod}`,
+            `Avg Data Score:      ${S.avgDataScore}%`,
+            `Missing Job Titles:  ${S.totalMissingTitles}`,
+            `Missing Personas:    ${S.totalMissingPersonas}`,
+            `Missing Buying Roles:${S.totalMissingBuyingRoles}`,
+            ``,
+            `ACTIVE ACCOUNTS (${activeAccounts.length})`,
+            ...activeAccounts.map(a =>
+              `${a.tier.replace('GOLD - ','')} | ${a.name.padEnd(35)} | Data: ${a.dataScore}% | Last: ${a.lastContacted ? new Date(a.lastContacted).toLocaleDateString() : 'never'} | Missing: ${[a.missingTitle > 0 ? `${a.missingTitle} titles` : '', a.missingPersona > 0 ? `${a.missingPersona} personas` : '', a.missingBuyingRole > 0 ? `${a.missingBuyingRole} roles` : ''].filter(Boolean).join(', ') || 'none'}`
+            ),
+            ``,
+            `INACTIVE ACCOUNTS (${inactiveAccounts.length})`,
+            ...inactiveAccounts.map(a => `${a.tier.replace('GOLD - ','')} | ${a.name}`),
+          ]
+          navigator.clipboard.writeText(lines.join('\n')).then(() => alert('Copied to clipboard!'))
+        }
+
+        return (
+          <div style={{ display:'flex', flexDirection:'column', gap:16 }}>
+            {/* Header */}
+            <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between' }}>
+              <div>
+                <div style={{ fontSize:18, fontWeight:600, color:'var(--text)' }}>Gold Account Work Log</div>
+                <div style={{ fontSize:12, color:'var(--text-tertiary)', marginTop:2 }}>Activity and data completeness for Gold tier accounts</div>
+              </div>
+              <button onClick={exportText}
+                style={{ padding:'8px 16px', background:'none', border:'1px solid var(--border)', borderRadius:'var(--radius)', fontSize:12, color:'var(--text-secondary)', cursor:'pointer' }}>
+                Copy recap
+              </button>
+            </div>
+
+            {/* Summary KPIs */}
+            <div style={{ display:'grid', gridTemplateColumns:'repeat(6,1fr)', gap:10 }}>
+              <KpiCard label="Gold Accounts"    value={fmt(S.totalAccounts)}       />
+              <KpiCard label="Active This Period" value={fmt(S.activeThisPeriod)}  accent />
+              <KpiCard label="Avg Data Score"   value={`${S.avgDataScore}%`}       />
+              <KpiCard label="Missing Titles"   value={fmt(S.totalMissingTitles)}  />
+              <KpiCard label="Missing Personas" value={fmt(S.totalMissingPersonas)} />
+              <KpiCard label="Missing Roles"    value={fmt(S.totalMissingBuyingRoles)} />
+            </div>
+
+            {/* Active accounts */}
+            <Panel>
+              <SectionTitle>Active this period ({activeAccounts.length})</SectionTitle>
+              {activeAccounts.length === 0
+                ? <div style={{ fontSize:12, color:'var(--text-tertiary)' }}>No Gold accounts had logged activity this period.</div>
+                : <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
+                    <THead cols={['Account','Tier','Last Contacted','Contacts','Data Score','Missing Titles','Missing Personas','Missing Roles','']} />
+                    <tbody>
+                      {activeAccounts.map((a,i) => (
+                        <tr key={i} style={{ borderBottom:'1px solid var(--border)' }}>
+                          <td style={{ padding:'7px 10px 7px 0', fontWeight:500 }}>
+                            <a href={a.url} target="_blank" rel="noopener noreferrer"
+                              style={{ color:'var(--accent)', textDecoration:'none' }}>{a.name}</a>
+                          </td>
+                          <td style={{ padding:'7px 10px 7px 0', fontSize:10, color:'var(--text-tertiary)' }}>{a.tier.replace('GOLD - ','')}</td>
+                          <td style={{ padding:'7px 10px 7px 0', color:'var(--text-secondary)', whiteSpace:'nowrap' }}>
+                            {a.lastContacted ? new Date(a.lastContacted).toLocaleDateString() : '—'}
+                          </td>
+                          <td style={{ padding:'7px 10px 7px 0' }}>{fmt(a.totalContacts)}</td>
+                          <td style={{ padding:'7px 10px 7px 0' }}><ScoreBadge score={a.dataScore} /></td>
+                          <td style={{ padding:'7px 10px 7px 0', color: a.missingTitle > 0 ? 'var(--amber)' : 'var(--text-tertiary)' }}>{a.missingTitle > 0 ? `${a.missingTitle} missing` : '✓'}</td>
+                          <td style={{ padding:'7px 10px 7px 0', color: a.missingPersona > 0 ? 'var(--amber)' : 'var(--text-tertiary)' }}>{a.missingPersona > 0 ? `${a.missingPersona} missing` : '✓'}</td>
+                          <td style={{ padding:'7px 10px 7px 0', color: a.missingBuyingRole > 0 ? 'var(--amber)' : 'var(--text-tertiary)' }}>{a.missingBuyingRole > 0 ? `${a.missingBuyingRole} missing` : '✓'}</td>
+                          <td style={{ padding:'7px 0' }}>
+                            <a href={a.url} target="_blank" rel="noopener noreferrer"
+                              style={{ fontSize:10, color:'var(--text-tertiary)', textDecoration:'none' }}>↗</a>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+              }
+            </Panel>
+
+            {/* Inactive accounts — needs attention */}
+            {inactiveAccounts.length > 0 && (
+              <Panel>
+                <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:12 }}>
+                  <SectionTitle style={{ margin:0 }}>No activity this period ({inactiveAccounts.length})</SectionTitle>
+                  <span style={{ fontSize:10, fontWeight:600, color:'var(--red)', background:'rgba(239,68,68,0.1)', borderRadius:4, padding:'2px 6px' }}>Needs attention</span>
+                </div>
+                <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
+                  <THead cols={['Account','Tier','Last Contacted','Contacts','Data Score','Missing Data','']} />
+                  <tbody>
+                    {inactiveAccounts.slice(0, 25).map((a,i) => (
+                      <tr key={i} style={{ borderBottom:'1px solid var(--border)' }}>
+                        <td style={{ padding:'7px 10px 7px 0', fontWeight:500 }}>
+                          <a href={a.url} target="_blank" rel="noopener noreferrer"
+                            style={{ color:'var(--accent)', textDecoration:'none' }}>{a.name}</a>
+                        </td>
+                        <td style={{ padding:'7px 10px 7px 0', fontSize:10, color:'var(--text-tertiary)' }}>{a.tier.replace('GOLD - ','')}</td>
+                        <td style={{ padding:'7px 10px 7px 0', color: !a.lastContacted ? 'var(--red)' : 'var(--text-secondary)', whiteSpace:'nowrap' }}>
+                          {a.lastContacted ? new Date(a.lastContacted).toLocaleDateString() : 'Never'}
+                        </td>
+                        <td style={{ padding:'7px 10px 7px 0' }}>{fmt(a.totalContacts)}</td>
+                        <td style={{ padding:'7px 10px 7px 0' }}><ScoreBadge score={a.dataScore} /></td>
+                        <td style={{ padding:'7px 10px 7px 0', color:'var(--amber)', fontSize:11 }}>
+                          {[
+                            a.missingTitle > 0 ? `${a.missingTitle} titles` : '',
+                            a.missingPersona > 0 ? `${a.missingPersona} personas` : '',
+                            a.missingBuyingRole > 0 ? `${a.missingBuyingRole} roles` : '',
+                          ].filter(Boolean).join(' · ') || '—'}
+                        </td>
+                        <td style={{ padding:'7px 0' }}>
+                          <a href={a.url} target="_blank" rel="noopener noreferrer"
+                            style={{ fontSize:10, color:'var(--text-tertiary)', textDecoration:'none' }}>↗</a>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </Panel>
+            )}
           </div>
         )
       })()}
