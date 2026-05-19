@@ -3108,567 +3108,797 @@ function ReportsTab({ safeFetch, owners, currentUserName }) {
   )
 }
 
-// ─── Gold Overview Tab ────────────────────────────────────────────────────────
-// Bird's-eye view of entire Gold Account pipeline matching HTML mockup design.
-// 3-column: account list + health scores | account detail panel | aggregate gaps
-function GoldOverviewTab({ accounts, meta, loading, onRefresh, selectedAccount, onSelectAccount, filterBdr, setFilterBdr, BDR_OPTIONS, goldTabTier, setGoldTabTier }) {
-  const [sortBy, setSortBy] = useState('tier')
-  const [search, setSearch] = useState('')
+// ─── Gold shared constants ────────────────────────────────────────────────────
+const TARGET_PERSONAS = [
+  { value:"Access/Patient Access",  label:"Access/Patient Access",  priority:"high" },
+  { value:"Ambulatory/Urgent Care", label:"Ambulatory/Urgent Care", priority:"medium" },
+  { value:"Business Development",   label:"Business Development",   priority:"medium" },
+  { value:"Case Management",        label:"Case Management",        priority:"high" },
+  { value:"Chief Clinical Officer", label:"Chief Clinical Officer", priority:"critical" },
+  { value:"Clinical Operations",    label:"Clinical Operations",    priority:"high" },
+  { value:"Emergency Department",   label:"Emergency Department",   priority:"medium" },
+  { value:"Executive/Leadership",   label:"Executive/Leadership",   priority:"critical" },
+  { value:"Finance",                label:"Finance",                priority:"high" },
+  { value:"Innovation",             label:"Innovation",             priority:"medium" },
+  { value:"Medical Group",          label:"Medical Group",          priority:"medium" },
+  { value:"Medical",                label:"Medical Information",    priority:"medium" },
+  { value:"Medical Officer",        label:"Medical Officer",        priority:"critical" },
+  { value:"Nursing Officer",        label:"Nursing Officer",        priority:"critical" },
+  { value:"Operating Officer",      label:"Operating Officer",      priority:"critical" },
+  { value:"Patient Experience",     label:"Patient Experience",     priority:"high" },
+  { value:"Physician Executive",    label:"Physician Executive",    priority:"critical" },
+  { value:"Population Health",      label:"Population Health",      priority:"high" },
+  { value:"Quality Officer",        label:"Quality Officer",        priority:"high" },
+  { value:"Service Line",           label:"Service Line",           priority:"medium" },
+  { value:"Strategy",               label:"Strategy",               priority:"high" },
+  { value:"Value Based Care",       label:"Value Based Care",       priority:"high" },
+]
 
-  const GOLD_TIERS = [
-    { value: '', label: 'All Tiers' },
-    { value: 'GOLD - 1-10',   label: 'GOLD 1-10' },
-    { value: 'GOLD - 11-20',  label: 'GOLD 11-20' },
-    { value: 'GOLD - 21-30',  label: 'GOLD 21-30' },
-    { value: 'GOLD - 31-40',  label: 'GOLD 31-40' },
-    { value: 'GOLD - 41-50',  label: 'GOLD 41-50' },
-  ]
+const GOLD_TIER_OPTIONS = [
+  { value:'',               label:'All Tiers' },
+  { value:'GOLD - 1-10',   label:'GOLD 1-10' },
+  { value:'GOLD - 11-20',  label:'GOLD 11-20' },
+  { value:'GOLD - 21-30',  label:'GOLD 21-30' },
+  { value:'GOLD - 31-40',  label:'GOLD 31-40' },
+  { value:'GOLD - 41-50',  label:'GOLD 41-50' },
+  { value:'GOLD - 51-60',  label:'GOLD 51-60' },
+  { value:'GOLD - 61-70',  label:'GOLD 61-70' },
+  { value:'GOLD - 71-80',  label:'GOLD 71-80' },
+  { value:'GOLD - 81-90',  label:'GOLD 81-90' },
+  { value:'GOLD - 91-100', label:'GOLD 91-100' },
+]
 
-  const OWNER_NAME_MAP = {
-    '76104455': 'Matt Valin', '55217954': 'Joe Haine',
-    '83862037': 'Tim Grisham', '289209454': 'Irene Wong',
-    '85819247': 'Cole Hooper', '743772047': 'John Hansel',
-  }
+const GOLD_OWNER_MAP = {
+  '76104455':'Matt Valin','55217954':'Joe Haine','83862037':'Tim Grisham',
+  '289209454':'Irene Wong','85819247':'Cole Hooper','743772047':'John Hansel',
+}
 
-  const filtered = useMemo(() => {
+const hcColor = s => s==='active'?'var(--green)':s==='attention'?'var(--amber)':s==='risk'?'var(--red)':'var(--text-tertiary)'
+const hcBg    = s => s==='active'?'rgba(52,201,122,.12)':s==='attention'?'rgba(245,166,35,.12)':s==='risk'?'rgba(240,82,82,.12)':'var(--bg-secondary)'
+const hcBorder= s => s==='active'?'rgba(52,201,122,.4)':s==='attention'?'rgba(245,166,35,.4)':s==='risk'?'rgba(240,82,82,.4)':'var(--border)'
+
+const prioColor = p => p==='critical'?'var(--red)':p==='high'?'var(--amber)':'var(--text-tertiary)'
+
+function useGoldSort(accounts, search, sortBy) {
+  return useMemo(() => {
     let list = [...accounts]
     if (search) list = list.filter(a => a.name.toLowerCase().includes(search.toLowerCase()))
-    if (sortBy === 'health')   list.sort((a,b) => (b.health||0) - (a.health||0))
+    if (sortBy === 'health')   list.sort((a,b) => (b.health||0)-(a.health||0))
     if (sortBy === 'activity') list.sort((a,b) => {
       const da = a.lastActivityDate ? new Date(a.lastActivityDate).getTime() : 0
       const db = b.lastActivityDate ? new Date(b.lastActivityDate).getTime() : 0
       return db - da
     })
-    if (sortBy === 'gaps')     list.sort((a,b) => (b.missingPersonas||[]).length - (a.missingPersonas||[]).length)
-    if (sortBy === 'tier')     list.sort((a,b) => (a.tierRank||0) - (b.tierRank||0))
+    if (sortBy === 'gaps')    list.sort((a,b) => (b.criticalGaps||0)-(a.criticalGaps||0))
+    if (sortBy === 'tier')    list.sort((a,b) => (a.tierRank||0)-(b.tierRank||0))
+    if (sortBy === 'coverage')list.sort((a,b) => (a.coveredPersonaCount||0)-(b.coveredPersonaCount||0))
     return list
   }, [accounts, search, sortBy])
+}
 
+// Persona heatmap visualization
+function PersonaHeatmap({ account }) {
+  if (!account?.personaCoverage) return null
+  const coverage = account.personaCoverage
+  return (
+    <div>
+      <div style={{ display:'flex', flexWrap:'wrap', gap:4, marginBottom:8 }}>
+        {coverage.map((p,i) => {
+          const bg = p.engagement==='replied'  ? 'var(--green)'
+                   : p.engagement==='contacted'? 'rgba(52,201,122,.4)'
+                   : p.engagement==='mapped'   ? 'rgba(79,142,247,.3)'
+                   : 'var(--bg-secondary)'
+          const border = p.covered ? (p.engagement==='replied'?'var(--green)':'var(--accent)') : 'var(--border)'
+          return (
+            <div key={i} title={`${p.label}\n${p.covered ? `${p.contacts.length} contact(s) — ${p.engagement}` : 'No contact mapped'}`}
+              style={{ padding:'3px 8px', borderRadius:4, fontSize:10, fontWeight:500,
+                background:bg, border:`1px solid ${border}`,
+                color: p.engagement==='replied'?'#fff':p.covered?'var(--text)':'var(--text-tertiary)',
+                cursor:'default', position:'relative' }}>
+              {p.label}
+              {!p.covered && <span style={{ position:'absolute', top:-3, right:-3, width:8, height:8, borderRadius:'50%', background:'var(--red)', border:'1px solid var(--bg)' }} />}
+            </div>
+          )
+        })}
+      </div>
+      <div style={{ display:'flex', gap:12, fontSize:10, color:'var(--text-tertiary)', flexWrap:'wrap' }}>
+        <span><span style={{ display:'inline-block', width:10, height:10, borderRadius:2, background:'var(--green)', verticalAlign:'middle', marginRight:4 }} />Replied</span>
+        <span><span style={{ display:'inline-block', width:10, height:10, borderRadius:2, background:'rgba(52,201,122,.4)', verticalAlign:'middle', marginRight:4 }} />Contacted</span>
+        <span><span style={{ display:'inline-block', width:10, height:10, borderRadius:2, background:'rgba(79,142,247,.3)', verticalAlign:'middle', marginRight:4 }} />Mapped only</span>
+        <span><span style={{ display:'inline-block', width:10, height:10, borderRadius:2, background:'var(--bg-secondary)', border:'1px solid var(--border)', verticalAlign:'middle', marginRight:4 }} />Gap <span style={{ color:'var(--red)' }}>●</span></span>
+      </div>
+    </div>
+  )
+}
+
+// Gap list with priority badges
+function GapList({ missingPersonas, maxShow = 8 }) {
+  const [showAll, setShowAll] = useState(false)
+  if (!missingPersonas?.length) return <div style={{ fontSize:12, color:'var(--green)', padding:'8px 0' }}>✓ All personas mapped</div>
+  const display = showAll ? missingPersonas : missingPersonas.slice(0, maxShow)
+  return (
+    <div>
+      {display.map((g,i) => (
+        <div key={i} style={{ display:'flex', alignItems:'center', gap:8, padding:'5px 0', borderBottom:'1px solid var(--border)' }}>
+          <span style={{ fontSize:9, fontWeight:700, textTransform:'uppercase', padding:'2px 5px', borderRadius:3,
+            color:prioColor(g.priority),
+            background: g.priority==='critical'?'rgba(240,82,82,.12)':g.priority==='high'?'rgba(245,166,35,.12)':'var(--bg-secondary)',
+            border:`1px solid ${prioColor(g.priority)}44`, flexShrink:0 }}>
+            {g.priority}
+          </span>
+          <span style={{ fontSize:11, color:'var(--text-secondary)' }}>{g.label}</span>
+        </div>
+      ))}
+      {missingPersonas.length > maxShow && (
+        <button onClick={() => setShowAll(v => !v)} style={{ fontSize:10, color:'var(--accent)', background:'none', border:'none', cursor:'pointer', padding:'6px 0 0' }}>
+          {showAll ? 'Show less' : `+${missingPersonas.length - maxShow} more gaps`}
+        </button>
+      )}
+    </div>
+  )
+}
+
+// Export helpers
+function exportGoldCSV(accounts, filename) {
+  const rows = [
+    ['Rank','Account','Tier','BDR','VP','Health','Status','Days Since Activity','Contacts','Critical Gaps','High Gaps','Persona Coverage','Last Reply'],
+    ...accounts.map((a,i) => [
+      i+1, a.name, a.tier, a.assignedBdr, GOLD_OWNER_MAP[a.ownerId]||'',
+      a.health, a.healthStatus,
+      a.daysSinceActivity != null ? a.daysSinceActivity : 'N/A',
+      a.numContacts||0, a.criticalGaps||0, a.highGaps||0,
+      `${a.coveredPersonaCount||0}/${a.totalPersonas||22}`,
+      a.lastEngagement?.type === 'replied' ? new Date(a.lastEngagement.date).toLocaleDateString() : 'None',
+    ])
+  ]
+  const csv = rows.map(r => r.map(v => `"${String(v||'').replace(/"/g,'""')}"`).join(',')).join('\n')
+  const link = document.createElement('a')
+  link.href = URL.createObjectURL(new Blob([csv], {type:'text/csv'}))
+  link.download = filename || `gold-export-${new Date().toISOString().slice(0,10)}.csv`
+  link.click()
+}
+
+function exportAccountCSV(a) {
+  if (!a) return
+  const rows = [
+    ['Field','Value'],
+    ['Account', a.name], ['Tier', a.tier], ['BDR', a.assignedBdr], ['VP', GOLD_OWNER_MAP[a.ownerId]||''],
+    ['Health Score', a.health], ['Status', a.healthStatus],
+    ['Days Since Activity', a.daysSinceActivity != null ? a.daysSinceActivity : 'N/A'],
+    ['Total Contacts', a.numContacts||0], ['Notes', a.numNotes||0],
+    ['Last Reply', a.lastEngagement?.type==='replied' ? a.lastEngagement.date : 'None'],
+    ['Meeting Booked', a.lastBooked ? new Date(a.lastBooked).toLocaleDateString() : 'None'],
+    ['Critical Gaps', a.criticalGaps||0], ['High Gaps', a.highGaps||0],
+    ['Persona Coverage', `${a.coveredPersonaCount||0}/${a.totalPersonas||22}`],
+    [''],
+    ['PERSONA COVERAGE'],
+    ['Persona','Priority','Status','Contacts'],
+    ...(a.personaCoverage||[]).map(p => [p.label, p.priority, p.engagement, p.contacts.map(c=>c.name).join(', ')]),
+    [''],
+    ['CONTACTS'],
+    ['Name','Title','Target Persona','Buying Role','In Sequence','Last Reply','Last Send'],
+    ...(a.contacts||[]).map(c => [c.name, c.title, c.persona, c.buyingRole, c.inSequence?'Yes':'No',
+      c.lastReply ? new Date(c.lastReply).toLocaleDateString() : '—',
+      c.lastSent  ? new Date(c.lastSent).toLocaleDateString()  : '—',
+    ])
+  ]
+  const csv = rows.map(r => r.map(v => `"${String(v||'').replace(/"/g,'""')}"`).join(',')).join('\n')
+  const link = document.createElement('a')
+  link.href = URL.createObjectURL(new Blob([csv], {type:'text/csv'}))
+  link.download = `gold-${(a.name||'account').replace(/[^a-z0-9]/gi,'-').toLowerCase()}.csv`
+  link.click()
+}
+
+// Controls bar shared by both tabs
+function GoldControls({ search, setSearch, filterBdr, setFilterBdr, BDR_OPTIONS, goldTabTier, setGoldTabTier, sortBy, setSortBy, onRefresh, onExport, extraRight }) {
+  return (
+    <div style={{ display:'flex', alignItems:'center', gap:8, flexWrap:'wrap', marginBottom:12 }}>
+      <div style={{ display:'flex', alignItems:'center', gap:6, background:'rgba(245,166,35,.12)', border:'1px solid rgba(245,166,35,.35)', borderRadius:'var(--radius)', padding:'4px 10px', flexShrink:0 }}>
+        <span style={{ fontSize:12 }}>⭐</span>
+        <span style={{ fontSize:10, fontWeight:600, letterSpacing:'.06em', textTransform:'uppercase', color:'var(--amber)' }}>Gold</span>
+      </div>
+      <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search accounts…"
+        style={{ flex:1, minWidth:140, padding:'6px 10px', background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius)', fontSize:12, color:'var(--text)', outline:'none' }} />
+      <Select value={filterBdr} onChange={setFilterBdr} options={[{value:'',label:'All Reps'}, ...BDR_OPTIONS]} />
+      <Select value={goldTabTier} onChange={setGoldTabTier} options={GOLD_TIER_OPTIONS} />
+      <Select value={sortBy} onChange={setSortBy} options={[
+        {value:'tier',label:'Tier'},{value:'health',label:'Health'},
+        {value:'activity',label:'Activity'},{value:'gaps',label:'Critical Gaps'},
+        {value:'coverage',label:'Coverage'},
+      ]} />
+      {extraRight}
+      {onExport && <button onClick={onExport} style={{ padding:'6px 12px', background:'none', border:'1px solid var(--border)', borderRadius:'var(--radius)', fontSize:11, color:'var(--text-secondary)', cursor:'pointer', flexShrink:0 }}>Export CSV</button>}
+      <button onClick={onRefresh} style={{ padding:'6px 12px', background:'none', border:'1px solid var(--border)', borderRadius:'var(--radius)', fontSize:11, color:'var(--accent)', cursor:'pointer', flexShrink:0 }}>↻</button>
+    </div>
+  )
+}
+
+// ─── Gold Overview Tab ────────────────────────────────────────────────────────
+function GoldOverviewTab({ accounts, meta, loading, onRefresh, selectedAccount, onSelectAccount, filterBdr, setFilterBdr, BDR_OPTIONS, goldTabTier, setGoldTabTier }) {
+  const [sortBy, setSortBy]     = useState('tier')
+  const [search, setSearch]     = useState('')
+  const [view, setView]         = useState('overview') // 'overview' | 'reporting'
+  const filtered = useGoldSort(accounts, search, sortBy)
   const sel = selectedAccount || filtered[0] || null
 
-  // Aggregate gaps across all accounts
-  const totalMissingCSuite   = accounts.filter(a => a.missingPersonas?.includes('C-Suite')).length
-  const totalMissingVP       = accounts.filter(a => a.missingPersonas?.includes('VP-level')).length
-  const totalMissingDir      = accounts.filter(a => a.missingPersonas?.includes('Director')).length
-  const totalNoReplies       = accounts.filter(a => a.missingPersonas?.includes('No replies yet')).length
-  const totalNoMeetings      = accounts.filter(a => a.missingPersonas?.includes('No meetings booked')).length
-  const atRisk               = accounts.filter(a => a.healthStatus === 'risk' || a.healthStatus === 'cold').length
-  const active               = accounts.filter(a => a.healthStatus === 'active').length
-
-  const exportCSV = () => {
-    const rows = [
-      ['Rank','Account','Tier','BDR','VP','Health','Status','Last Activity','Contacts','Replies','Meetings','Missing Personas'],
-      ...filtered.map((a,i) => [
-        i+1, a.name, a.tier, a.assignedBdr, OWNER_NAME_MAP[a.ownerId]||'',
-        a.health, a.healthStatus,
-        a.lastActivityDate ? new Date(a.lastActivityDate).toLocaleDateString() : 'Never',
-        a.numContacts||0,
-        a.lastEngagement?.type === 'replied' ? 'Yes' : 'No',
-        a.lastBooked ? 'Yes' : 'No',
-        (a.missingPersonas||[]).join('; '),
-      ])
-    ]
-    const csv = rows.map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n')
-    const link = document.createElement('a')
-    link.href = URL.createObjectURL(new Blob([csv], {type:'text/csv'}))
-    link.download = `gold-overview-${new Date().toISOString().slice(0,10)}.csv`
-    link.click()
-  }
-
-  const healthColor = (s) => s === 'active' ? 'var(--green)' : s === 'attention' ? 'var(--amber)' : s === 'risk' ? 'var(--red)' : 'var(--text-tertiary)'
-  const healthBg    = (s) => s === 'active' ? 'rgba(52,201,122,.12)' : s === 'attention' ? 'rgba(245,166,35,.12)' : s === 'risk' ? 'rgba(240,82,82,.12)' : 'var(--bg-secondary)'
-  const borderColor = (s) => s === 'active' ? 'var(--green)' : s === 'attention' ? 'var(--amber)' : s === 'risk' ? 'var(--red)' : 'transparent'
+  // Portfolio gap aggregates
+  const personaGapMap = useMemo(() => {
+    const map = {}
+    TARGET_PERSONAS.forEach(p => { map[p.value] = { label:p.label, priority:p.priority, missing:0 } })
+    accounts.forEach(a => {
+      (a.missingPersonas||[]).forEach(g => { if (map[g.value]) map[g.value].missing++ })
+    })
+    return Object.values(map).filter(p => p.missing > 0).sort((a,b) => {
+      const po = { critical:0, high:1, medium:2 }
+      if (po[a.priority] !== po[b.priority]) return po[a.priority] - po[b.priority]
+      return b.missing - a.missing
+    })
+  }, [accounts])
 
   return (
     <div style={{ display:'flex', flexDirection:'column', gap:12 }}>
-      {/* Header bar */}
-      <div style={{ display:'flex', alignItems:'center', gap:10, padding:'10px 0', flexShrink:0, flexWrap:'wrap' }}>
-        <div style={{ display:'flex', alignItems:'center', gap:6, background:'rgba(245,166,35,.12)', border:'1px solid rgba(245,166,35,.35)', borderRadius:'var(--radius)', padding:'4px 10px' }}>
-          <span style={{ fontSize:12 }}>⭐</span>
-          <span style={{ fontSize:10, fontWeight:600, letterSpacing:'.06em', textTransform:'uppercase', color:'var(--amber)' }}>Gold Pipeline</span>
-        </div>
-        <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search accounts…"
-          style={{ flex:1, minWidth:140, padding:'6px 10px', background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius)', fontSize:12, color:'var(--text)', outline:'none' }} />
-        <Select value={filterBdr} onChange={setFilterBdr} options={[{value:'',label:'All Reps'}, ...BDR_OPTIONS]} />
-        <Select value={goldTabTier} onChange={setGoldTabTier} options={GOLD_TIERS} />
-        <Select value={sortBy} onChange={setSortBy} options={[
-          {value:'tier',label:'Sort: Tier'},{value:'health',label:'Sort: Health'},
-          {value:'activity',label:'Sort: Activity'},{value:'gaps',label:'Sort: Gaps'},
-        ]} />
-        <button onClick={exportCSV} style={{ padding:'6px 12px', background:'none', border:'1px solid var(--border)', borderRadius:'var(--radius)', fontSize:11, color:'var(--text-secondary)', cursor:'pointer' }}>Export CSV</button>
-        <button onClick={onRefresh} style={{ padding:'6px 12px', background:'none', border:'1px solid var(--border)', borderRadius:'var(--radius)', fontSize:11, color:'var(--accent)', cursor:'pointer' }}>↻</button>
-      </div>
+      {/* Controls */}
+      <GoldControls
+        search={search} setSearch={setSearch}
+        filterBdr={filterBdr} setFilterBdr={setFilterBdr} BDR_OPTIONS={BDR_OPTIONS}
+        goldTabTier={goldTabTier} setGoldTabTier={setGoldTabTier}
+        sortBy={sortBy} setSortBy={setSortBy}
+        onRefresh={onRefresh}
+        onExport={() => exportGoldCSV(filtered, 'gold-overview.csv')}
+        extraRight={
+          <div style={{ display:'flex', background:'var(--bg-panel)', borderRadius:'var(--radius)', border:'1px solid var(--border)', padding:3, gap:2 }}>
+            {[{k:'overview',l:'Overview'},{k:'reporting',l:'Reporting'}].map(({k,l}) => (
+              <button key={k} onClick={() => setView(k)}
+                style={{ fontSize:12, padding:'4px 12px', borderRadius:'var(--radius)', border:'none', cursor:'pointer', fontWeight:view===k?500:400,
+                  background:view===k?'var(--bg-secondary)':'transparent', color:view===k?'var(--text)':'var(--text-secondary)' }}>
+                {l}
+              </button>
+            ))}
+          </div>
+        }
+      />
 
-      {/* KPI strip */}
-      <div style={{ display:'grid', gridTemplateColumns:'repeat(7,1fr)', gap:8, marginBottom:10, flexShrink:0 }}>
-        <KpiCard label="Total Accounts"  value={meta.total||0} />
-        <KpiCard label="Active"          value={active} accent />
-        <KpiCard label="At Risk/Cold"    value={atRisk} />
-        <KpiCard label="Avg Health"      value={`${meta.avgHealth||0}%`} />
-        <KpiCard label="With Replies"    value={meta.withReplies||0} />
-        <KpiCard label="No Activity 30d" value={meta.noActivity30d||0} />
-        <KpiCard label="Total Contacts"  value={fmt(meta.totalContacts||0)} />
-      </div>
-
-      {/* 3-column layout */}
-      {loading
-        ? <div style={{ flex:1, display:'flex', alignItems:'center', justifyContent:'center', color:'var(--text-tertiary)', fontSize:13 }}>Loading Gold accounts…</div>
-        : <div style={{ display:'grid', gridTemplateColumns:'300px 1fr 240px', border:'1px solid var(--border)', borderRadius:'var(--radius)', overflow:'hidden' }}>
-
-          {/* Left: account list */}
-          <div style={{ display:'flex', flexDirection:'column', borderRight:'1px solid var(--border)', maxHeight:'80vh' }}>
-            <div style={{ padding:'8px 12px', borderBottom:'1px solid var(--border)', background:'var(--bg-panel)', fontSize:10, fontWeight:600, letterSpacing:'.06em', textTransform:'uppercase', color:'var(--text-tertiary)', flexShrink:0 }}>
-              {filtered.length} Accounts
-            </div>
-            <div style={{ overflowY:'auto', padding:6, display:'flex', flexDirection:'column', gap:3 }}>
-              {filtered.map((a, i) => (
-                <div key={a.id} onClick={() => onSelectAccount(a)}
-                  style={{ background: sel?.id === a.id ? 'rgba(79,142,247,.12)' : 'var(--bg-secondary)',
-                    border: sel?.id === a.id ? '1px solid var(--accent)' : `1px solid var(--border)`,
-                    borderLeft: `3px solid ${borderColor(a.healthStatus)}`,
-                    borderRadius:'var(--radius)', padding:'8px 10px', cursor:'pointer', transition:'all .12s' }}
-                  onMouseEnter={e => { if (sel?.id !== a.id) e.currentTarget.style.background='var(--bg-hover)' }}
-                  onMouseLeave={e => { if (sel?.id !== a.id) e.currentTarget.style.background='var(--bg-secondary)' }}>
-                  <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-                    <span style={{ fontFamily:'monospace', fontSize:9, color:'var(--text-tertiary)', width:20, flexShrink:0 }}>{i+1}</span>
-                    <div style={{ flex:1, minWidth:0 }}>
-                      <div style={{ fontSize:12, fontWeight:600, color:'var(--text)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{a.name}</div>
-                      <div style={{ fontSize:10, color:'var(--text-tertiary)', marginTop:1 }}>{a.tier.replace('GOLD - ','')} · {a.assignedBdr || '—'}</div>
-                    </div>
-                    <span style={{ fontSize:11, fontWeight:600, color:healthColor(a.healthStatus), background:healthBg(a.healthStatus), borderRadius:4, padding:'2px 6px', flexShrink:0, fontFamily:'monospace' }}>{a.health}</span>
-                  </div>
-                </div>
-              ))}
-            </div>
+      {view === 'overview' && (
+        <>
+          {/* KPI strip */}
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(7,1fr)', gap:8 }}>
+            <KpiCard label="Total Accounts"     value={meta.total||0} />
+            <KpiCard label="Active"             value={meta.activeAccounts||0} accent />
+            <KpiCard label="At Risk / Cold"     value={meta.atRiskAccounts||0} />
+            <KpiCard label="Avg Health"         value={`${meta.avgHealth||0}%`} />
+            <KpiCard label="With Replies"       value={meta.withReplies||0} />
+            <KpiCard label="Critical Gaps"      value={meta.totalCriticalGaps||0} />
+            <KpiCard label="Avg Persona Cover"  value={`${meta.avgPersonaCoverage||0}/16`} />
           </div>
 
-          {/* Middle: selected account detail */}
-          <div style={{ display:'flex', flexDirection:'column' }}>
-            {!sel
-              ? <div style={{ flex:1, display:'flex', alignItems:'center', justifyContent:'center', color:'var(--text-tertiary)', fontSize:13 }}>Select an account to view details</div>
-              : <div style={{ padding:14, display:'flex', flexDirection:'column', gap:12 }}>
-                  {/* Account header */}
-                  <div style={{ background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius)', overflow:'hidden' }}>
-                    <div style={{ padding:'9px 13px', borderBottom:'1px solid var(--border)', background:'var(--bg-secondary)', display:'flex', alignItems:'center', justifyContent:'space-between' }}>
-                      <span style={{ fontSize:10, fontWeight:600, letterSpacing:'.07em', textTransform:'uppercase', color:'var(--text-tertiary)' }}>Account Overview</span>
-                      <span style={{ fontSize:9, fontWeight:700, letterSpacing:'.05em', textTransform:'uppercase', padding:'2px 7px', borderRadius:3,
-                        background: sel.healthStatus==='active'?'rgba(52,201,122,.12)':sel.healthStatus==='attention'?'rgba(245,166,35,.12)':'rgba(240,82,82,.12)',
-                        color: healthColor(sel.healthStatus), border:`1px solid ${healthColor(sel.healthStatus)}33` }}>
-                        {sel.healthStatus}
-                      </span>
-                    </div>
-                    <div style={{ padding:'12px 14px', display:'flex', gap:16, alignItems:'flex-start' }}>
-                      <div style={{ width:56, height:56, borderRadius:'50%', border:`3px solid ${healthColor(sel.healthStatus)}`, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
-                        <span style={{ fontSize:16, fontWeight:700, color:healthColor(sel.healthStatus), fontFamily:'monospace' }}>{sel.health}</span>
-                      </div>
-                      <div style={{ flex:1 }}>
-                        <div style={{ fontSize:14, fontWeight:600, color:'var(--text)', marginBottom:3 }}>{sel.name}</div>
-                        <div style={{ fontSize:11, color:'var(--text-secondary)', marginBottom:2 }}>
-                          {sel.city && sel.state ? `${sel.city}, ${sel.state} · ` : ''}
-                          BDR: {sel.assignedBdr||'—'} · VP: {OWNER_NAME_MAP[sel.ownerId]||'—'}
-                        </div>
-                        <div style={{ fontSize:11, color:'var(--text-secondary)', marginBottom:6 }}>
-                          Last activity: <span style={{ color: !sel.lastActivityDate ? 'var(--red)' : 'var(--text)' }}>
-                            {sel.lastActivityDate ? new Date(sel.lastActivityDate).toLocaleDateString() : 'Never'}
-                          </span>
-                        </div>
-                        <div style={{ display:'flex', gap:5, flexWrap:'wrap' }}>
-                          <span style={{ fontSize:9, fontWeight:700, textTransform:'uppercase', padding:'2px 6px', borderRadius:3,
-                            background: (sel.numContacts||0)>=20?'rgba(52,201,122,.12)':'rgba(245,166,35,.12)',
-                            color: (sel.numContacts||0)>=20?'var(--green)':'var(--amber)', border:'1px solid currentColor' }}>
-                            {sel.numContacts||0} contacts
-                          </span>
-                          <span style={{ fontSize:9, fontWeight:700, textTransform:'uppercase', padding:'2px 6px', borderRadius:3,
-                            background: sel.lastEngagement?.type==='replied'?'rgba(52,201,122,.12)':'rgba(240,82,82,.12)',
-                            color: sel.lastEngagement?.type==='replied'?'var(--green)':'var(--red)', border:'1px solid currentColor' }}>
-                            {sel.lastEngagement?.type==='replied'?'Has replies':'No replies'}
-                          </span>
-                          <span style={{ fontSize:9, fontWeight:700, textTransform:'uppercase', padding:'2px 6px', borderRadius:3,
-                            background: sel.lastBooked?'rgba(52,201,122,.12)':'rgba(240,82,82,.12)',
-                            color: sel.lastBooked?'var(--green)':'var(--red)', border:'1px solid currentColor' }}>
-                            {sel.lastBooked?'Meeting booked':'No meetings'}
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
+          {loading
+            ? <div style={{ padding:40, textAlign:'center', color:'var(--text-tertiary)', fontSize:13 }}>Loading Gold accounts…</div>
+            : <div style={{ display:'grid', gridTemplateColumns:'280px 1fr 220px', gap:0, border:'1px solid var(--border)', borderRadius:'var(--radius)', overflow:'hidden' }}>
 
-                  {/* Gaps & white space */}
-                  <div style={{ background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius)', overflow:'hidden' }}>
-                    <div style={{ padding:'9px 13px', borderBottom:'1px solid var(--border)', background:'var(--bg-secondary)', display:'flex', alignItems:'center', justifyContent:'space-between' }}>
-                      <span style={{ fontSize:10, fontWeight:600, letterSpacing:'.07em', textTransform:'uppercase', color:'var(--text-tertiary)' }}>Gaps & White Space</span>
-                      <span style={{ fontSize:9, fontWeight:700, padding:'2px 6px', borderRadius:3, background:'rgba(240,82,82,.12)', color:'var(--red)', border:'1px solid rgba(240,82,82,.3)' }}>
-                        {(sel.missingPersonas||[]).length} gaps
-                      </span>
+              {/* Left: account list */}
+              <div style={{ borderRight:'1px solid var(--border)', display:'flex', flexDirection:'column' }}>
+                <div style={{ padding:'8px 12px', borderBottom:'1px solid var(--border)', background:'var(--bg-panel)', fontSize:10, fontWeight:600, letterSpacing:'.06em', textTransform:'uppercase', color:'var(--text-tertiary)' }}>
+                  {filtered.length} Accounts
+                </div>
+                <div style={{ maxHeight:600, overflowY:'auto', padding:4, display:'flex', flexDirection:'column', gap:2 }}>
+                  {filtered.map((a,i) => (
+                    <div key={a.id} onClick={() => onSelectAccount(a)}
+                      style={{ padding:'8px 10px', borderRadius:'var(--radius)', cursor:'pointer', transition:'all .12s',
+                        background: sel?.id===a.id?'rgba(79,142,247,.12)':'transparent',
+                        border: sel?.id===a.id?'1px solid var(--accent)':'1px solid transparent',
+                        borderLeft: `3px solid ${hcColor(a.healthStatus)}` }}
+                      onMouseEnter={e => { if(sel?.id!==a.id) e.currentTarget.style.background='var(--bg-secondary)' }}
+                      onMouseLeave={e => { if(sel?.id!==a.id) e.currentTarget.style.background='transparent' }}>
+                      <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+                        <span style={{ fontFamily:'monospace', fontSize:9, color:'var(--text-tertiary)', width:20, flexShrink:0 }}>{i+1}</span>
+                        <div style={{ flex:1, minWidth:0 }}>
+                          <div style={{ fontSize:12, fontWeight:600, color:'var(--text)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{a.name}</div>
+                          <div style={{ fontSize:10, color:'var(--text-tertiary)' }}>{a.tier.replace('GOLD - ','')} · {a.assignedBdr||'—'}</div>
+                        </div>
+                        <div style={{ display:'flex', flexDirection:'column', alignItems:'flex-end', gap:2, flexShrink:0 }}>
+                          <span style={{ fontSize:11, fontWeight:700, color:hcColor(a.healthStatus), fontFamily:'monospace' }}>{a.health}</span>
+                          {(a.criticalGaps||0) > 0 && <span style={{ fontSize:9, color:'var(--red)' }}>{a.criticalGaps}⚠</span>}
+                        </div>
+                      </div>
                     </div>
-                    {(sel.missingPersonas||[]).length === 0
-                      ? <div style={{ padding:'12px 14px', fontSize:12, color:'var(--text-tertiary)' }}>✓ No major gaps detected</div>
-                      : (sel.missingPersonas||[]).map((g,i) => (
-                        <div key={i} style={{ padding:'8px 13px', borderBottom:'1px solid var(--border)', display:'flex', alignItems:'flex-start', gap:8 }}>
-                          <span style={{ fontSize:11, flexShrink:0 }}>{g.includes('No replies')||g.includes('No meetings') ? '🔴' : '🟠'}</span>
-                          <div>
-                            <div style={{ fontSize:11, color:'var(--text-secondary)' }}><strong style={{ color:'var(--text)', fontWeight:500 }}>{g}</strong> — not mapped or not contacted</div>
-                            <a href={sel.url} target="_blank" rel="noopener noreferrer" style={{ fontSize:10, color:'var(--accent)', textDecoration:'none' }}>→ Open in HubSpot</a>
+                  ))}
+                </div>
+              </div>
+
+              {/* Middle: account detail */}
+              <div style={{ display:'flex', flexDirection:'column' }}>
+                {!sel
+                  ? <div style={{ padding:40, textAlign:'center', color:'var(--text-tertiary)', fontSize:13 }}>Select an account</div>
+                  : <div style={{ padding:14, display:'flex', flexDirection:'column', gap:12 }}>
+                    {/* Account header */}
+                    <div style={{ background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius)', overflow:'hidden' }}>
+                      <div style={{ padding:'9px 13px', borderBottom:'1px solid var(--border)', background:'var(--bg-secondary)', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                        <span style={{ fontSize:10, fontWeight:600, letterSpacing:'.07em', textTransform:'uppercase', color:'var(--text-tertiary)' }}>Account Overview</span>
+                        <span style={{ fontSize:9, fontWeight:700, textTransform:'uppercase', padding:'2px 7px', borderRadius:3,
+                          background:hcBg(sel.healthStatus), color:hcColor(sel.healthStatus), border:`1px solid ${hcBorder(sel.healthStatus)}` }}>
+                          {sel.healthStatus}
+                        </span>
+                      </div>
+                      <div style={{ padding:'12px 14px', display:'flex', gap:14, alignItems:'flex-start' }}>
+                        <div style={{ width:56, height:56, borderRadius:'50%', border:`3px solid ${hcColor(sel.healthStatus)}`, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
+                          <span style={{ fontSize:16, fontWeight:700, color:hcColor(sel.healthStatus), fontFamily:'monospace' }}>{sel.health}</span>
+                        </div>
+                        <div style={{ flex:1 }}>
+                          <div style={{ fontSize:14, fontWeight:600, color:'var(--text)', marginBottom:2 }}>{sel.name}</div>
+                          <div style={{ fontSize:11, color:'var(--text-secondary)', marginBottom:4 }}>
+                            {sel.city&&sel.state?`${sel.city}, ${sel.state} · `:''}BDR: {sel.assignedBdr||'—'} · VP: {GOLD_OWNER_MAP[sel.ownerId]||'—'}
+                          </div>
+                          <div style={{ display:'flex', gap:5, flexWrap:'wrap' }}>
+                            {[
+                              { label:`${sel.numContacts||0} contacts`, ok:(sel.numContacts||0)>=10 },
+                              { label:sel.lastEngagement?.type==='replied'?'Has replies':'No replies', ok:sel.lastEngagement?.type==='replied' },
+                              { label:sel.lastBooked?'Meeting booked':'No meetings', ok:!!sel.lastBooked },
+                              { label:`${sel.coveredPersonaCount||0}/22 personas`, ok:(sel.coveredPersonaCount||0)>=16 },
+                            ].map((b,i) => (
+                              <span key={i} style={{ fontSize:9, fontWeight:700, textTransform:'uppercase', padding:'2px 6px', borderRadius:3,
+                                background:b.ok?'rgba(52,201,122,.12)':'rgba(240,82,82,.12)',
+                                color:b.ok?'var(--green)':'var(--red)', border:'1px solid currentColor' }}>
+                                {b.label}
+                              </span>
+                            ))}
                           </div>
                         </div>
-                      ))
-                    }
-                  </div>
-
-                  {/* Outreach breakdown */}
-                  <div style={{ background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius)', overflow:'hidden' }}>
-                    <div style={{ padding:'9px 13px', borderBottom:'1px solid var(--border)', background:'var(--bg-secondary)' }}>
-                      <span style={{ fontSize:10, fontWeight:600, letterSpacing:'.07em', textTransform:'uppercase', color:'var(--text-tertiary)' }}>Outreach Breakdown</span>
-                    </div>
-                    {[
-                      { label:'Notes/Touchpoints', value:sel.numNotes||0, max:500, color:'var(--amber)' },
-                      { label:'Contacts',           value:sel.numContacts||0, max:100, color:'var(--accent)' },
-                      { label:'Last Reply',         value:sel.lastEngagement?.type==='replied'?100:0, max:100, color:'var(--green)', display:sel.lastEngagement?.type==='replied'?'Yes':'—' },
-                      { label:'Meeting Booked',     value:sel.lastBooked?100:0, max:100, color:'var(--purple)', display:sel.lastBooked?new Date(sel.lastBooked).toLocaleDateString():'—' },
-                    ].map((row,i) => (
-                      <div key={i} style={{ padding:'7px 13px', borderBottom:'1px solid var(--border)', display:'flex', alignItems:'center', gap:10 }}>
-                        <div style={{ fontSize:10, color:'var(--text-tertiary)', width:120, flexShrink:0 }}>{row.label}</div>
-                        <div style={{ flex:1, height:5, background:'var(--border)', borderRadius:3, overflow:'hidden' }}>
-                          <div style={{ width:`${Math.min(100,(row.value/row.max)*100)}%`, height:'100%', background:row.color, borderRadius:3 }} />
-                        </div>
-                        <div style={{ fontSize:10, color:'var(--text-secondary)', width:36, textAlign:'right', fontFamily:'monospace', flexShrink:0 }}>{row.display ?? row.value}</div>
                       </div>
-                    ))}
-                  </div>
+                    </div>
 
-                  {/* Contacts table */}
-                  {(sel.contacts||[]).length > 0 && (
+                    {/* Persona heatmap */}
+                    <div style={{ background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius)', overflow:'hidden' }}>
+                      <div style={{ padding:'9px 13px', borderBottom:'1px solid var(--border)', background:'var(--bg-secondary)', display:'flex', justifyContent:'space-between' }}>
+                        <span style={{ fontSize:10, fontWeight:600, letterSpacing:'.07em', textTransform:'uppercase', color:'var(--text-tertiary)' }}>Persona Coverage Map</span>
+                        <span style={{ fontSize:10, color:'var(--text-tertiary)' }}>{sel.coveredPersonaCount||0}/22 covered · {sel.criticalGaps||0} critical gaps</span>
+                      </div>
+                      <div style={{ padding:'12px 13px' }}>
+                        <PersonaHeatmap account={sel} />
+                      </div>
+                    </div>
+
+                    {/* Gaps */}
+                    {(sel.missingPersonas||[]).length > 0 && (
+                      <div style={{ background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius)', overflow:'hidden' }}>
+                        <div style={{ padding:'9px 13px', borderBottom:'1px solid var(--border)', background:'var(--bg-secondary)', display:'flex', justifyContent:'space-between' }}>
+                          <span style={{ fontSize:10, fontWeight:600, letterSpacing:'.07em', textTransform:'uppercase', color:'var(--text-tertiary)' }}>Gaps & White Space</span>
+                          <span style={{ fontSize:9, fontWeight:700, padding:'2px 6px', borderRadius:3, background:'rgba(240,82,82,.12)', color:'var(--red)', border:'1px solid rgba(240,82,82,.3)' }}>
+                            {sel.criticalGaps||0} critical · {sel.highGaps||0} high
+                          </span>
+                        </div>
+                        <div style={{ padding:'8px 13px' }}>
+                          <GapList missingPersonas={sel.missingPersonas} />
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Outreach bars */}
                     <div style={{ background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius)', overflow:'hidden' }}>
                       <div style={{ padding:'9px 13px', borderBottom:'1px solid var(--border)', background:'var(--bg-secondary)' }}>
-                        <span style={{ fontSize:10, fontWeight:600, letterSpacing:'.07em', textTransform:'uppercase', color:'var(--text-tertiary)' }}>Contacts ({sel.contacts.length})</span>
+                        <span style={{ fontSize:10, fontWeight:600, letterSpacing:'.07em', textTransform:'uppercase', color:'var(--text-tertiary)' }}>Outreach Breakdown</span>
                       </div>
-                      <table style={{ width:'100%', borderCollapse:'collapse' }}>
-                        <thead>
-                          <tr>
-                            {['Name','Title','Status','Last Activity'].map(h => (
-                              <th key={h} style={{ padding:'6px 13px', fontSize:9, fontWeight:600, textTransform:'uppercase', letterSpacing:'.05em', color:'var(--text-tertiary)', borderBottom:'1px solid var(--border)', textAlign:'left' }}>{h}</th>
-                            ))}
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {sel.contacts.map((c,i) => {
-                            const status = c.lastReply ? 'replied' : c.inSequence ? 'sequence' : c.lastSent ? 'contacted' : 'none'
-                            const statusColor = status==='replied'?'var(--green)':status==='sequence'?'var(--amber)':'var(--border-light)'
-                            const lastAct = c.lastReply || c.lastSent || null
-                            return (
-                              <tr key={i} style={{ borderBottom:'1px solid var(--border)', cursor:'pointer' }}
-                                onClick={() => window.open(c.url,'_blank','noopener,noreferrer')}
-                                onMouseEnter={e => e.currentTarget.style.background='var(--bg-secondary)'}
-                                onMouseLeave={e => e.currentTarget.style.background=''}>
-                                <td style={{ padding:'7px 13px', fontSize:11, fontWeight:500, color:'var(--text)' }}>{c.name||'—'}</td>
-                                <td style={{ padding:'7px 13px', fontSize:11, color:'var(--text-secondary)' }}>{c.title||'—'}</td>
-                                <td style={{ padding:'7px 13px' }}>
-                                  <span style={{ width:7, height:7, borderRadius:'50%', background:statusColor, display:'inline-block', marginRight:5 }} />
-                                  <span style={{ fontSize:10, color:'var(--text-tertiary)' }}>{status}</span>
-                                </td>
-                                <td style={{ padding:'7px 13px', fontSize:10, color:'var(--text-tertiary)' }}>
-                                  {lastAct ? new Date(lastAct).toLocaleDateString() : '—'}
-                                </td>
-                              </tr>
-                            )
-                          })}
-                        </tbody>
-                      </table>
+                      {[
+                        { label:'Notes / Touches', value:sel.numNotes||0, max:500, color:'var(--amber)' },
+                        { label:'Contacts',         value:sel.numContacts||0, max:100, color:'var(--accent)' },
+                        { label:'Last Reply',        value:sel.lastEngagement?.type==='replied'?100:0, max:100, color:'var(--green)', display:sel.lastEngagement?.type==='replied'?new Date(sel.lastEngagement.date).toLocaleDateString():'—' },
+                        { label:'Meeting Booked',    value:sel.lastBooked?100:0, max:100, color:'var(--purple)', display:sel.lastBooked?new Date(sel.lastBooked).toLocaleDateString():'—' },
+                      ].map((row,i) => (
+                        <div key={i} style={{ padding:'7px 13px', borderBottom:'1px solid var(--border)', display:'flex', alignItems:'center', gap:10 }}>
+                          <div style={{ fontSize:10, color:'var(--text-tertiary)', width:120, flexShrink:0 }}>{row.label}</div>
+                          <div style={{ flex:1, height:5, background:'var(--border)', borderRadius:3, overflow:'hidden' }}>
+                            <div style={{ width:`${Math.min(100,(row.value/row.max)*100)}%`, height:'100%', background:row.color, borderRadius:3 }} />
+                          </div>
+                          <div style={{ fontSize:10, color:'var(--text-secondary)', width:48, textAlign:'right', fontFamily:'monospace', flexShrink:0 }}>{row.display??row.value}</div>
+                        </div>
+                      ))}
                     </div>
-                  )}
 
-                  <div style={{ textAlign:'center', padding:'4px 0 8px' }}>
-                    <a href={sel.url} target="_blank" rel="noopener noreferrer" style={{ fontSize:11, color:'var(--accent)', marginRight:16 }}>Open in HubSpot →</a>
+                    {/* Contacts */}
+                    {(sel.contacts||[]).length > 0 && (
+                      <div style={{ background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius)', overflow:'hidden' }}>
+                        <div style={{ padding:'9px 13px', borderBottom:'1px solid var(--border)', background:'var(--bg-secondary)' }}>
+                          <span style={{ fontSize:10, fontWeight:600, letterSpacing:'.07em', textTransform:'uppercase', color:'var(--text-tertiary)' }}>Contacts ({sel.contacts.length})</span>
+                        </div>
+                        <table style={{ width:'100%', borderCollapse:'collapse' }}>
+                          <thead><tr>{['Name','Title','Persona','Status'].map(h => (
+                            <th key={h} style={{ padding:'6px 12px', fontSize:9, fontWeight:600, textTransform:'uppercase', letterSpacing:'.05em', color:'var(--text-tertiary)', borderBottom:'1px solid var(--border)', textAlign:'left' }}>{h}</th>
+                          ))}</tr></thead>
+                          <tbody>
+                            {sel.contacts.map((c,i) => {
+                              const status = c.lastReply?'replied':c.inSequence?'in sequence':c.lastSent?'contacted':'mapped'
+                              const sColor = status==='replied'?'var(--green)':status==='in sequence'?'var(--amber)':'var(--text-tertiary)'
+                              return (
+                                <tr key={i} style={{ borderBottom:'1px solid var(--border)', cursor:'pointer' }}
+                                  onClick={() => window.open(c.url,'_blank','noopener,noreferrer')}
+                                  onMouseEnter={e => e.currentTarget.style.background='var(--bg-secondary)'}
+                                  onMouseLeave={e => e.currentTarget.style.background=''}>
+                                  <td style={{ padding:'7px 12px', fontSize:11, fontWeight:500, color:'var(--accent)' }}>{c.name||'—'}</td>
+                                  <td style={{ padding:'7px 12px', fontSize:11, color:'var(--text-secondary)' }}>{c.title||'—'}</td>
+                                  <td style={{ padding:'7px 12px', fontSize:11, color:'var(--text-secondary)' }}>{c.persona||'—'}</td>
+                                  <td style={{ padding:'7px 12px' }}>
+                                    <span style={{ fontSize:9, fontWeight:600, textTransform:'uppercase', color:sColor }}>{status}</span>
+                                  </td>
+                                </tr>
+                              )
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+
+                    <div style={{ textAlign:'center', padding:'4px 0' }}>
+                      <a href={sel.url} target="_blank" rel="noopener noreferrer" style={{ fontSize:11, color:'var(--accent)' }}>Open in HubSpot →</a>
+                    </div>
                   </div>
+                }
+              </div>
+
+              {/* Right: portfolio gaps */}
+              <div style={{ borderLeft:'1px solid var(--border)', display:'flex', flexDirection:'column' }}>
+                <div style={{ padding:'8px 12px', borderBottom:'1px solid var(--border)', background:'var(--bg-panel)', fontSize:10, fontWeight:600, letterSpacing:'.06em', textTransform:'uppercase', color:'var(--text-tertiary)' }}>
+                  Portfolio Gaps
                 </div>
-            }
+                <div style={{ maxHeight:500, overflowY:'auto', padding:8, display:'flex', flexDirection:'column', gap:4 }}>
+                  {personaGapMap.slice(0, 20).map((gap,i) => (
+                    <div key={i} style={{ borderRadius:'var(--radius)', padding:'8px 10px', display:'flex', gap:8, alignItems:'flex-start',
+                      background: gap.priority==='critical'?'rgba(240,82,82,.08)':gap.priority==='high'?'rgba(245,166,35,.08)':'var(--bg-secondary)',
+                      border:`1px solid ${gap.priority==='critical'?'rgba(240,82,82,.25)':gap.priority==='high'?'rgba(245,166,35,.25)':'var(--border)'}` }}>
+                      <span style={{ fontFamily:'monospace', fontSize:14, fontWeight:700, flexShrink:0, color:prioColor(gap.priority) }}>{gap.missing}</span>
+                      <div>
+                        <div style={{ fontSize:11, fontWeight:600, color:prioColor(gap.priority) }}>{gap.label}</div>
+                        <div style={{ fontSize:9, color:'var(--text-tertiary)', marginTop:1, textTransform:'uppercase', letterSpacing:'.04em' }}>{gap.priority}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div style={{ padding:'8px 12px', borderTop:'1px solid var(--border)', background:'var(--bg-panel)', fontSize:10, fontWeight:600, letterSpacing:'.06em', textTransform:'uppercase', color:'var(--text-tertiary)' }}>
+                  By Tier
+                </div>
+                <div style={{ padding:'8px 10px' }}>
+                  {Object.entries(meta.byTier||{}).sort(([a],[b]) => a.localeCompare(b)).map(([tier,count]) => (
+                    <div key={tier} style={{ display:'flex', justifyContent:'space-between', fontSize:11, padding:'3px 0', borderBottom:'1px solid var(--border)' }}>
+                      <span style={{ color:'var(--text-secondary)' }}>{tier.replace('GOLD - ','')}</span>
+                      <span style={{ fontFamily:'monospace', fontWeight:600, color:'var(--text)' }}>{count}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          }
+        </>
+      )}
+
+      {view === 'reporting' && (
+        <div style={{ display:'flex', flexDirection:'column', gap:16 }}>
+          {/* Summary KPIs */}
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:10 }}>
+            <KpiCard label="Total Accounts"    value={meta.total||0} />
+            <KpiCard label="Active Accounts"   value={meta.activeAccounts||0} accent />
+            <KpiCard label="At Risk / Cold"     value={meta.atRiskAccounts||0} />
+            <KpiCard label="Avg Health Score"  value={`${meta.avgHealth||0}%`} />
+          </div>
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:10 }}>
+            <KpiCard label="With Replies"      value={meta.withReplies||0} accent />
+            <KpiCard label="No Activity 30d"   value={meta.noActivity30d||0} />
+            <KpiCard label="Critical Gaps"     value={meta.totalCriticalGaps||0} />
+            <KpiCard label="Avg Persona Cover" value={`${meta.avgPersonaCoverage||0}/16`} />
           </div>
 
-          {/* Right: aggregate gaps */}
-          <div style={{ display:'flex', flexDirection:'column', borderLeft:'1px solid var(--border)' }}>
-            <div style={{ padding:'8px 12px', borderBottom:'1px solid var(--border)', background:'var(--bg-panel)', fontSize:10, fontWeight:600, letterSpacing:'.06em', textTransform:'uppercase', color:'var(--text-tertiary)', flexShrink:0 }}>
-              Portfolio Gaps
+          {/* Full account table */}
+          <Panel>
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12 }}>
+              <SectionTitle style={{ margin:0 }}>All Gold Accounts ({filtered.length})</SectionTitle>
+              <button onClick={() => exportGoldCSV(filtered, 'gold-reporting.csv')}
+                style={{ padding:'6px 12px', background:'none', border:'1px solid var(--border)', borderRadius:'var(--radius)', fontSize:11, color:'var(--text-secondary)', cursor:'pointer' }}>
+                Export CSV
+              </button>
             </div>
-            <div style={{ padding:8, display:'flex', flexDirection:'column', gap:4 }}>
-              {[
-                { label:'Missing C-Suite', count:totalMissingCSuite, sev:'crit', desc:'No C-level contact mapped' },
-                { label:'Missing VP-level', count:totalMissingVP, sev:'crit', desc:'No VP contact mapped' },
-                { label:'No Replies Yet', count:totalNoReplies, sev:'med', desc:'Zero engagement received' },
-                { label:'No Meetings Booked', count:totalNoMeetings, sev:'med', desc:'Never met with account' },
-                { label:'Missing Director', count:totalMissingDir, sev:'low', desc:'No Director-level contact' },
-              ].map((gap, i) => (
-                <div key={i} style={{
-                  borderRadius:'var(--radius)', padding:'8px 10px', display:'flex', gap:8, alignItems:'flex-start',
-                  background: gap.sev==='crit'?'rgba(240,82,82,.08)':gap.sev==='med'?'rgba(245,166,35,.08)':'var(--bg-secondary)',
-                  border: `1px solid ${gap.sev==='crit'?'rgba(240,82,82,.25)':gap.sev==='med'?'rgba(245,166,35,.25)':'var(--border)'}`,
-                }}>
-                  <span style={{ fontFamily:'monospace', fontSize:14, fontWeight:600, flexShrink:0, marginTop:1,
-                    color: gap.sev==='crit'?'var(--red)':gap.sev==='med'?'var(--amber)':'var(--text-secondary)' }}>{gap.count}</span>
-                  <div>
-                    <div style={{ fontSize:11, fontWeight:600, color: gap.sev==='crit'?'var(--red)':gap.sev==='med'?'var(--amber)':'var(--text)' }}>{gap.label}</div>
-                    <div style={{ fontSize:10, color:'var(--text-secondary)', marginTop:2, lineHeight:1.4 }}>{gap.desc}</div>
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            {/* Tier breakdown */}
-            <div style={{ padding:'8px 12px', borderTop:'1px solid var(--border)', borderBottom:'1px solid var(--border)', marginTop:8, background:'var(--bg-panel)', fontSize:10, fontWeight:600, letterSpacing:'.06em', textTransform:'uppercase', color:'var(--text-tertiary)' }}>
-              By Tier
-            </div>
-            <div style={{ padding:'8px 10px', display:'flex', flexDirection:'column', gap:4 }}>
-              {Object.entries(meta.byTier||{}).sort(([a],[b]) => a.localeCompare(b)).map(([tier, count]) => (
-                <div key={tier} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', fontSize:11, padding:'3px 0' }}>
-                  <span style={{ color:'var(--text-secondary)' }}>{tier.replace('GOLD - ','')}</span>
-                  <span style={{ fontFamily:'monospace', fontWeight:600, color:'var(--text)' }}>{count}</span>
-                </div>
-              ))}
-            </div>
-          </div>
+            <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
+              <THead cols={['Account','Tier','BDR','VP','Health','Status','Days Inactive','Contacts','Critical Gaps','Coverage','Last Reply']} />
+              <tbody>
+                {filtered.map((a,i) => (
+                  <tr key={i} style={{ borderBottom:'1px solid var(--border)', cursor:'pointer' }}
+                    onClick={() => { onSelectAccount(a); setView('overview') }}
+                    onMouseEnter={e => e.currentTarget.style.background='var(--bg-secondary)'}
+                    onMouseLeave={e => e.currentTarget.style.background=''}>
+                    <td style={{ padding:'7px 10px 7px 0', fontWeight:500 }}>
+                      <a href={a.url} target="_blank" rel="noopener noreferrer" onClick={e=>e.stopPropagation()} style={{ color:'var(--accent)', textDecoration:'none' }}>{a.name}</a>
+                    </td>
+                    <td style={{ padding:'7px 10px 7px 0', fontSize:10, color:'var(--text-tertiary)' }}>{a.tier.replace('GOLD - ','')}</td>
+                    <td style={{ padding:'7px 10px 7px 0', color:'var(--text-secondary)' }}>{a.assignedBdr||'—'}</td>
+                    <td style={{ padding:'7px 10px 7px 0', color:'var(--text-secondary)' }}>{GOLD_OWNER_MAP[a.ownerId]||'—'}</td>
+                    <td style={{ padding:'7px 10px 7px 0', fontFamily:'monospace', fontWeight:700, color:hcColor(a.healthStatus) }}>{a.health}</td>
+                    <td style={{ padding:'7px 10px 7px 0' }}>
+                      <span style={{ fontSize:9, fontWeight:700, textTransform:'uppercase', color:hcColor(a.healthStatus) }}>{a.healthStatus}</span>
+                    </td>
+                    <td style={{ padding:'7px 10px 7px 0', color: (a.daysSinceActivity||0)>30?'var(--red)':'var(--text-secondary)' }}>{a.daysSinceActivity!=null?`${a.daysSinceActivity}d`:'—'}</td>
+                    <td style={{ padding:'7px 10px 7px 0' }}>{a.numContacts||0}</td>
+                    <td style={{ padding:'7px 10px 7px 0', color:(a.criticalGaps||0)>0?'var(--red)':'var(--text-tertiary)' }}>{a.criticalGaps||0}</td>
+                    <td style={{ padding:'7px 10px 7px 0', color:(a.coveredPersonaCount||0)<12?'var(--amber)':'var(--text-secondary)' }}>{a.coveredPersonaCount||0}/22</td>
+                    <td style={{ padding:'7px 0', color:a.lastEngagement?.type==='replied'?'var(--green)':'var(--text-tertiary)', whiteSpace:'nowrap' }}>
+                      {a.lastEngagement?.type==='replied' ? new Date(a.lastEngagement.date).toLocaleDateString() : '—'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </Panel>
         </div>
-      }
+      )}
     </div>
   )
 }
 
 // ─── Gold Command Tab ─────────────────────────────────────────────────────────
-// Per-account deep dive workspace — one account at a time, full detail view
 function GoldCommandTab({ accounts, loading, onRefresh, filterBdr, setFilterBdr, BDR_OPTIONS, goldTabTier, setGoldTabTier }) {
-  const [search, setSearch] = useState('')
+  const [search, setSearch]   = useState('')
   const [selected, setSelected] = useState(null)
-  const [sortBy, setSortBy] = useState('tier')
-
-  const GOLD_TIERS = [
-    { value: '', label: 'All Tiers' },
-    { value: 'GOLD - 1-10',   label: 'GOLD 1-10' },
-    { value: 'GOLD - 11-20',  label: 'GOLD 11-20' },
-    { value: 'GOLD - 21-30',  label: 'GOLD 21-30' },
-    { value: 'GOLD - 31-40',  label: 'GOLD 31-40' },
-    { value: 'GOLD - 41-50',  label: 'GOLD 41-50' },
-  ]
-
-  const OWNER_NAME_MAP = {
-    '76104455': 'Matt Valin', '55217954': 'Joe Haine',
-    '83862037': 'Tim Grisham', '289209454': 'Irene Wong',
-    '85819247': 'Cole Hooper', '743772047': 'John Hansel',
-  }
-
-  const filtered = useMemo(() => {
-    let list = [...accounts]
-    if (search) list = list.filter(a => a.name.toLowerCase().includes(search.toLowerCase()))
-    if (sortBy === 'health')   list.sort((a,b) => (b.health||0) - (a.health||0))
-    if (sortBy === 'activity') list.sort((a,b) => {
-      const da = a.lastActivityDate ? new Date(a.lastActivityDate).getTime() : 0
-      const db = b.lastActivityDate ? new Date(b.lastActivityDate).getTime() : 0
-      return db - da
-    })
-    if (sortBy === 'gaps')     list.sort((a,b) => (b.missingPersonas||[]).length - (a.missingPersonas||[]).length)
-    if (sortBy === 'tier')     list.sort((a,b) => (a.tierRank||0) - (b.tierRank||0))
-    return list
-  }, [accounts, search, sortBy])
-
+  const [sortBy, setSortBy]   = useState('tier')
+  const [view, setView]       = useState('workspace') // 'workspace' | 'reporting'
+  const filtered = useGoldSort(accounts, search, sortBy)
   const sel = selected || filtered[0] || null
-
-  const healthColor = (s) => s === 'active' ? 'var(--green)' : s === 'attention' ? 'var(--amber)' : s === 'risk' ? 'var(--red)' : 'var(--text-tertiary)'
-
-  const exportAccountCSV = (a) => {
-    if (!a) return
-    const rows = [
-      ['Field','Value'],
-      ['Account', a.name], ['Tier', a.tier], ['BDR', a.assignedBdr], ['VP', OWNER_NAME_MAP[a.ownerId]||''],
-      ['Health Score', a.health], ['Status', a.healthStatus],
-      ['Last Activity', a.lastActivityDate ? new Date(a.lastActivityDate).toLocaleDateString() : 'Never'],
-      ['Total Contacts', a.numContacts||0], ['Total Notes', a.numNotes||0],
-      ['Last Reply', a.lastEngagement?.type==='replied' ? a.lastEngagement.date : 'None'],
-      ['Meeting Booked', a.lastBooked ? new Date(a.lastBooked).toLocaleDateString() : 'None'],
-      ['Gaps', (a.missingPersonas||[]).join('; ')],
-      [''],
-      ['CONTACTS'],
-      ['Name','Title','Persona','Buying Role','In Sequence','Last Reply','Last Send'],
-      ...(a.contacts||[]).map(c => [c.name, c.title, c.persona, c.buyingRole, c.inSequence?'Yes':'No',
-        c.lastReply ? new Date(c.lastReply).toLocaleDateString() : '—',
-        c.lastSent  ? new Date(c.lastSent).toLocaleDateString()  : '—',
-      ])
-    ]
-    const csv = rows.map(r => r.map(v => `"${String(v||'').replace(/"/g,'""')}"`).join(',')).join('\n')
-    const link = document.createElement('a')
-    link.href = URL.createObjectURL(new Blob([csv], {type:'text/csv'}))
-    link.download = `gold-${(a.name||'account').replace(/[^a-z0-9]/gi,'-').toLowerCase()}-${new Date().toISOString().slice(0,10)}.csv`
-    link.click()
-  }
 
   return (
     <div style={{ display:'flex', flexDirection:'column', gap:12 }}>
       {/* Controls */}
-      <div style={{ display:'flex', alignItems:'center', gap:10, padding:'10px 0', flexShrink:0, flexWrap:'wrap' }}>
-        <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Find account…"
-          style={{ flex:1, minWidth:180, padding:'6px 10px', background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius)', fontSize:12, color:'var(--text)', outline:'none' }} />
-        <Select value={filterBdr} onChange={setFilterBdr} options={[{value:'',label:'All Reps'}, ...BDR_OPTIONS]} />
-        <Select value={goldTabTier} onChange={setGoldTabTier} options={GOLD_TIERS} />
-        <Select value={sortBy} onChange={setSortBy} options={[
-          {value:'tier',label:'Sort: Tier'},{value:'health',label:'Sort: Health'},
-          {value:'activity',label:'Sort: Activity'},{value:'gaps',label:'Sort: Gaps'},
-        ]} />
-        <button onClick={onRefresh} style={{ padding:'6px 12px', background:'none', border:'1px solid var(--border)', borderRadius:'var(--radius)', fontSize:11, color:'var(--accent)', cursor:'pointer' }}>↻ Refresh</button>
-        {sel && <button onClick={() => exportAccountCSV(sel)} style={{ padding:'6px 12px', background:'none', border:'1px solid var(--border)', borderRadius:'var(--radius)', fontSize:11, color:'var(--text-secondary)', cursor:'pointer' }}>Export Account</button>}
-      </div>
-
-      {loading
-        ? <div style={{ flex:1, display:'flex', alignItems:'center', justifyContent:'center', color:'var(--text-tertiary)', fontSize:13 }}>Loading Gold accounts…</div>
-        : <div style={{ display:'grid', gridTemplateColumns:'260px 1fr', border:'1px solid var(--border)', borderRadius:'var(--radius)', overflow:'hidden' }}>
-
-          {/* Left: account picker */}
-          <div style={{ display:'flex', flexDirection:'column', borderRight:'1px solid var(--border)', maxHeight:'80vh' }}>
-            <div style={{ padding:'8px 12px', borderBottom:'1px solid var(--border)', background:'var(--bg-panel)', fontSize:10, fontWeight:600, letterSpacing:'.06em', textTransform:'uppercase', color:'var(--text-tertiary)', flexShrink:0 }}>
-              {filtered.length} Accounts
-            </div>
-            <div style={{ overflowY:'auto', padding:4, display:'flex', flexDirection:'column', gap:2 }}>
-              {filtered.map(a => (
-                <div key={a.id} onClick={() => setSelected(a)}
-                  style={{ padding:'8px 10px', borderRadius:'var(--radius)', cursor:'pointer',
-                    background: sel?.id === a.id ? 'rgba(79,142,247,.12)' : 'transparent',
-                    border: sel?.id === a.id ? '1px solid var(--accent)' : '1px solid transparent' }}
-                  onMouseEnter={e => { if (sel?.id !== a.id) e.currentTarget.style.background='var(--bg-secondary)' }}
-                  onMouseLeave={e => { if (sel?.id !== a.id) e.currentTarget.style.background='transparent' }}>
-                  <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-                    <div style={{ flex:1, minWidth:0 }}>
-                      <div style={{ fontSize:12, fontWeight:sel?.id===a.id?600:400, color:'var(--text)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{a.name}</div>
-                      <div style={{ fontSize:10, color:'var(--text-tertiary)' }}>{a.tier.replace('GOLD - ','')} · {a.assignedBdr||'—'}</div>
-                    </div>
-                    <span style={{ fontSize:10, fontWeight:600, color:healthColor(a.healthStatus), fontFamily:'monospace', flexShrink:0 }}>{a.health}</span>
-                  </div>
-                </div>
-              ))}
-            </div>
+      <GoldControls
+        search={search} setSearch={setSearch}
+        filterBdr={filterBdr} setFilterBdr={setFilterBdr} BDR_OPTIONS={BDR_OPTIONS}
+        goldTabTier={goldTabTier} setGoldTabTier={setGoldTabTier}
+        sortBy={sortBy} setSortBy={setSortBy}
+        onRefresh={onRefresh}
+        onExport={() => sel && exportAccountCSV(sel)}
+        extraRight={
+          <div style={{ display:'flex', background:'var(--bg-panel)', borderRadius:'var(--radius)', border:'1px solid var(--border)', padding:3, gap:2 }}>
+            {[{k:'workspace',l:'Workspace'},{k:'reporting',l:'Reporting'}].map(({k,l}) => (
+              <button key={k} onClick={() => setView(k)}
+                style={{ fontSize:12, padding:'4px 12px', borderRadius:'var(--radius)', border:'none', cursor:'pointer', fontWeight:view===k?500:400,
+                  background:view===k?'var(--bg-secondary)':'transparent', color:view===k?'var(--text)':'var(--text-secondary)' }}>
+                {l}
+              </button>
+            ))}
           </div>
+        }
+      />
 
-          {/* Right: account workspace */}
-          {!sel
-            ? <div style={{ display:'flex', alignItems:'center', justifyContent:'center', color:'var(--text-tertiary)', fontSize:13 }}>Select an account to work</div>
-            : <div style={{ padding:16, display:'flex', flexDirection:'column', gap:14 }}>
-
-              {/* Account header */}
-              <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', gap:12 }}>
-                <div>
-                  <div style={{ fontSize:20, fontWeight:700, color:'var(--text)', marginBottom:4 }}>{sel.name}</div>
-                  <div style={{ fontSize:12, color:'var(--text-secondary)' }}>
-                    {sel.tier} &nbsp;·&nbsp; {sel.city&&sel.state?`${sel.city}, ${sel.state} · `:''}
-                    BDR: {sel.assignedBdr||'—'} &nbsp;·&nbsp; VP: {OWNER_NAME_MAP[sel.ownerId]||'—'}
-                  </div>
-                </div>
-                <div style={{ display:'flex', gap:8, alignItems:'center', flexShrink:0 }}>
-                  <div style={{ textAlign:'center' }}>
-                    <div style={{ width:52, height:52, borderRadius:'50%', border:`3px solid ${healthColor(sel.healthStatus)}`, display:'flex', alignItems:'center', justifyContent:'center' }}>
-                      <span style={{ fontSize:16, fontWeight:700, color:healthColor(sel.healthStatus), fontFamily:'monospace' }}>{sel.health}</span>
-                    </div>
-                    <div style={{ fontSize:9, color:'var(--text-tertiary)', marginTop:3, textTransform:'uppercase' }}>{sel.healthStatus}</div>
-                  </div>
-                  <a href={sel.url} target="_blank" rel="noopener noreferrer"
-                    style={{ padding:'7px 12px', background:'var(--accent)', color:'#fff', borderRadius:'var(--radius)', fontSize:12, fontWeight:500, textDecoration:'none' }}>
-                    Open in HubSpot ↗
-                  </a>
-                </div>
+      {view === 'workspace' && (
+        loading
+          ? <div style={{ padding:40, textAlign:'center', color:'var(--text-tertiary)', fontSize:13 }}>Loading…</div>
+          : <div style={{ display:'grid', gridTemplateColumns:'240px 1fr', border:'1px solid var(--border)', borderRadius:'var(--radius)', overflow:'hidden' }}>
+            {/* Left: account picker */}
+            <div style={{ borderRight:'1px solid var(--border)', display:'flex', flexDirection:'column' }}>
+              <div style={{ padding:'8px 12px', borderBottom:'1px solid var(--border)', background:'var(--bg-panel)', fontSize:10, fontWeight:600, letterSpacing:'.06em', textTransform:'uppercase', color:'var(--text-tertiary)' }}>
+                {filtered.length} Accounts
               </div>
-
-              {/* Stats row */}
-              <div style={{ display:'grid', gridTemplateColumns:'repeat(5,1fr)', gap:10 }}>
-                <KpiCard label="Contacts"     value={sel.numContacts||0} />
-                <KpiCard label="Notes"        value={sel.numNotes||0} />
-                <KpiCard label="Days Since Activity" value={sel.daysSinceActivity != null ? `${sel.daysSinceActivity}d` : '—'} />
-                <KpiCard label="Last Reply"   value={sel.lastEngagement?.type==='replied' ? new Date(sel.lastEngagement.date).toLocaleDateString() : 'None'} />
-                <KpiCard label="Meeting Booked" value={sel.lastBooked ? new Date(sel.lastBooked).toLocaleDateString() : 'None'} accent={!!sel.lastBooked} />
-              </div>
-
-              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:14 }}>
-                {/* Gaps */}
-                <div style={{ background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius)', overflow:'hidden' }}>
-                  <div style={{ padding:'9px 13px', borderBottom:'1px solid var(--border)', background:'var(--bg-secondary)', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
-                    <span style={{ fontSize:10, fontWeight:600, letterSpacing:'.07em', textTransform:'uppercase', color:'var(--text-tertiary)' }}>Gaps & White Space</span>
-                    <span style={{ fontSize:9, fontWeight:700, padding:'2px 6px', borderRadius:3, background:'rgba(240,82,82,.12)', color:'var(--red)', border:'1px solid rgba(240,82,82,.3)' }}>{(sel.missingPersonas||[]).length} gaps</span>
-                  </div>
-                  {(sel.missingPersonas||[]).length === 0
-                    ? <div style={{ padding:'12px 14px', fontSize:12, color:'var(--green)' }}>✓ No major gaps detected</div>
-                    : (sel.missingPersonas||[]).map((g,i) => (
-                      <div key={i} style={{ padding:'8px 13px', borderBottom:'1px solid var(--border)', display:'flex', gap:8 }}>
-                        <span style={{ fontSize:11 }}>{g.includes('No')?'🔴':'🟠'}</span>
-                        <span style={{ fontSize:11, color:'var(--text-secondary)' }}>{g}</span>
+              <div style={{ maxHeight:700, overflowY:'auto', padding:4, display:'flex', flexDirection:'column', gap:2 }}>
+                {filtered.map(a => (
+                  <div key={a.id} onClick={() => setSelected(a)}
+                    style={{ padding:'8px 10px', borderRadius:'var(--radius)', cursor:'pointer',
+                      background:sel?.id===a.id?'rgba(79,142,247,.12)':'transparent',
+                      border:sel?.id===a.id?'1px solid var(--accent)':'1px solid transparent',
+                      borderLeft:`3px solid ${hcColor(a.healthStatus)}` }}
+                    onMouseEnter={e => { if(sel?.id!==a.id) e.currentTarget.style.background='var(--bg-secondary)' }}
+                    onMouseLeave={e => { if(sel?.id!==a.id) e.currentTarget.style.background='transparent' }}>
+                    <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+                      <div style={{ flex:1, minWidth:0 }}>
+                        <div style={{ fontSize:12, fontWeight:sel?.id===a.id?600:400, color:'var(--text)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{a.name}</div>
+                        <div style={{ fontSize:10, color:'var(--text-tertiary)' }}>{a.tier.replace('GOLD - ','')} · {a.assignedBdr||'—'}</div>
                       </div>
-                    ))
+                      <div style={{ flexShrink:0, textAlign:'right' }}>
+                        <div style={{ fontSize:10, fontWeight:700, color:hcColor(a.healthStatus), fontFamily:'monospace' }}>{a.health}</div>
+                        {(a.criticalGaps||0) > 0 && <div style={{ fontSize:9, color:'var(--red)' }}>{a.criticalGaps}⚠</div>}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Right: account workspace */}
+            {!sel
+              ? <div style={{ display:'flex', alignItems:'center', justifyContent:'center', color:'var(--text-tertiary)', fontSize:13, padding:40 }}>Select an account</div>
+              : <div style={{ padding:16, display:'flex', flexDirection:'column', gap:14 }}>
+                {/* Header */}
+                <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', gap:12 }}>
+                  <div>
+                    <div style={{ fontSize:20, fontWeight:700, color:'var(--text)', marginBottom:4 }}>{sel.name}</div>
+                    <div style={{ fontSize:12, color:'var(--text-secondary)' }}>
+                      {sel.tier} · {sel.city&&sel.state?`${sel.city}, ${sel.state} · `:''}BDR: {sel.assignedBdr||'—'} · VP: {GOLD_OWNER_MAP[sel.ownerId]||'—'}
+                    </div>
+                  </div>
+                  <div style={{ display:'flex', gap:8, alignItems:'center', flexShrink:0 }}>
+                    <div style={{ textAlign:'center' }}>
+                      <div style={{ width:52, height:52, borderRadius:'50%', border:`3px solid ${hcColor(sel.healthStatus)}`, display:'flex', alignItems:'center', justifyContent:'center' }}>
+                        <span style={{ fontSize:16, fontWeight:700, color:hcColor(sel.healthStatus), fontFamily:'monospace' }}>{sel.health}</span>
+                      </div>
+                      <div style={{ fontSize:9, color:'var(--text-tertiary)', marginTop:3, textTransform:'uppercase' }}>{sel.healthStatus}</div>
+                    </div>
+                    <a href={sel.url} target="_blank" rel="noopener noreferrer"
+                      style={{ padding:'7px 12px', background:'var(--accent)', color:'#fff', borderRadius:'var(--radius)', fontSize:12, fontWeight:500, textDecoration:'none' }}>
+                      HubSpot ↗
+                    </a>
+                    <button onClick={() => exportAccountCSV(sel)}
+                      style={{ padding:'7px 12px', background:'none', border:'1px solid var(--border)', borderRadius:'var(--radius)', fontSize:12, color:'var(--text-secondary)', cursor:'pointer' }}>
+                      Export
+                    </button>
+                  </div>
+                </div>
+
+                {/* KPI row */}
+                <div style={{ display:'grid', gridTemplateColumns:'repeat(5,1fr)', gap:10 }}>
+                  <KpiCard label="Contacts"          value={sel.numContacts||0} />
+                  <KpiCard label="Notes"             value={sel.numNotes||0} />
+                  <KpiCard label="Days Inactive"     value={sel.daysSinceActivity!=null?`${sel.daysSinceActivity}d`:'—'} />
+                  <KpiCard label="Persona Coverage"  value={`${sel.coveredPersonaCount||0}/22`} accent={(sel.coveredPersonaCount||0)>=16} />
+                  <KpiCard label="Critical Gaps"     value={sel.criticalGaps||0} />
+                </div>
+
+                {/* Persona heatmap */}
+                <div style={{ background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius)', overflow:'hidden' }}>
+                  <div style={{ padding:'9px 13px', borderBottom:'1px solid var(--border)', background:'var(--bg-secondary)', display:'flex', justifyContent:'space-between' }}>
+                    <span style={{ fontSize:10, fontWeight:600, letterSpacing:'.07em', textTransform:'uppercase', color:'var(--text-tertiary)' }}>Persona Coverage Map</span>
+                    <span style={{ fontSize:10, color:'var(--text-tertiary)' }}>{sel.coveredPersonaCount||0}/22 personas covered</span>
+                  </div>
+                  <div style={{ padding:'12px 13px' }}>
+                    <PersonaHeatmap account={sel} />
+                  </div>
+                </div>
+
+                <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:14 }}>
+                  {/* Gaps */}
+                  <div style={{ background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius)', overflow:'hidden' }}>
+                    <div style={{ padding:'9px 13px', borderBottom:'1px solid var(--border)', background:'var(--bg-secondary)', display:'flex', justifyContent:'space-between' }}>
+                      <span style={{ fontSize:10, fontWeight:600, letterSpacing:'.07em', textTransform:'uppercase', color:'var(--text-tertiary)' }}>Missing Personas</span>
+                      <span style={{ fontSize:9, fontWeight:700, padding:'2px 6px', borderRadius:3, background:'rgba(240,82,82,.12)', color:'var(--red)', border:'1px solid rgba(240,82,82,.3)' }}>
+                        {(sel.missingPersonas||[]).length} gaps
+                      </span>
+                    </div>
+                    <div style={{ padding:'8px 13px' }}>
+                      <GapList missingPersonas={sel.missingPersonas} />
+                    </div>
+                  </div>
+
+                  {/* Engagement */}
+                  <div style={{ background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius)', overflow:'hidden' }}>
+                    <div style={{ padding:'9px 13px', borderBottom:'1px solid var(--border)', background:'var(--bg-secondary)' }}>
+                      <span style={{ fontSize:10, fontWeight:600, letterSpacing:'.07em', textTransform:'uppercase', color:'var(--text-tertiary)' }}>Engagement History</span>
+                    </div>
+                    <div style={{ padding:'10px 13px', display:'flex', flexDirection:'column', gap:8 }}>
+                      {[
+                        { label:'Last Activity',   value:sel.lastActivityDate ? new Date(sel.lastActivityDate).toLocaleDateString() : 'Never', color:!sel.lastActivityDate?'var(--red)':'var(--text)' },
+                        { label:'Last Reply',      value:sel.lastEngagement?.type==='replied'?`${new Date(sel.lastEngagement.date).toLocaleDateString()} — ${sel.lastEngagement.contact||''}`:'None', color:sel.lastEngagement?.type==='replied'?'var(--green)':'var(--text-tertiary)' },
+                        { label:'Last Email Sent', value:sel.lastSent?`${new Date(sel.lastSent.date).toLocaleDateString()} → ${sel.lastSent.contact||''}`:'—', color:'var(--text-secondary)' },
+                        { label:'Meeting Booked',  value:sel.lastBooked?new Date(sel.lastBooked).toLocaleDateString():'None', color:sel.lastBooked?'var(--green)':'var(--text-tertiary)' },
+                        { label:'Last Call',       value:sel.lastCall?new Date(sel.lastCall).toLocaleDateString():'None', color:'var(--text-secondary)' },
+                      ].map((row,i) => (
+                        <div key={i} style={{ display:'flex', justifyContent:'space-between', fontSize:12 }}>
+                          <span style={{ color:'var(--text-tertiary)' }}>{row.label}</span>
+                          <span style={{ color:row.color, fontWeight:500 }}>{row.value}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Contacts table */}
+                <div style={{ background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius)', overflow:'hidden' }}>
+                  <div style={{ padding:'9px 13px', borderBottom:'1px solid var(--border)', background:'var(--bg-secondary)', display:'flex', justifyContent:'space-between' }}>
+                    <span style={{ fontSize:10, fontWeight:600, letterSpacing:'.07em', textTransform:'uppercase', color:'var(--text-tertiary)' }}>Contacts ({(sel.contacts||[]).length})</span>
+                    <span style={{ fontSize:10, color:'var(--text-tertiary)' }}>Click row to open in HubSpot</span>
+                  </div>
+                  {(sel.contacts||[]).length === 0
+                    ? <div style={{ padding:'12px 14px', fontSize:12, color:'var(--text-tertiary)' }}>No contacts loaded (max 5 per account). Open in HubSpot for full list.</div>
+                    : <table style={{ width:'100%', borderCollapse:'collapse' }}>
+                      <thead><tr>{['Name','Title','Persona','Buying Role','Sequence','Last Reply','Last Send'].map(h => (
+                        <th key={h} style={{ padding:'6px 12px', fontSize:9, fontWeight:600, textTransform:'uppercase', letterSpacing:'.05em', color:'var(--text-tertiary)', borderBottom:'1px solid var(--border)', textAlign:'left' }}>{h}</th>
+                      ))}</tr></thead>
+                      <tbody>
+                        {(sel.contacts||[]).map((c,i) => (
+                          <tr key={i} style={{ borderBottom:'1px solid var(--border)', cursor:'pointer' }}
+                            onClick={() => window.open(c.url,'_blank','noopener,noreferrer')}
+                            onMouseEnter={e => e.currentTarget.style.background='var(--bg-secondary)'}
+                            onMouseLeave={e => e.currentTarget.style.background=''}>
+                            <td style={{ padding:'7px 12px', fontSize:12, fontWeight:500, color:'var(--accent)' }}>{c.name||'—'}</td>
+                            <td style={{ padding:'7px 12px', fontSize:11, color:'var(--text-secondary)' }}>{c.title||'—'}</td>
+                            <td style={{ padding:'7px 12px', fontSize:11, color:'var(--text-secondary)' }}>{c.persona||'—'}</td>
+                            <td style={{ padding:'7px 12px', fontSize:11, color:'var(--text-secondary)' }}>{c.buyingRole||'—'}</td>
+                            <td style={{ padding:'7px 12px' }}>
+                              {c.inSequence
+                                ? <span style={{ fontSize:9, fontWeight:700, textTransform:'uppercase', color:'var(--amber)', background:'rgba(245,166,35,.12)', borderRadius:3, padding:'2px 5px' }}>Active</span>
+                                : <span style={{ fontSize:9, color:'var(--text-tertiary)' }}>—</span>}
+                            </td>
+                            <td style={{ padding:'7px 12px', fontSize:11, color:c.lastReply?'var(--green)':'var(--text-tertiary)' }}>
+                              {c.lastReply?new Date(c.lastReply).toLocaleDateString():'—'}
+                            </td>
+                            <td style={{ padding:'7px 12px', fontSize:11, color:'var(--text-tertiary)' }}>
+                              {c.lastSent?new Date(c.lastSent).toLocaleDateString():'—'}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
                   }
                 </div>
+              </div>
+            }
+          </div>
+      )}
 
-                {/* Engagement history */}
-                <div style={{ background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius)', overflow:'hidden' }}>
-                  <div style={{ padding:'9px 13px', borderBottom:'1px solid var(--border)', background:'var(--bg-secondary)' }}>
-                    <span style={{ fontSize:10, fontWeight:600, letterSpacing:'.07em', textTransform:'uppercase', color:'var(--text-tertiary)' }}>Engagement History</span>
-                  </div>
-                  <div style={{ padding:'10px 13px', display:'flex', flexDirection:'column', gap:8 }}>
-                    {[
-                      { label:'Last Contacted',   value: sel.lastActivityDate ? new Date(sel.lastActivityDate).toLocaleDateString() : 'Never', color: !sel.lastActivityDate ? 'var(--red)' : 'var(--text)' },
-                      { label:'Last Reply',        value: sel.lastEngagement?.type==='replied' ? `${new Date(sel.lastEngagement.date).toLocaleDateString()} by ${sel.lastEngagement.contact||''}` : 'None', color: sel.lastEngagement?.type==='replied' ? 'var(--green)' : 'var(--text-tertiary)' },
-                      { label:'Last Email Sent',   value: sel.lastSent ? `${new Date(sel.lastSent.date).toLocaleDateString()} to ${sel.lastSent.contact||''}` : '—', color: 'var(--text-secondary)' },
-                      { label:'Meeting Booked',    value: sel.lastBooked ? new Date(sel.lastBooked).toLocaleDateString() : 'None', color: sel.lastBooked ? 'var(--green)' : 'var(--text-tertiary)' },
-                      { label:'Last Call',         value: sel.lastCall ? new Date(sel.lastCall).toLocaleDateString() : 'None', color: 'var(--text-secondary)' },
-                    ].map((row,i) => (
-                      <div key={i} style={{ display:'flex', justifyContent:'space-between', fontSize:12 }}>
-                        <span style={{ color:'var(--text-tertiary)' }}>{row.label}</span>
-                        <span style={{ color:row.color, fontWeight:500 }}>{row.value}</span>
+      {view === 'reporting' && (
+        <div style={{ display:'flex', flexDirection:'column', gap:16 }}>
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:10 }}>
+            <KpiCard label="Accounts"         value={accounts.length} />
+            <KpiCard label="Avg Health"       value={`${meta?.avgHealth||0}%`} />
+            <KpiCard label="Critical Gaps"    value={meta?.totalCriticalGaps||0} />
+            <KpiCard label="Avg Coverage"     value={`${meta?.avgPersonaCoverage||0}/16`} />
+          </div>
+
+          {/* Persona gap breakdown */}
+          <Panel>
+            <SectionTitle>Persona Coverage Across All Gold Accounts</SectionTitle>
+            <div style={{ display:'grid', gridTemplateColumns:'repeat(2,1fr)', gap:8 }}>
+              {TARGET_PERSONAS.map((p,i) => {
+                const covered = accounts.filter(a =>
+                  (a.personaCoverage||[]).find(pc => pc.persona===p.value && pc.covered)
+                ).length
+                const total = accounts.length || 1
+                const pct = Math.round((covered/total)*100)
+                return (
+                  <div key={i} style={{ display:'flex', alignItems:'center', gap:8 }}>
+                    <div style={{ flex:1, minWidth:0 }}>
+                      <div style={{ display:'flex', justifyContent:'space-between', marginBottom:2 }}>
+                        <span style={{ fontSize:11, color:'var(--text-secondary)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{p.label}</span>
+                        <span style={{ fontSize:11, fontWeight:600, color:pct>=80?'var(--green)':pct>=50?'var(--amber)':'var(--red)', flexShrink:0, marginLeft:8 }}>{pct}%</span>
                       </div>
-                    ))}
+                      <div style={{ height:5, background:'var(--border)', borderRadius:3, overflow:'hidden' }}>
+                        <div style={{ width:`${pct}%`, height:'100%', background:pct>=80?'var(--green)':pct>=50?'var(--amber)':'var(--red)', borderRadius:3 }} />
+                      </div>
+                    </div>
                   </div>
-                </div>
-              </div>
-
-              {/* Full contacts table */}
-              <div style={{ background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius)', overflow:'hidden' }}>
-                <div style={{ padding:'9px 13px', borderBottom:'1px solid var(--border)', background:'var(--bg-secondary)', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
-                  <span style={{ fontSize:10, fontWeight:600, letterSpacing:'.07em', textTransform:'uppercase', color:'var(--text-tertiary)' }}>All Contacts ({(sel.contacts||[]).length})</span>
-                  <span style={{ fontSize:10, color:'var(--text-tertiary)' }}>Click to open in HubSpot</span>
-                </div>
-                {(sel.contacts||[]).length === 0
-                  ? <div style={{ padding:'12px 14px', fontSize:12, color:'var(--text-tertiary)' }}>No contacts loaded — uses sample of 5 per account. Open in HubSpot for full list.</div>
-                  : <table style={{ width:'100%', borderCollapse:'collapse' }}>
-                    <thead>
-                      <tr>
-                        {['Name','Title','Persona','Buying Role','Sequence','Last Reply','Last Send'].map(h => (
-                          <th key={h} style={{ padding:'6px 12px', fontSize:9, fontWeight:600, textTransform:'uppercase', letterSpacing:'.05em', color:'var(--text-tertiary)', borderBottom:'1px solid var(--border)', textAlign:'left' }}>{h}</th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {(sel.contacts||[]).map((c,i) => (
-                        <tr key={i} style={{ borderBottom:'1px solid var(--border)', cursor:'pointer' }}
-                          onClick={() => window.open(c.url,'_blank','noopener,noreferrer')}
-                          onMouseEnter={e => e.currentTarget.style.background='var(--bg-secondary)'}
-                          onMouseLeave={e => e.currentTarget.style.background=''}>
-                          <td style={{ padding:'7px 12px', fontSize:12, fontWeight:500, color:'var(--accent)' }}>{c.name||'—'}</td>
-                          <td style={{ padding:'7px 12px', fontSize:11, color:'var(--text-secondary)' }}>{c.title||'—'}</td>
-                          <td style={{ padding:'7px 12px', fontSize:11, color:'var(--text-secondary)' }}>{c.persona||'—'}</td>
-                          <td style={{ padding:'7px 12px', fontSize:11, color:'var(--text-secondary)' }}>{c.buyingRole||'—'}</td>
-                          <td style={{ padding:'7px 12px' }}>
-                            {c.inSequence
-                              ? <span style={{ fontSize:9, fontWeight:700, textTransform:'uppercase', color:'var(--amber)', background:'rgba(245,166,35,.12)', borderRadius:3, padding:'2px 5px' }}>Active</span>
-                              : <span style={{ fontSize:9, color:'var(--text-tertiary)' }}>—</span>}
-                          </td>
-                          <td style={{ padding:'7px 12px', fontSize:11, color: c.lastReply?'var(--green)':'var(--text-tertiary)' }}>
-                            {c.lastReply ? new Date(c.lastReply).toLocaleDateString() : '—'}
-                          </td>
-                          <td style={{ padding:'7px 12px', fontSize:11, color:'var(--text-tertiary)' }}>
-                            {c.lastSent ? new Date(c.lastSent).toLocaleDateString() : '—'}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                }
-              </div>
+                )
+              })}
             </div>
-          }
+          </Panel>
+
+          {/* Account table */}
+          <Panel>
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12 }}>
+              <SectionTitle style={{ margin:0 }}>Account Detail ({filtered.length})</SectionTitle>
+              <button onClick={() => exportGoldCSV(filtered, 'gold-command-report.csv')}
+                style={{ padding:'6px 12px', background:'none', border:'1px solid var(--border)', borderRadius:'var(--radius)', fontSize:11, color:'var(--text-secondary)', cursor:'pointer' }}>
+                Export CSV
+              </button>
+            </div>
+            <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
+              <THead cols={['Account','Tier','BDR','Health','Coverage','Critical','High','Days','Last Reply']} />
+              <tbody>
+                {filtered.map((a,i) => (
+                  <tr key={i} style={{ borderBottom:'1px solid var(--border)', cursor:'pointer' }}
+                    onClick={() => { setSelected(a); setView('workspace') }}
+                    onMouseEnter={e => e.currentTarget.style.background='var(--bg-secondary)'}
+                    onMouseLeave={e => e.currentTarget.style.background=''}>
+                    <td style={{ padding:'7px 10px 7px 0', fontWeight:500, color:'var(--accent)' }}>{a.name}</td>
+                    <td style={{ padding:'7px 10px 7px 0', fontSize:10, color:'var(--text-tertiary)' }}>{a.tier.replace('GOLD - ','')}</td>
+                    <td style={{ padding:'7px 10px 7px 0', color:'var(--text-secondary)' }}>{a.assignedBdr||'—'}</td>
+                    <td style={{ padding:'7px 10px 7px 0', fontFamily:'monospace', fontWeight:700, color:hcColor(a.healthStatus) }}>{a.health}</td>
+                    <td style={{ padding:'7px 10px 7px 0', color:(a.coveredPersonaCount||0)<12?'var(--amber)':'var(--text-secondary)' }}>{a.coveredPersonaCount||0}/22</td>
+                    <td style={{ padding:'7px 10px 7px 0', color:(a.criticalGaps||0)>0?'var(--red)':'var(--text-tertiary)' }}>{a.criticalGaps||0}</td>
+                    <td style={{ padding:'7px 10px 7px 0', color:(a.highGaps||0)>0?'var(--amber)':'var(--text-tertiary)' }}>{a.highGaps||0}</td>
+                    <td style={{ padding:'7px 10px 7px 0', color:(a.daysSinceActivity||0)>30?'var(--red)':'var(--text-secondary)' }}>{a.daysSinceActivity!=null?`${a.daysSinceActivity}d`:'—'}</td>
+                    <td style={{ padding:'7px 0', color:a.lastEngagement?.type==='replied'?'var(--green)':'var(--text-tertiary)', whiteSpace:'nowrap' }}>
+                      {a.lastEngagement?.type==='replied'?new Date(a.lastEngagement.date).toLocaleDateString():'—'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </Panel>
         </div>
-      }
+      )}
     </div>
   )
 }
+
 
 // ─── Add App tab ──────────────────────────────────────────────────────────────
 function AddAppTab({ safeFetch, onSaved, existingTabs, onDelete, isAdmin }) {
