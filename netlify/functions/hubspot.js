@@ -3448,12 +3448,14 @@ export const handler = async (event, context) => {
               })()
             : seqTotalGroups(null);
 
-          const [enrolled, seqReplied, seqOpened, seqClicked] = await Promise.all([
-            countC(enrolledGroups),
-            countC(seqTotalGroups(repliedF)),
-            countC(seqTotalGroups(openedF)),
-            countC(seqTotalGroups(clickedF)),
-          ]);
+          // Sequential with gaps to avoid 429 when dashboard is also loading
+          const enrolled   = await countC(enrolledGroups);
+          await new Promise(r => setTimeout(r, 200));
+          const seqReplied = await countC(seqTotalGroups(repliedF));
+          await new Promise(r => setTimeout(r, 200));
+          const seqOpened  = await countC(seqTotalGroups(openedF));
+          await new Promise(r => setTimeout(r, 200));
+          const seqClicked = await countC(seqTotalGroups(clickedF));
 
           const replyRate = enrolled > 0 ? +((seqReplied / enrolled) * 100).toFixed(1) : 0;
           const openRate  = enrolled > 0 ? +((seqOpened  / enrolled) * 100).toFixed(1) : 0;
@@ -3470,19 +3472,20 @@ export const handler = async (event, context) => {
             const periodF = sinceISO
               ? { propertyName: "hs_latest_sequence_enrolled_date", operator: "GTE", value: sinceISO }
               : seqActiveF;
-            const [rEnrolled, rReplied, rOpened, rClicked] = await Promise.all([
-              count1([repF, periodF]),
-              count1([repF, seqActiveF, repliedF]),
-              count1([repF, seqActiveF, openedF]),
-              count1([repF, seqActiveF, clickedF]),
-            ]);
+            const rEnrolled = await count1([repF, periodF]);
+            await new Promise(r => setTimeout(r, 150));
+            const rReplied  = await count1([repF, seqActiveF, repliedF]);
+            await new Promise(r => setTimeout(r, 150));
+            const rOpened   = await count1([repF, seqActiveF, openedF]);
+            await new Promise(r => setTimeout(r, 150));
+            const rClicked  = await count1([repF, seqActiveF, clickedF]);
             repData.push({
               rep: repName, enrolled: rEnrolled, replied: rReplied, opened: rOpened, clicked: rClicked,
               replyRate: rEnrolled > 0 ? +((rReplied / rEnrolled) * 100).toFixed(1) : 0,
               openRate:  rEnrolled > 0 ? +((rOpened  / rEnrolled) * 100).toFixed(1) : 0,
               clickRate: rEnrolled > 0 ? +((rClicked / rEnrolled) * 100).toFixed(1) : 0,
             });
-            await new Promise(r => setTimeout(r, 150));
+            await new Promise(r => setTimeout(r, 200));
           }
 
           // Per-sequence breakdown
