@@ -3180,7 +3180,7 @@ function GoldOverviewTab({ accounts, meta, loading, onRefresh, selectedAccount, 
   const borderColor = (s) => s === 'active' ? 'var(--green)' : s === 'attention' ? 'var(--amber)' : s === 'risk' ? 'var(--red)' : 'transparent'
 
   return (
-    <div style={{ display:'flex', flexDirection:'column', height:'calc(100vh - 110px)', overflow:'hidden' }}>
+    <div style={{ display:'flex', flexDirection:'column', gap:12 }}>
       {/* Header bar */}
       <div style={{ display:'flex', alignItems:'center', gap:10, padding:'10px 0', flexShrink:0, flexWrap:'wrap' }}>
         <div style={{ display:'flex', alignItems:'center', gap:6, background:'rgba(245,166,35,.12)', border:'1px solid rgba(245,166,35,.35)', borderRadius:'var(--radius)', padding:'4px 10px' }}>
@@ -3213,14 +3213,14 @@ function GoldOverviewTab({ accounts, meta, loading, onRefresh, selectedAccount, 
       {/* 3-column layout */}
       {loading
         ? <div style={{ flex:1, display:'flex', alignItems:'center', justifyContent:'center', color:'var(--text-tertiary)', fontSize:13 }}>Loading Gold accounts…</div>
-        : <div style={{ display:'grid', gridTemplateColumns:'300px 1fr 240px', flex:1, minHeight:0, border:'1px solid var(--border)', borderRadius:'var(--radius)', overflow:'hidden' }}>
+        : <div style={{ display:'grid', gridTemplateColumns:'300px 1fr 240px', border:'1px solid var(--border)', borderRadius:'var(--radius)', overflow:'hidden' }}>
 
           {/* Left: account list */}
-          <div style={{ display:'flex', flexDirection:'column', borderRight:'1px solid var(--border)' }}>
+          <div style={{ display:'flex', flexDirection:'column', borderRight:'1px solid var(--border)', maxHeight:'80vh' }}>
             <div style={{ padding:'8px 12px', borderBottom:'1px solid var(--border)', background:'var(--bg-panel)', fontSize:10, fontWeight:600, letterSpacing:'.06em', textTransform:'uppercase', color:'var(--text-tertiary)', flexShrink:0 }}>
               {filtered.length} Accounts
             </div>
-            <div style={{ flex:1, overflowY:'auto', padding:6, display:'flex', flexDirection:'column', gap:3 }}>
+            <div style={{ overflowY:'auto', padding:6, display:'flex', flexDirection:'column', gap:3 }}>
               {filtered.map((a, i) => (
                 <div key={a.id} onClick={() => onSelectAccount(a)}
                   style={{ background: sel?.id === a.id ? 'rgba(79,142,247,.12)' : 'var(--bg-secondary)',
@@ -3243,7 +3243,7 @@ function GoldOverviewTab({ accounts, meta, loading, onRefresh, selectedAccount, 
           </div>
 
           {/* Middle: selected account detail */}
-          <div style={{ display:'flex', flexDirection:'column', overflowY:'auto' }}>
+          <div style={{ display:'flex', flexDirection:'column' }}>
             {!sel
               ? <div style={{ flex:1, display:'flex', alignItems:'center', justifyContent:'center', color:'var(--text-tertiary)', fontSize:13 }}>Select an account to view details</div>
               : <div style={{ padding:14, display:'flex', flexDirection:'column', gap:12 }}>
@@ -3385,7 +3385,7 @@ function GoldOverviewTab({ accounts, meta, loading, onRefresh, selectedAccount, 
           </div>
 
           {/* Right: aggregate gaps */}
-          <div style={{ display:'flex', flexDirection:'column', borderLeft:'1px solid var(--border)', overflowY:'auto' }}>
+          <div style={{ display:'flex', flexDirection:'column', borderLeft:'1px solid var(--border)' }}>
             <div style={{ padding:'8px 12px', borderBottom:'1px solid var(--border)', background:'var(--bg-panel)', fontSize:10, fontWeight:600, letterSpacing:'.06em', textTransform:'uppercase', color:'var(--text-tertiary)', flexShrink:0 }}>
               Portfolio Gaps
             </div>
@@ -3498,7 +3498,7 @@ function GoldCommandTab({ accounts, loading, onRefresh, filterBdr, setFilterBdr,
   }
 
   return (
-    <div style={{ display:'flex', flexDirection:'column', height:'calc(100vh - 110px)', overflow:'hidden' }}>
+    <div style={{ display:'flex', flexDirection:'column', gap:12 }}>
       {/* Controls */}
       <div style={{ display:'flex', alignItems:'center', gap:10, padding:'10px 0', flexShrink:0, flexWrap:'wrap' }}>
         <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Find account…"
@@ -3515,14 +3515,14 @@ function GoldCommandTab({ accounts, loading, onRefresh, filterBdr, setFilterBdr,
 
       {loading
         ? <div style={{ flex:1, display:'flex', alignItems:'center', justifyContent:'center', color:'var(--text-tertiary)', fontSize:13 }}>Loading Gold accounts…</div>
-        : <div style={{ display:'grid', gridTemplateColumns:'260px 1fr', flex:1, minHeight:0, border:'1px solid var(--border)', borderRadius:'var(--radius)', overflow:'hidden' }}>
+        : <div style={{ display:'grid', gridTemplateColumns:'260px 1fr', border:'1px solid var(--border)', borderRadius:'var(--radius)', overflow:'hidden' }}>
 
           {/* Left: account picker */}
-          <div style={{ display:'flex', flexDirection:'column', borderRight:'1px solid var(--border)' }}>
+          <div style={{ display:'flex', flexDirection:'column', borderRight:'1px solid var(--border)', maxHeight:'80vh' }}>
             <div style={{ padding:'8px 12px', borderBottom:'1px solid var(--border)', background:'var(--bg-panel)', fontSize:10, fontWeight:600, letterSpacing:'.06em', textTransform:'uppercase', color:'var(--text-tertiary)', flexShrink:0 }}>
               {filtered.length} Accounts
             </div>
-            <div style={{ flex:1, overflowY:'auto', padding:4, display:'flex', flexDirection:'column', gap:2 }}>
+            <div style={{ overflowY:'auto', padding:4, display:'flex', flexDirection:'column', gap:2 }}>
               {filtered.map(a => (
                 <div key={a.id} onClick={() => setSelected(a)}
                   style={{ padding:'8px 10px', borderRadius:'var(--radius)', cursor:'pointer',
@@ -3545,7 +3545,7 @@ function GoldCommandTab({ accounts, loading, onRefresh, filterBdr, setFilterBdr,
           {/* Right: account workspace */}
           {!sel
             ? <div style={{ display:'flex', alignItems:'center', justifyContent:'center', color:'var(--text-tertiary)', fontSize:13 }}>Select an account to work</div>
-            : <div style={{ overflowY:'auto', padding:16, display:'flex', flexDirection:'column', gap:14 }}>
+            : <div style={{ padding:16, display:'flex', flexDirection:'column', gap:14 }}>
 
               {/* Account header */}
               <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', gap:12 }}>
