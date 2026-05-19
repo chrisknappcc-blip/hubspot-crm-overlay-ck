@@ -2102,8 +2102,6 @@ function ReportsTab({ safeFetch, owners, currentUserName }) {
     fetchReport()
   }, [fetchReport])
 
-  const PAGE_SIZE = 25
-
   const Pager = ({ page, setPage, total }) => {
     const pages = Math.ceil(total / PAGE_SIZE)
     if (pages <= 1) return null
