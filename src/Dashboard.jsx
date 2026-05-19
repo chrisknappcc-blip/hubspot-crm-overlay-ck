@@ -1002,7 +1002,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
 
       {/* Top nav */}
       <nav style={{ background:'var(--bg-panel)', borderBottom:'1px solid var(--border)', padding:'0 1.5rem', display:'flex', alignItems:'center', height:52, gap:24, position:'sticky', top:0, zIndex:50 }}>
-        <div style={{ fontSize:13, fontWeight:500, letterSpacing:'.05em', textTransform:'uppercase', color:'var(--accent)', marginRight:8 }}>CarePathIQ</div>
+        <div style={{ fontSize:13, fontWeight:500, letterSpacing:'.05em', textTransform:'uppercase', color:'var(--accent)', marginRight:8 }}>Cipher</div>
 
         {[
           { key:'dashboard',     label:'Dashboard' },
@@ -1011,9 +1011,9 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
           { key:'reports',       label:'Reports' },
           { key:'contacts',      label:'Contacts' },
           { key:'map-tool',      label:'Market Mapper' },
+          { key:'contact-intel', label:'Contact Intelligence' },
           { key:'cpiq',          label:'CPIQ' },
           { key:'fin-analysis',  label:'Financial Analysis' },
-          { key:'contact-intel', label:'Contact Intelligence', badge:'SOON' },
           // Dynamic tabs from registry
           ...dynamicTabs.map(t => ({ key:`dyn-${t.id}`, label:t.label, badge:t.badge, url:t.url, tabType:t.type })),
           // Add App tab (visible to all users)
@@ -1879,7 +1879,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
           <div style={{ height:'calc(100vh - 52px)', marginTop:'-1.5rem', marginLeft:'-1.5rem', marginRight:'-1.5rem' }}>
             <iframe
               src="https://mapping-tool-cc.netlify.app/"
-              title="CarePathIQ Market Mapper"
+              title="Cipher Market Mapper"
               style={{ width:'100%', height:'100%', border:'none', display:'block' }}
               allow="fullscreen"
             />
@@ -1956,7 +1956,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
           <div style={{ height:'calc(100vh - 52px)', marginTop:'-1.5rem', marginLeft:'-1.5rem', marginRight:'-1.5rem' }}>
             <iframe
               src="https://cpiq-tool.netlify.app/"
-              title="Custom Financial Analysis"
+              title="CPIQ Tool"
               style={{ width:'100%', height:'100%', border:'none', display:'block' }}
               allow="fullscreen"
             />
@@ -2946,7 +2946,7 @@ function ReportsTab({ safeFetch, owners, currentUserName }) {
 
         const exportText = () => {
           const lines = [
-            `CarePathIQ Weekly Activity Recap`,
+            `Cipher Weekly Activity Recap`,
             `Period: ${data.periodLabel || period}`,
             `Generated: ${new Date().toLocaleString()}`,
             ``,
@@ -4112,6 +4112,9 @@ function GoldCommandTab({ accounts, loading, onRefresh, safeFetch, filterBdr, se
                   </div>
                 </div>
 
+                {/* Account To-Do — above KPI bar */}
+                <GoldAccountTodo account={sel} safeFetch={safeFetch} />
+
                 {/* KPI row */}
                 <div style={{ display:'grid', gridTemplateColumns:'repeat(5,1fr)', gap:10 }}>
                   <KpiCard label="Contacts"          value={sel.numContacts||0} />
@@ -4218,8 +4221,6 @@ function GoldCommandTab({ accounts, loading, onRefresh, safeFetch, filterBdr, se
                   }
                 </div>
 
-                {/* Account To-Do */}
-                <GoldAccountTodo account={sel} safeFetch={safeFetch} />
               </div>
             }
           </div>
