@@ -69,9 +69,9 @@ export async function getTodos(userId) {
   if (live.length !== raw.length) {
     await writeTodos(userId, live).catch(() => {});
   }
-  // Manual items always first, then auto-detected by priority
+  // Manual items always first (newest first), then auto-detected by priority
   return [
-    ...live.filter(t => !t.autoDetected),
+    ...live.filter(t => !t.autoDetected).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)),
     ...live.filter(t =>  t.autoDetected).sort((a, b) => (a.priority || 9) - (b.priority || 9)),
   ];
 }
@@ -157,9 +157,9 @@ export async function bulkUpsertAutoDetected(userId, autoItems) {
     priority:     incoming.priority || 9,
   }));
 
-  // Sort: manual items first (pinned), then auto-detected by priority
+  // Sort: manual items first (newest first), then auto-detected by priority
   const updated = [
-    ...manualItems,
+    ...manualItems.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)),
     ...freshAutoItems.sort((a, b) => (a.priority || 9) - (b.priority || 9)),
   ];
   await writeTodos(userId, updated);
