@@ -1935,19 +1935,13 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
 
         {/* ── Contact Intelligence tab ── */}
         {activeTab === 'contact-intel' && (
-          <div style={{ display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', height:'calc(100vh - 180px)', gap:16 }}>
-            <div style={{ width:64, height:64, borderRadius:'var(--radius-lg)', background:'var(--bg-panel)', border:'1px solid var(--border)', display:'flex', alignItems:'center', justifyContent:'center' }}>
-              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="var(--text-tertiary)" strokeWidth="1.5" strokeLinecap="round"><circle cx="12" cy="8" r="4"/><path d="M6 20v-2a6 6 0 0 1 12 0v2"/><circle cx="19" cy="8" r="2"/><path d="M21 13a4 4 0 0 1 0 7"/></svg>
-            </div>
-            <div style={{ textAlign:'center' }}>
-              <div style={{ fontSize:16, fontWeight:500, color:'var(--text)', marginBottom:6 }}>Contact Intelligence</div>
-              <div style={{ fontSize:13, color:'var(--text-tertiary)', maxWidth:320 }}>
-                Deep contact enrichment, ZoomInfo lookups, LinkedIn activity, and AI-powered engagement insights. Coming soon.
-              </div>
-            </div>
-            <div style={{ fontSize:11, color:'var(--text-tertiary)', background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius)', padding:'6px 14px' }}>
-              In development
-            </div>
+          <div style={{ height:'calc(100vh - 52px)', marginTop:'-1.5rem', marginLeft:'-1.5rem', marginRight:'-1.5rem' }}>
+            <iframe
+              src="https://contactintelligence-cc.netlify.app/"
+              title="Contact Intelligence"
+              style={{ width:'100%', height:'100%', border:'none', display:'block' }}
+              allow="fullscreen"
+            />
           </div>
         )}
 
@@ -2651,6 +2645,13 @@ function ReportsTab({ safeFetch, owners, currentUserName }) {
         const byRep = data.byRep || []
         return (
           <div style={{ display:'flex', flexDirection:'column', gap:16 }}>
+            {/* Section header */}
+            <div style={{ display:'flex', alignItems:'baseline', justifyContent:'space-between' }}>
+              <div>
+                <div style={{ fontSize:16, fontWeight:600, color:'var(--text)' }}>Team Activity</div>
+                <div style={{ fontSize:12, color:'var(--text-tertiary)', marginTop:2 }}>Live view of all outreach activity. Log manual entries below — they appear across all reports.</div>
+              </div>
+            </div>
             {/* KPI strip */}
             <div style={{ display:'grid', gridTemplateColumns:'repeat(7,1fr)', gap:10 }}>
               <KpiCard label="Emails Sent"    value={fmt(t.sent)}    />
@@ -3098,7 +3099,9 @@ function ReportsTab({ safeFetch, owners, currentUserName }) {
             <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between' }}>
               <div>
                 <div style={{ fontSize:18, fontWeight:600, color:'var(--text)' }}>Weekly Activity Recap</div>
-                <div style={{ fontSize:12, color:'var(--text-tertiary)', marginTop:2 }}>{data.periodLabel}</div>
+                <div style={{ fontSize:12, color:'var(--text-tertiary)', marginTop:2 }}>
+                  {data.periodLabel} — shareable summary for leadership. To log manual activities, use Team Activity.
+                </div>
               </div>
               <div style={{ display:'flex', gap:8 }}>
                 <button onClick={exportText}
