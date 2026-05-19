@@ -3422,18 +3422,19 @@ export const handler = async (event, context) => {
           const bdr = bdrFilters();
 
           // ── Totals ────────────────────────────────────────────────────────────
-          // enrolled = contacts enrolled in period (hs_latest_sequence_enrolled_date >= since)
-          // Opens/clicks/replies scoped to currently-enrolled contacts to avoid inflating
-          // rates with non-sequence email activity from the general contact pool
+          // cipher_sequence_sends: accurate enrollment count from HubSpot workflow
+          // Falls back to hs_latest_sequence_enrolled_date if cipher field is 0
           const seqActiveF = { propertyName: "hs_sequences_is_enrolled", operator: "EQ", value: "true" };
-          const enrolledPeriodFilters = sinceISO
+
+          // Use cipher_sequence_sends > 0 as the enrolled count (workflow-accurate)
+          // Also get currently active enrolled for comparison
+          const cipherEnrolledFilters = sinceISO
             ? [...bdr, { propertyName: "hs_latest_sequence_enrolled_date", operator: "GTE", value: sinceISO }]
             : [...bdr, seqActiveF];
 
-          const enrolled = await count1(enrolledPeriodFilters);
-          await new Promise(r => setTimeout(r, 200));
-
-          const [seqReplied, seqOpened, seqClicked] = await Promise.all([
+          // Run enrolled + engagement counts in parallel
+          const [enrolled, seqReplied, seqOpened, seqClicked] = await Promise.all([
+            count1(cipherEnrolledFilters),
             count1([...bdr, seqActiveF, { propertyName: "hs_sales_email_last_replied", operator: sinceISO ? "GTE" : "HAS_PROPERTY", ...(sinceISO ? { value: sinceISO } : {}) }]),
             count1([...bdr, seqActiveF, { propertyName: "hs_email_last_open_date",     operator: sinceISO ? "GTE" : "HAS_PROPERTY", ...(sinceISO ? { value: sinceISO } : {}) }]),
             count1([...bdr, seqActiveF, { propertyName: "hs_email_last_click_date",    operator: sinceISO ? "GTE" : "HAS_PROPERTY", ...(sinceISO ? { value: sinceISO } : {}) }]),
