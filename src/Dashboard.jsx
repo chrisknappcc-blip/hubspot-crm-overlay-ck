@@ -461,7 +461,11 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
       })
       setTodoItems(prev => {
         if (extraFields.sourceId && prev.some(t => t.sourceId === extraFields.sourceId)) return prev
-        return [...prev, data.item]
+        // Prepend to top, before other manual items (newest first)
+        const firstAutoIdx = prev.findIndex(t => t.autoDetected)
+        if (firstAutoIdx === 0) return [data.item, ...prev]
+        if (firstAutoIdx > 0) return [...prev.slice(0, firstAutoIdx), data.item, ...prev.slice(firstAutoIdx)]
+        return [data.item, ...prev]
       })
       setTodoInput('')
       setTodoDueDate('')
