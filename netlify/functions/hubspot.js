@@ -3869,136 +3869,131 @@ export const handler = async (event, context) => {
         // - Missing data gaps still remaining per account
         if (section === "gold_work_log") {
           const GOLD_TIERS = [
-            "GOLD - 1-10","GOLD - 11-20","GOLD - 21-30","GOLD - 41-50","GOLD - 51-60",
-            "GOLD - 61-70","GOLD - 71-80","GOLD - 81-90","GOLD - 91-100",
+            "GOLD - 1-10","GOLD - 11-20","GOLD - 21-30","GOLD - 31-40","GOLD - 41-50",
+            "GOLD - 51-60","GOLD - 61-70","GOLD - 71-80","GOLD - 81-90","GOLD - 91-100",
           ];
 
-          // Get Gold companies with activity and data completeness fields
+          // Single query: ALL Gold companies with all activity + data quality fields
+          // Sorted by most recently modified so most-worked accounts appear first
           const goldCompanies = await hsPost(user.userId, "/crm/v3/objects/companies/search", {
             filterGroups: [{ filters: [
               { propertyName: "priority_tier__bdr", operator: "IN", values: GOLD_TIERS },
             ]}],
             properties: [
-              "name","priority_tier__bdr","hs_lastmodifieddate",
+              "name","priority_tier__bdr","assigned_bdr","hubspot_owner_id",
+              "hs_lastmodifieddate","hs_updated_by_user_id",
               "notes_last_contacted","notes_last_updated",
               "num_contacted_notes","num_associated_contacts",
               "hs_last_logged_call_date","hs_last_booked_meeting_date",
-              "hs_last_logged_outgoing_email_date","domain",
-              "assigned_bdr","hubspot_owner_id",
+              "hs_last_logged_outgoing_email_date",
+              "num_associated_deals","hs_num_contacts_with_buying_roles",
+              "hs_num_decision_makers",
             ],
-            sorts: [{ propertyName: "priority_tier__bdr", direction: "ASCENDING" }],
+            sorts: [{ propertyName: "hs_lastmodifieddate", direction: "DESCENDING" }],
             limit: 200,
           }).catch(() => ({ results: [] }));
 
           const companies = goldCompanies.results || [];
 
-          // For each Gold company, check contacts for persona/data completeness
-          // Sample first 50 companies to stay within rate limits
-          const accountWork = [];
-          for (const co of companies.slice(0, 50)) {
+          // Build per-account work log from company-level fields only (no per-company API loops)
+          // "Work done" = any company record modified in the period, which captures:
+          //   - Notes added, calls logged, meetings booked, emails logged
+          //   - Contact data updated (persona assigned, job title filled, buying role set)
+          //   - Company record itself updated (research, domain, industry etc.)
+          const ownerIdToName = Object.fromEntries(Object.entries(REP_OWNER_ID_MAP).map(([n,id])=>[id,n]));
+          const USER_ID_TO_NAME = {
+            "78304576": "Chris Knapp", "87806380": "Chiara Pate",
+            "76104455": "Matt Valin",  "55217954": "Joseph Haine",
+            "83862037": "Tim Grisham", "289209454":"Irene Wong",
+            "85819247": "Cole Hooper", "743772047":"John Hansel",
+          };
+
+          const accounts = companies.map(co => {
             const p = co.properties || {};
+            const lastModified = p.hs_lastmodifieddate || null;
+            const lastActivity = p.notes_last_updated  || null;
+            const lastContacted= p.notes_last_contacted|| null;
+            const lastCall     = p.hs_last_logged_call_date || null;
+            const lastMeeting  = p.hs_last_booked_meeting_date || null;
+            const lastEmail    = p.hs_last_logged_outgoing_email_date || null;
 
-            // Check if activity happened in the period
-            const lastContacted = p.notes_last_contacted ? new Date(p.notes_last_contacted) : null;
-            const lastModified  = p.hs_lastmodifieddate  ? new Date(p.hs_lastmodifieddate)  : null;
-            const lastCall      = p.hs_last_logged_call_date ? new Date(p.hs_last_logged_call_date) : null;
-            const lastMeeting   = p.hs_last_booked_meeting_date ? new Date(p.hs_last_booked_meeting_date) : null;
-            const lastEmail     = p.hs_last_logged_outgoing_email_date ? new Date(p.hs_last_logged_outgoing_email_date) : null;
-            const sinceDate     = sinceISO ? new Date(sinceISO) : null;
-
-            const activityInPeriod = sinceDate ? (
-              (lastContacted && lastContacted >= sinceDate) ||
-              (lastCall      && lastCall      >= sinceDate) ||
-              (lastMeeting   && lastMeeting   >= sinceDate) ||
-              (lastEmail     && lastEmail     >= sinceDate)
+            // Was this account worked on in the period?
+            const workedInPeriod = sinceISO ? (
+              (lastModified  && lastModified  >= sinceISO) ||
+              (lastActivity  && lastActivity  >= sinceISO) ||
+              (lastContacted && lastContacted >= sinceISO)
             ) : true;
 
-            // Get contacts for this company to check data completeness
-            let contacts = [];
-            try {
-              const contactData = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
-                filterGroups: [{ filters: [] }],
-                properties: ["firstname","lastname","jobtitle","hs_persona","target_persona","hs_buying_role","email","primary_outreach_rep","assigned_bdr"],
-                limit: 50,
-              });
-              // Filter contacts associated with this company via search
-              const assocData = await hsPost(user.userId, "/crm/v4/associations/companies/contacts/batch/read", {
-                inputs: [{ id: co.id }],
-              });
-              const contactIds = new Set();
-              for (const r of (assocData.results || [])) {
-                for (const t of (r.to || [])) {
-                  const id = t.toObjectId || t.id;
-                  if (id) contactIds.add(String(id));
-                }
-              }
-              // Fetch just those contacts
-              if (contactIds.size > 0) {
-                const contactBatch = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
-                  filterGroups: [{ filters: [
-                    { propertyName: "hs_object_id", operator: "IN", values: [...contactIds].slice(0, 100) }
-                  ]}],
-                  properties: ["firstname","lastname","jobtitle","hs_persona","target_persona","hs_buying_role","email","assigned_bdr"],
-                  limit: 100,
-                });
-                contacts = contactBatch.results || [];
-              }
-            } catch { /* skip contacts for this company */ }
+            // Activity types logged this period
+            const activities = [];
+            if (lastCall    && (!sinceISO || lastCall    >= sinceISO)) activities.push({ type:'Call',    date:lastCall });
+            if (lastMeeting && (!sinceISO || lastMeeting >= sinceISO)) activities.push({ type:'Meeting', date:lastMeeting });
+            if (lastEmail   && (!sinceISO || lastEmail   >= sinceISO)) activities.push({ type:'Email',   date:lastEmail });
+            if (lastActivity&& (!sinceISO || lastActivity>= sinceISO)) activities.push({ type:'Note/Touch', date:lastActivity });
+            activities.sort((a,b) => new Date(b.date) - new Date(a.date));
 
-            const totalContacts  = contacts.length;
-            const withTitle      = contacts.filter(c => c.properties?.jobtitle).length;
-            const withPersona    = contacts.filter(c => c.properties?.hs_persona || c.properties?.target_persona).length;
-            const withBuyingRole = contacts.filter(c => c.properties?.hs_buying_role).length;
-            const withEmail      = contacts.filter(c => c.properties?.email).length;
+            const repName = p.assigned_bdr || ownerIdToName[p.hubspot_owner_id] || "";
+            const updatedBy = USER_ID_TO_NAME[p.hs_updated_by_user_id] || `User ${p.hs_updated_by_user_id || 'unknown'}`;
 
-            accountWork.push({
-              companyId:       co.id,
-              name:            p.name || "",
-              tier:            p.priority_tier__bdr || "",
-              url:             `https://app.hubspot.com/contacts/${PORTAL}/record/0-2/${co.id}`,
-              activityInPeriod,
-              lastContacted:   p.notes_last_contacted || null,
-              lastModified:    p.hs_lastmodifieddate  || null,
-              lastCall:        p.hs_last_logged_call_date || null,
-              lastMeeting:     p.hs_last_booked_meeting_date || null,
-              lastEmail:       p.hs_last_logged_outgoing_email_date || null,
-              totalContacts,
-              withTitle,       missingTitle:      totalContacts - withTitle,
-              withPersona,     missingPersona:    totalContacts - withPersona,
-              withBuyingRole,  missingBuyingRole: totalContacts - withBuyingRole,
-              withEmail,       missingEmail:      totalContacts - withEmail,
-              dataScore: totalContacts > 0
-                ? Math.round(((withTitle + withPersona + withBuyingRole + withEmail) / (totalContacts * 4)) * 100)
-                : 0,
-            });
+            return {
+              companyId:     co.id,
+              name:          p.name || "",
+              tier:          p.priority_tier__bdr || "",
+              rep:           repName,
+              url:           `https://app.hubspot.com/contacts/${PORTAL}/record/0-2/${co.id}`,
+              workedInPeriod,
+              lastModified,
+              lastActivity,
+              lastContacted,
+              lastCall,
+              lastMeeting,
+              lastEmail,
+              updatedBy,
+              noteCount:     parseInt(p.num_contacted_notes  || "0"),
+              contactCount:  parseInt(p.num_associated_contacts || "0"),
+              buyingRoles:   parseInt(p.hs_num_contacts_with_buying_roles || "0"),
+              decisionMakers:parseInt(p.hs_num_decision_makers || "0"),
+              deals:         parseInt(p.num_associated_deals || "0"),
+              activities,
+            };
+          });
 
-            await new Promise(r => setTimeout(r, 200)); // rate limit gap
-          }
+          const worked    = accounts.filter(a => a.workedInPeriod);
+          const notWorked = accounts.filter(a => !a.workedInPeriod);
 
-          // Summary stats
-          const activeThisPeriod = accountWork.filter(a => a.activityInPeriod).length;
-          const totalMissingTitles      = accountWork.reduce((s,a) => s + a.missingTitle, 0);
-          const totalMissingPersonas    = accountWork.reduce((s,a) => s + a.missingPersona, 0);
-          const totalMissingBuyingRoles = accountWork.reduce((s,a) => s + a.missingBuyingRole, 0);
-          const avgDataScore = accountWork.length > 0
-            ? Math.round(accountWork.reduce((s,a) => s + a.dataScore, 0) / accountWork.length)
-            : 0;
+          // Summary
+          const totalCalls    = accounts.filter(a => a.lastCall    && (!sinceISO || a.lastCall    >= sinceISO)).length;
+          const totalMeetings = accounts.filter(a => a.lastMeeting && (!sinceISO || a.lastMeeting >= sinceISO)).length;
+          const totalEmails   = accounts.filter(a => a.lastEmail   && (!sinceISO || a.lastEmail   >= sinceISO)).length;
+
+          // Per-rep summary
+          const repMap = {};
+          worked.forEach(a => {
+            if (!a.rep) return;
+            if (!repMap[a.rep]) repMap[a.rep] = { rep:a.rep, accounts:0, calls:0, meetings:0, emails:0, notes:0 };
+            repMap[a.rep].accounts++;
+            if (a.lastCall    && (!sinceISO || a.lastCall    >= sinceISO)) repMap[a.rep].calls++;
+            if (a.lastMeeting && (!sinceISO || a.lastMeeting >= sinceISO)) repMap[a.rep].meetings++;
+            if (a.lastEmail   && (!sinceISO || a.lastEmail   >= sinceISO)) repMap[a.rep].emails++;
+            repMap[a.rep].notes += a.noteCount;
+          });
 
           return ok({
             section: "gold_work_log", period,
+            periodLabel: sinceISO
+              ? `${new Date(sinceISO).toLocaleDateString("en-US",{month:"short",day:"numeric"})} – ${new Date().toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"})}`
+              : "All time",
             summary: {
-              totalAccounts: companies.length,
-              activeThisPeriod,
-              avgDataScore,
-              totalMissingTitles,
-              totalMissingPersonas,
-              totalMissingBuyingRoles,
+              totalAccounts:  companies.length,
+              workedThisPeriod: worked.length,
+              notWorked:      notWorked.length,
+              totalCalls,
+              totalMeetings,
+              totalEmails,
             },
-            accounts: accountWork.sort((a,b) => {
-              // Active accounts first, then by tier, then by data score ascending (worst data first)
-              if (a.activityInPeriod !== b.activityInPeriod) return b.activityInPeriod ? 1 : -1;
-              return a.dataScore - b.dataScore;
-            }),
+            byRep:    Object.values(repMap).sort((a,b) => b.accounts - a.accounts),
+            accounts: worked,
+            notWorked: notWorked.slice(0, 30),
           });
         }
 
