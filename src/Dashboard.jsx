@@ -1910,8 +1910,6 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
             meta={goldMeta}
             loading={goldLoading}
             onRefresh={fetchGold}
-            selectedAccount={goldSelectedAccount}
-            onSelectAccount={setGoldSelectedAccount}
             filterBdr={filterBdr}
             setFilterBdr={setFilterBdr}
             BDR_OPTIONS={BDR_OPTIONS}
@@ -1926,6 +1924,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
             accounts={goldAccounts}
             loading={goldLoading}
             onRefresh={fetchGold}
+            safeFetch={safeFetch}
             filterBdr={filterBdr}
             setFilterBdr={setFilterBdr}
             BDR_OPTIONS={BDR_OPTIONS}
@@ -3277,7 +3276,7 @@ function OrgChart({ account }) {
                   )}
                   {/* Tooltip */}
                   {tooltip?.node?.value === node.value && (
-                    <div style={{ position:'absolute', bottom:'calc(100% + 6px)', left:'50%', transform:'translateX(-50%)',
+                    <div style={{ position:'absolute', top:'calc(100% + 6px)', left:'50%', transform:'translateX(-50%)',
                       background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius)',
                       padding:'8px 10px', zIndex:100, minWidth:160, boxShadow:'0 4px 16px rgba(0,0,0,.3)', pointerEvents:'none' }}>
                       <div style={{ fontSize:11, fontWeight:600, color:'var(--text)', marginBottom:4 }}>{node.label}</div>
@@ -3443,7 +3442,7 @@ function HealthRing({ account }) {
       </div>
       <div style={{ fontSize:9, color:'var(--text-tertiary)', textAlign:'center', marginTop:3, textTransform:'uppercase' }}>{s}</div>
       {show && (
-        <div style={{ position:'absolute', bottom:'calc(100% + 8px)', left:'50%', transform:'translateX(-50%)',
+        <div style={{ position:'absolute', top:'calc(100% + 8px)', left:'50%', transform:'translateX(-50%)',
           background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius)',
           padding:'10px 12px', zIndex:200, width:220, boxShadow:'0 4px 20px rgba(0,0,0,.4)' }}>
           <div style={{ fontSize:11, fontWeight:600, color:'var(--text)', marginBottom:8 }}>
@@ -3576,26 +3575,67 @@ function GoldControls({ search, setSearch, filterBdr, setFilterBdr, BDR_OPTIONS,
 }
 
 // ─── Gold Overview Tab ────────────────────────────────────────────────────────
-function GoldOverviewTab({ accounts, meta, loading, onRefresh, selectedAccount, onSelectAccount, filterBdr, setFilterBdr, BDR_OPTIONS, goldTabTier, setGoldTabTier }) {
-  const [sortBy, setSortBy]     = useState('tier')
-  const [search, setSearch]     = useState('')
-  const [view, setView]         = useState('overview') // 'overview' | 'reporting'
+function GoldOverviewTab({ accounts, meta, loading, onRefresh, filterBdr, setFilterBdr, BDR_OPTIONS, goldTabTier, setGoldTabTier }) {
+  const [sortBy, setSortBy]   = useState('tier')
+  const [search, setSearch]   = useState('')
+  const [view, setView]       = useState('pipeline') // 'pipeline' | 'reporting'
   const filtered = useGoldSort(accounts, search, sortBy)
-  const sel = selectedAccount || filtered[0] || null
 
-  // Portfolio gap aggregates
-  const personaGapMap = useMemo(() => {
+  // Pipeline health buckets
+  const active    = filtered.filter(a => a.healthStatus === 'active')
+  const attention = filtered.filter(a => a.healthStatus === 'attention')
+  const risk      = filtered.filter(a => a.healthStatus === 'risk')
+  const cold      = filtered.filter(a => a.healthStatus === 'cold')
+
+  // Persona gap rollup across all accounts
+  const personaGapRollup = useMemo(() => {
     const map = {}
-    TARGET_PERSONAS.forEach(p => { map[p.value] = { label:p.label, priority:p.priority, missing:0 } })
-    accounts.forEach(a => {
-      (a.missingPersonas||[]).forEach(g => { if (map[g.value]) map[g.value].missing++ })
+    TARGET_PERSONAS.forEach(p => { map[p.value] = { label:p.label, priority:p.priority, missing:0, total:filtered.length } })
+    filtered.forEach(a => {
+      ;(a.missingPersonas||[]).forEach(g => { if (map[g.value]) map[g.value].missing++ })
     })
-    return Object.values(map).filter(p => p.missing > 0).sort((a,b) => {
-      const po = { critical:0, high:1, medium:2 }
-      if (po[a.priority] !== po[b.priority]) return po[a.priority] - po[b.priority]
-      return b.missing - a.missing
+    return Object.values(map)
+      .filter(p => p.missing > 0)
+      .sort((a,b) => {
+        const po = {critical:0,high:1,medium:2}
+        if (po[a.priority] !== po[b.priority]) return po[a.priority] - po[b.priority]
+        return b.missing - a.missing
+      })
+  }, [filtered])
+
+  // Rep performance summary
+  const repSummary = useMemo(() => {
+    const map = {}
+    filtered.forEach(a => {
+      const key = a.assignedBdr || 'Unassigned'
+      if (!map[key]) map[key] = { name:key, accounts:0, active:0, avgHealth:0, totalHealth:0, critGaps:0, withReplies:0 }
+      map[key].accounts++
+      if (a.healthStatus==='active') map[key].active++
+      map[key].totalHealth += a.health||0
+      map[key].critGaps    += a.criticalGaps||0
+      if (a.lastEngagement?.type==='replied') map[key].withReplies++
     })
-  }, [accounts])
+    return Object.values(map).map(r => ({
+      ...r, avgHealth: r.accounts > 0 ? Math.round(r.totalHealth/r.accounts) : 0
+    })).sort((a,b) => b.avgHealth - a.avgHealth)
+  }, [filtered])
+
+  const exportPipelineCSV = () => {
+    const rows = [
+      ['Account','Tier','BDR','VP','Health','Status','Days Inactive','Contacts','Critical Gaps','Coverage','Last Reply'],
+      ...filtered.map(a => [
+        a.name, a.tier, a.assignedBdr, GOLD_OWNER_MAP[a.ownerId]||'',
+        a.health, a.healthStatus,
+        a.daysSinceActivity!=null?a.daysSinceActivity:'N/A',
+        a.numContacts||0, a.criticalGaps||0,
+        `${a.coveredPersonaCount||0}/22`,
+        a.lastEngagement?.type==='replied'?new Date(a.lastEngagement.date).toLocaleDateString():'None',
+      ])
+    ]
+    const csv = rows.map(r=>r.map(v=>`"${String(v||'').replace(/"/g,'""')}"`).join(',')).join('\n')
+    const link = document.createElement('a'); link.href = URL.createObjectURL(new Blob([csv],{type:'text/csv'}))
+    link.download = `gold-pipeline-${new Date().toISOString().slice(0,10)}.csv`; link.click()
+  }
 
   return (
     <div style={{ display:'flex', flexDirection:'column', gap:12 }}>
@@ -3605,276 +3645,205 @@ function GoldOverviewTab({ accounts, meta, loading, onRefresh, selectedAccount, 
         filterBdr={filterBdr} setFilterBdr={setFilterBdr} BDR_OPTIONS={BDR_OPTIONS}
         goldTabTier={goldTabTier} setGoldTabTier={setGoldTabTier}
         sortBy={sortBy} setSortBy={setSortBy}
-        onRefresh={onRefresh}
-        onExport={() => exportGoldCSV(filtered, 'gold-overview.csv')}
+        onRefresh={onRefresh} onExport={exportPipelineCSV}
         extraRight={
           <div style={{ display:'flex', background:'var(--bg-panel)', borderRadius:'var(--radius)', border:'1px solid var(--border)', padding:3, gap:2 }}>
-            {[{k:'overview',l:'Overview'},{k:'reporting',l:'Reporting'}].map(({k,l}) => (
+            {[{k:'pipeline',l:'Pipeline'},{k:'reporting',l:'Reporting'}].map(({k,l}) => (
               <button key={k} onClick={() => setView(k)}
-                style={{ fontSize:12, padding:'4px 12px', borderRadius:'var(--radius)', border:'none', cursor:'pointer', fontWeight:view===k?500:400,
-                  background:view===k?'var(--bg-secondary)':'transparent', color:view===k?'var(--text)':'var(--text-secondary)' }}>
-                {l}
-              </button>
+                style={{ fontSize:12, padding:'4px 12px', borderRadius:'var(--radius)', border:'none', cursor:'pointer',
+                  fontWeight:view===k?500:400, background:view===k?'var(--bg-secondary)':'transparent',
+                  color:view===k?'var(--text)':'var(--text-secondary)' }}>{l}</button>
             ))}
           </div>
         }
       />
 
-      {view === 'overview' && (
+      {view === 'pipeline' && (
         <>
-          {/* KPI strip */}
-          <div style={{ display:'grid', gridTemplateColumns:'repeat(7,1fr)', gap:8 }}>
-            <KpiCard label="Total Accounts"     value={meta.total||0} />
-            <KpiCard label="Active"             value={meta.activeAccounts||0} accent />
-            <KpiCard label="At Risk / Cold"     value={meta.atRiskAccounts||0} />
-            <KpiCard label="Avg Health"         value={`${meta.avgHealth||0}%`} />
-            <KpiCard label="With Replies"       value={meta.withReplies||0} />
-            <KpiCard label="Critical Gaps"      value={meta.totalCriticalGaps||0} />
-            <KpiCard label="Avg Persona Cover"  value={`${meta.avgPersonaCoverage||0}/16`} />
+          {/* Top KPIs */}
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(8,1fr)', gap:8 }}>
+            <KpiCard label="Total Accounts"    value={filtered.length} />
+            <KpiCard label="Active"            value={active.length}    accent />
+            <KpiCard label="Needs Attention"   value={attention.length} />
+            <KpiCard label="At Risk"           value={risk.length + cold.length} />
+            <KpiCard label="Avg Health"        value={`${meta.avgHealth||0}%`} />
+            <KpiCard label="With Replies"      value={meta.withReplies||0} accent />
+            <KpiCard label="Critical Gaps"     value={meta.totalCriticalGaps||0} />
+            <KpiCard label="Avg Coverage"      value={`${meta.avgPersonaCoverage||0}/22`} />
           </div>
 
           {loading
-            ? <div style={{ padding:40, textAlign:'center', color:'var(--text-tertiary)', fontSize:13 }}>Loading Gold accounts…</div>
-            : <div style={{ display:'grid', gridTemplateColumns:'280px 1fr 220px', gap:0, border:'1px solid var(--border)', borderRadius:'var(--radius)', overflow:'hidden' }}>
-
-              {/* Left: account list */}
-              <div style={{ borderRight:'1px solid var(--border)', display:'flex', flexDirection:'column' }}>
-                <div style={{ padding:'8px 12px', borderBottom:'1px solid var(--border)', background:'var(--bg-panel)', fontSize:10, fontWeight:600, letterSpacing:'.06em', textTransform:'uppercase', color:'var(--text-tertiary)' }}>
-                  {filtered.length} Accounts
-                </div>
-                <div style={{ maxHeight:600, overflowY:'auto', padding:4, display:'flex', flexDirection:'column', gap:2 }}>
-                  {filtered.map((a,i) => (
-                    <div key={a.id} onClick={() => onSelectAccount(a)}
-                      style={{ padding:'8px 10px', borderRadius:'var(--radius)', cursor:'pointer', transition:'all .12s',
-                        background: sel?.id===a.id?'rgba(79,142,247,.12)':'transparent',
-                        border: sel?.id===a.id?'1px solid var(--accent)':'1px solid transparent',
-                        borderLeft: `3px solid ${hcColor(a.healthStatus)}` }}
-                      onMouseEnter={e => { if(sel?.id!==a.id) e.currentTarget.style.background='var(--bg-secondary)' }}
-                      onMouseLeave={e => { if(sel?.id!==a.id) e.currentTarget.style.background='transparent' }}>
-                      <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-                        <span style={{ fontFamily:'monospace', fontSize:9, color:'var(--text-tertiary)', width:20, flexShrink:0 }}>{i+1}</span>
-                        <div style={{ flex:1, minWidth:0 }}>
-                          <div style={{ fontSize:12, fontWeight:600, color:'var(--text)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{a.name}</div>
-                          <div style={{ fontSize:10, color:'var(--text-tertiary)' }}>{a.tier.replace('GOLD - ','')} · {a.assignedBdr||'—'}</div>
-                        </div>
-                        <div style={{ display:'flex', flexDirection:'column', alignItems:'flex-end', gap:2, flexShrink:0 }}>
-                          <span style={{ fontSize:11, fontWeight:700, color:hcColor(a.healthStatus), fontFamily:'monospace' }}>{a.health}</span>
-                          {(a.criticalGaps||0) > 0 && <span style={{ fontSize:9, color:'var(--red)' }}>{a.criticalGaps}⚠</span>}
-                        </div>
-                      </div>
+            ? <div style={{ padding:40, textAlign:'center', color:'var(--text-tertiary)' }}>Loading…</div>
+            : <>
+              {/* Pipeline health buckets */}
+              <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:12 }}>
+                {[
+                  { label:'Active', accounts:active,    color:'var(--green)',  bg:'rgba(52,201,122,.06)',  border:'rgba(52,201,122,.25)' },
+                  { label:'Needs Attention', accounts:attention, color:'var(--amber)', bg:'rgba(245,166,35,.06)', border:'rgba(245,166,35,.25)' },
+                  { label:'At Risk', accounts:risk,      color:'var(--red)',    bg:'rgba(240,82,82,.06)',   border:'rgba(240,82,82,.25)' },
+                  { label:'Cold',   accounts:cold,       color:'var(--text-tertiary)', bg:'var(--bg-secondary)', border:'var(--border)' },
+                ].map((bucket,i) => (
+                  <div key={i} style={{ background:bucket.bg, border:`1px solid ${bucket.border}`, borderRadius:'var(--radius)', overflow:'hidden' }}>
+                    <div style={{ padding:'8px 12px', borderBottom:`1px solid ${bucket.border}`, display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                      <span style={{ fontSize:10, fontWeight:700, textTransform:'uppercase', letterSpacing:'.06em', color:bucket.color }}>{bucket.label}</span>
+                      <span style={{ fontSize:16, fontWeight:700, color:bucket.color, fontFamily:'monospace' }}>{bucket.accounts.length}</span>
                     </div>
-                  ))}
-                </div>
-              </div>
-
-              {/* Middle: account detail */}
-              <div style={{ display:'flex', flexDirection:'column' }}>
-                {!sel
-                  ? <div style={{ padding:40, textAlign:'center', color:'var(--text-tertiary)', fontSize:13 }}>Select an account</div>
-                  : <div style={{ padding:14, display:'flex', flexDirection:'column', gap:12 }}>
-                    {/* Account header */}
-                    <div style={{ background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius)', overflow:'hidden' }}>
-                      <div style={{ padding:'9px 13px', borderBottom:'1px solid var(--border)', background:'var(--bg-secondary)', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
-                        <span style={{ fontSize:10, fontWeight:600, letterSpacing:'.07em', textTransform:'uppercase', color:'var(--text-tertiary)' }}>Account Overview</span>
-                        <span style={{ fontSize:9, fontWeight:700, textTransform:'uppercase', padding:'2px 7px', borderRadius:3,
-                          background:hcBg(sel.healthStatus), color:hcColor(sel.healthStatus), border:`1px solid ${hcBorder(sel.healthStatus)}` }}>
-                          {sel.healthStatus}
-                        </span>
-                      </div>
-                      <div style={{ padding:'12px 14px', display:'flex', gap:14, alignItems:'flex-start' }}>
-                        <div style={{ flexShrink:0 }}>
-                          <HealthRing account={sel} />
-                        </div>
-                        <div style={{ flex:1 }}>
-                          <div style={{ fontSize:14, fontWeight:600, color:'var(--text)', marginBottom:2 }}>{sel.name}</div>
-                          <div style={{ fontSize:11, color:'var(--text-secondary)', marginBottom:4 }}>
-                            {sel.city&&sel.state?`${sel.city}, ${sel.state} · `:''}BDR: {sel.assignedBdr||'—'} · VP: {GOLD_OWNER_MAP[sel.ownerId]||'—'}
+                    <div style={{ maxHeight:220, overflowY:'auto', padding:'4px 6px' }}>
+                      {bucket.accounts.length === 0
+                        ? <div style={{ padding:'12px 6px', fontSize:11, color:'var(--text-tertiary)', textAlign:'center' }}>None</div>
+                        : bucket.accounts.map((a,j) => (
+                          <div key={j} style={{ padding:'5px 6px', display:'flex', alignItems:'center', gap:8, borderBottom:'1px solid rgba(255,255,255,.04)', fontSize:11 }}>
+                            <div style={{ flex:1, minWidth:0 }}>
+                              <div style={{ fontWeight:500, color:'var(--text)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{a.name}</div>
+                              <div style={{ fontSize:9, color:'var(--text-tertiary)' }}>{a.tier.replace('GOLD - ','')} · {a.assignedBdr||'—'}</div>
+                            </div>
+                            <span style={{ fontFamily:'monospace', fontSize:10, fontWeight:700, color:bucket.color, flexShrink:0 }}>{a.health}</span>
                           </div>
-                          <div style={{ display:'flex', gap:5, flexWrap:'wrap' }}>
-                            {[
-                              { label:`${sel.numContacts||0} contacts`, ok:(sel.numContacts||0)>=10 },
-                              { label:sel.lastEngagement?.type==='replied'?'Has replies':'No replies', ok:sel.lastEngagement?.type==='replied' },
-                              { label:sel.lastBooked?'Meeting booked':'No meetings', ok:!!sel.lastBooked },
-                              { label:`${sel.coveredPersonaCount||0}/22 personas`, ok:(sel.coveredPersonaCount||0)>=16 },
-                            ].map((b,i) => (
-                              <span key={i} style={{ fontSize:9, fontWeight:700, textTransform:'uppercase', padding:'2px 6px', borderRadius:3,
-                                background:b.ok?'rgba(52,201,122,.12)':'rgba(240,82,82,.12)',
-                                color:b.ok?'var(--green)':'var(--red)', border:'1px solid currentColor' }}>
-                                {b.label}
-                              </span>
-                            ))}
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Persona heatmap */}
-                    <div style={{ background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius)', overflow:'hidden' }}>
-                      <div style={{ padding:'9px 13px', borderBottom:'1px solid var(--border)', background:'var(--bg-secondary)', display:'flex', justifyContent:'space-between' }}>
-                        <span style={{ fontSize:10, fontWeight:600, letterSpacing:'.07em', textTransform:'uppercase', color:'var(--text-tertiary)' }}>Persona Coverage Map</span>
-                        <span style={{ fontSize:10, color:'var(--text-tertiary)' }}>{sel.coveredPersonaCount||0}/22 covered · {sel.criticalGaps||0} critical gaps</span>
-                      </div>
-                      <div style={{ padding:'12px 13px' }}>
-                        <OrgChart account={sel} />
-                      </div>
-                    </div>
-
-                    {/* Gaps */}
-                    {(sel.missingPersonas||[]).length > 0 && (
-                      <div style={{ background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius)', overflow:'hidden' }}>
-                        <div style={{ padding:'9px 13px', borderBottom:'1px solid var(--border)', background:'var(--bg-secondary)', display:'flex', justifyContent:'space-between' }}>
-                          <span style={{ fontSize:10, fontWeight:600, letterSpacing:'.07em', textTransform:'uppercase', color:'var(--text-tertiary)' }}>Gaps & White Space</span>
-                          <span style={{ fontSize:9, fontWeight:700, padding:'2px 6px', borderRadius:3, background:'rgba(240,82,82,.12)', color:'var(--red)', border:'1px solid rgba(240,82,82,.3)' }}>
-                            {sel.criticalGaps||0} critical · {sel.highGaps||0} high
-                          </span>
-                        </div>
-                        <div style={{ padding:'8px 13px' }}>
-                          <GapList missingPersonas={sel.missingPersonas} />
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Gap Summary */}
-                    <div style={{ background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius)', overflow:'hidden' }}>
-                      <div style={{ padding:'9px 13px', borderBottom:'1px solid var(--border)', background:'var(--bg-secondary)' }}>
-                        <span style={{ fontSize:10, fontWeight:600, letterSpacing:'.07em', textTransform:'uppercase', color:'var(--text-tertiary)' }}>Account Score Breakdown</span>
-                      </div>
-                      <div style={{ padding:'10px 13px' }}>
-                        <GapSummary account={sel} />
-                      </div>
-                    </div>
-
-                    {/* Outreach bars */}
-                    <div style={{ background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius)', overflow:'hidden' }}>
-                      <div style={{ padding:'9px 13px', borderBottom:'1px solid var(--border)', background:'var(--bg-secondary)' }}>
-                        <span style={{ fontSize:10, fontWeight:600, letterSpacing:'.07em', textTransform:'uppercase', color:'var(--text-tertiary)' }}>Outreach Breakdown</span>
-                      </div>
-                      {[
-                        { label:'Notes / Touches', value:sel.numNotes||0, max:500, color:'var(--amber)' },
-                        { label:'Contacts',         value:sel.numContacts||0, max:100, color:'var(--accent)' },
-                        { label:'Last Reply',        value:sel.lastEngagement?.type==='replied'?100:0, max:100, color:'var(--green)', display:sel.lastEngagement?.type==='replied'?new Date(sel.lastEngagement.date).toLocaleDateString():'—' },
-                        { label:'Meeting Booked',    value:sel.lastBooked?100:0, max:100, color:'var(--purple)', display:sel.lastBooked?new Date(sel.lastBooked).toLocaleDateString():'—' },
-                      ].map((row,i) => (
-                        <div key={i} style={{ padding:'7px 13px', borderBottom:'1px solid var(--border)', display:'flex', alignItems:'center', gap:10 }}>
-                          <div style={{ fontSize:10, color:'var(--text-tertiary)', width:120, flexShrink:0 }}>{row.label}</div>
-                          <div style={{ flex:1, height:5, background:'var(--border)', borderRadius:3, overflow:'hidden' }}>
-                            <div style={{ width:`${Math.min(100,(row.value/row.max)*100)}%`, height:'100%', background:row.color, borderRadius:3 }} />
-                          </div>
-                          <div style={{ fontSize:10, color:'var(--text-secondary)', width:48, textAlign:'right', fontFamily:'monospace', flexShrink:0 }}>{row.display??row.value}</div>
-                        </div>
-                      ))}
-                    </div>
-
-                    {/* Contacts */}
-                    {(sel.contacts||[]).length > 0 && (
-                      <div style={{ background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius)', overflow:'hidden' }}>
-                        <div style={{ padding:'9px 13px', borderBottom:'1px solid var(--border)', background:'var(--bg-secondary)' }}>
-                          <span style={{ fontSize:10, fontWeight:600, letterSpacing:'.07em', textTransform:'uppercase', color:'var(--text-tertiary)' }}>Contacts ({sel.contacts.length})</span>
-                        </div>
-                        <table style={{ width:'100%', borderCollapse:'collapse' }}>
-                          <thead><tr>{['Name','Title','Persona','Status'].map(h => (
-                            <th key={h} style={{ padding:'6px 12px', fontSize:9, fontWeight:600, textTransform:'uppercase', letterSpacing:'.05em', color:'var(--text-tertiary)', borderBottom:'1px solid var(--border)', textAlign:'left' }}>{h}</th>
-                          ))}</tr></thead>
-                          <tbody>
-                            {sel.contacts.map((c,i) => {
-                              const status = c.lastReply?'replied':c.inSequence?'in sequence':c.lastSent?'contacted':'mapped'
-                              const sColor = status==='replied'?'var(--green)':status==='in sequence'?'var(--amber)':'var(--text-tertiary)'
-                              return (
-                                <tr key={i} style={{ borderBottom:'1px solid var(--border)', cursor:'pointer' }}
-                                  onClick={() => window.open(c.url,'_blank','noopener,noreferrer')}
-                                  onMouseEnter={e => e.currentTarget.style.background='var(--bg-secondary)'}
-                                  onMouseLeave={e => e.currentTarget.style.background=''}>
-                                  <td style={{ padding:'7px 12px', fontSize:11, fontWeight:500, color:'var(--accent)' }}>{c.name||'—'}</td>
-                                  <td style={{ padding:'7px 12px', fontSize:11, color:'var(--text-secondary)' }}>{c.title||'—'}</td>
-                                  <td style={{ padding:'7px 12px', fontSize:11, color:'var(--text-secondary)' }}>{c.persona||'—'}</td>
-                                  <td style={{ padding:'7px 12px' }}>
-                                    <span style={{ fontSize:9, fontWeight:600, textTransform:'uppercase', color:sColor }}>{status}</span>
-                                  </td>
-                                </tr>
-                              )
-                            })}
-                          </tbody>
-                        </table>
-                      </div>
-                    )}
-
-                    <div style={{ textAlign:'center', padding:'4px 0' }}>
-                      <a href={sel.url} target="_blank" rel="noopener noreferrer" style={{ fontSize:11, color:'var(--accent)' }}>Open in HubSpot →</a>
+                        ))
+                      }
                     </div>
                   </div>
-                }
+                ))}
               </div>
 
-              {/* Right: portfolio gaps */}
-              <div style={{ borderLeft:'1px solid var(--border)', display:'flex', flexDirection:'column' }}>
-                <div style={{ padding:'8px 12px', borderBottom:'1px solid var(--border)', background:'var(--bg-panel)', fontSize:10, fontWeight:600, letterSpacing:'.06em', textTransform:'uppercase', color:'var(--text-tertiary)' }}>
-                  Portfolio Gaps
-                </div>
-                <div style={{ maxHeight:500, overflowY:'auto', padding:8, display:'flex', flexDirection:'column', gap:4 }}>
-                  {personaGapMap.slice(0, 20).map((gap,i) => (
-                    <div key={i} style={{ borderRadius:'var(--radius)', padding:'8px 10px', display:'flex', gap:8, alignItems:'flex-start',
-                      background: gap.priority==='critical'?'rgba(240,82,82,.08)':gap.priority==='high'?'rgba(245,166,35,.08)':'var(--bg-secondary)',
-                      border:`1px solid ${gap.priority==='critical'?'rgba(240,82,82,.25)':gap.priority==='high'?'rgba(245,166,35,.25)':'var(--border)'}` }}>
-                      <span style={{ fontFamily:'monospace', fontSize:14, fontWeight:700, flexShrink:0, color:prioColor(gap.priority) }}>{gap.missing}</span>
-                      <div>
-                        <div style={{ fontSize:11, fontWeight:600, color:prioColor(gap.priority) }}>{gap.label}</div>
-                        <div style={{ fontSize:9, color:'var(--text-tertiary)', marginTop:1, textTransform:'uppercase', letterSpacing:'.04em' }}>{gap.priority}</div>
+              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
+                {/* Rep performance */}
+                <Panel>
+                  <SectionTitle>Performance by Rep</SectionTitle>
+                  <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
+                    <THead cols={['Rep','Accounts','Active','Avg Health','Replies','Crit Gaps']} />
+                    <tbody>
+                      {repSummary.map((r,i) => (
+                        <tr key={i} style={{ borderBottom:'1px solid var(--border)' }}>
+                          <td style={{ padding:'7px 10px 7px 0', fontWeight:500 }}>{r.name}</td>
+                          <td style={{ padding:'7px 10px 7px 0' }}>{r.accounts}</td>
+                          <td style={{ padding:'7px 10px 7px 0', color:'var(--green)' }}>{r.active}</td>
+                          <td style={{ padding:'7px 10px 7px 0', fontFamily:'monospace', fontWeight:600,
+                            color:r.avgHealth>=65?'var(--green)':r.avgHealth>=35?'var(--amber)':'var(--red)' }}>{r.avgHealth}</td>
+                          <td style={{ padding:'7px 10px 7py 0', color:'var(--accent)' }}>{r.withReplies}</td>
+                          <td style={{ padding:'7px 0', color:r.critGaps>0?'var(--red)':'var(--text-tertiary)' }}>{r.critGaps}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </Panel>
+
+                {/* Portfolio-wide persona gaps */}
+                <Panel>
+                  <SectionTitle>Top Persona Gaps Across Portfolio</SectionTitle>
+                  {personaGapRollup.slice(0,10).map((g,i) => (
+                    <div key={i} style={{ display:'flex', alignItems:'center', gap:10, marginBottom:8 }}>
+                      <div style={{ flex:1, minWidth:0 }}>
+                        <div style={{ display:'flex', justifyContent:'space-between', marginBottom:2 }}>
+                          <span style={{ fontSize:11, color:'var(--text-secondary)' }}>{g.label}</span>
+                          <span style={{ fontSize:11, fontWeight:600, color:prioColor(g.priority), flexShrink:0, marginLeft:8 }}>
+                            {g.missing}/{g.total}
+                          </span>
+                        </div>
+                        <div style={{ height:5, background:'var(--border)', borderRadius:3, overflow:'hidden' }}>
+                          <div style={{ width:`${(g.missing/g.total)*100}%`, height:'100%',
+                            background:g.priority==='critical'?'var(--red)':g.priority==='high'?'var(--amber)':'var(--text-tertiary)',
+                            borderRadius:3 }} />
+                        </div>
                       </div>
+                      <span style={{ fontSize:9, fontWeight:600, textTransform:'uppercase', color:prioColor(g.priority), flexShrink:0, width:48, textAlign:'right' }}>{g.priority}</span>
                     </div>
                   ))}
-                </div>
-                <div style={{ padding:'8px 12px', borderTop:'1px solid var(--border)', background:'var(--bg-panel)', fontSize:10, fontWeight:600, letterSpacing:'.06em', textTransform:'uppercase', color:'var(--text-tertiary)' }}>
-                  By Tier
-                </div>
-                <div style={{ padding:'8px 10px' }}>
-                  {Object.entries(meta.byTier||{}).sort(([a],[b]) => a.localeCompare(b)).map(([tier,count]) => (
-                    <div key={tier} style={{ display:'flex', justifyContent:'space-between', fontSize:11, padding:'3px 0', borderBottom:'1px solid var(--border)' }}>
-                      <span style={{ color:'var(--text-secondary)' }}>{tier.replace('GOLD - ','')}</span>
-                      <span style={{ fontFamily:'monospace', fontWeight:600, color:'var(--text)' }}>{count}</span>
-                    </div>
-                  ))}
-                </div>
+                </Panel>
               </div>
-            </div>
+
+              {/* No activity alerts */}
+              {filtered.filter(a => a.daysSinceActivity==null || a.daysSinceActivity > 30).length > 0 && (
+                <Panel>
+                  <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:12 }}>
+                    <SectionTitle style={{ margin:0 }}>No Activity in 30+ Days</SectionTitle>
+                    <span style={{ fontSize:10, fontWeight:700, color:'var(--red)', background:'rgba(240,82,82,.1)', borderRadius:4, padding:'2px 8px' }}>
+                      {filtered.filter(a => a.daysSinceActivity==null || a.daysSinceActivity > 30).length} accounts
+                    </span>
+                  </div>
+                  <div style={{ display:'flex', flexWrap:'wrap', gap:6 }}>
+                    {filtered.filter(a => a.daysSinceActivity==null || a.daysSinceActivity > 30)
+                      .sort((a,b) => (b.daysSinceActivity||999) - (a.daysSinceActivity||999))
+                      .slice(0,20)
+                      .map((a,i) => (
+                        <a key={i} href={a.url} target="_blank" rel="noopener noreferrer"
+                          style={{ fontSize:11, padding:'4px 10px', borderRadius:'var(--radius)',
+                            background:'rgba(240,82,82,.06)', border:'1px solid rgba(240,82,82,.2)',
+                            color:'var(--text)', textDecoration:'none', display:'inline-flex', gap:6, alignItems:'center' }}>
+                          <span>{a.name}</span>
+                          <span style={{ color:'var(--red)', fontFamily:'monospace', fontSize:10 }}>
+                            {a.daysSinceActivity!=null?`${a.daysSinceActivity}d`:'never'}
+                          </span>
+                        </a>
+                      ))
+                    }
+                  </div>
+                </Panel>
+              )}
+            </>
           }
         </>
       )}
 
       {view === 'reporting' && (
         <div style={{ display:'flex', flexDirection:'column', gap:16 }}>
-          {/* Summary KPIs */}
           <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:10 }}>
-            <KpiCard label="Total Accounts"    value={meta.total||0} />
-            <KpiCard label="Active Accounts"   value={meta.activeAccounts||0} accent />
-            <KpiCard label="At Risk / Cold"     value={meta.atRiskAccounts||0} />
-            <KpiCard label="Avg Health Score"  value={`${meta.avgHealth||0}%`} />
-          </div>
-          <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:10 }}>
-            <KpiCard label="With Replies"      value={meta.withReplies||0} accent />
-            <KpiCard label="No Activity 30d"   value={meta.noActivity30d||0} />
-            <KpiCard label="Critical Gaps"     value={meta.totalCriticalGaps||0} />
-            <KpiCard label="Avg Persona Cover" value={`${meta.avgPersonaCoverage||0}/16`} />
+            <KpiCard label="Total Accounts"  value={filtered.length} />
+            <KpiCard label="Avg Health"      value={`${meta.avgHealth||0}%`} />
+            <KpiCard label="Critical Gaps"   value={meta.totalCriticalGaps||0} />
+            <KpiCard label="Avg Coverage"    value={`${meta.avgPersonaCoverage||0}/22`} />
           </div>
 
-          {/* Full account table */}
+          {/* Persona coverage chart */}
+          <Panel>
+            <SectionTitle>Persona Coverage Across Gold Portfolio</SectionTitle>
+            <div style={{ display:'grid', gridTemplateColumns:'repeat(2,1fr)', gap:8 }}>
+              {TARGET_PERSONAS.map((p,i) => {
+                const covered = filtered.filter(a =>
+                  (a.personaCoverage||[]).find(pc => pc.persona===p.value && pc.covered)
+                ).length
+                const total = filtered.length || 1
+                const pct = Math.round((covered/total)*100)
+                return (
+                  <div key={i} style={{ display:'flex', alignItems:'center', gap:8 }}>
+                    <div style={{ flex:1, minWidth:0 }}>
+                      <div style={{ display:'flex', justifyContent:'space-between', marginBottom:2 }}>
+                        <span style={{ fontSize:11, color:'var(--text-secondary)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                          {p.priority==='critical' && <span style={{ color:'var(--red)', marginRight:4 }}>●</span>}
+                          {p.priority==='high' && <span style={{ color:'var(--amber)', marginRight:4 }}>●</span>}
+                          {p.label}
+                        </span>
+                        <span style={{ fontSize:11, fontWeight:600, color:pct>=80?'var(--green)':pct>=50?'var(--amber)':'var(--red)', flexShrink:0, marginLeft:8 }}>{pct}%</span>
+                      </div>
+                      <div style={{ height:5, background:'var(--border)', borderRadius:3, overflow:'hidden' }}>
+                        <div style={{ width:`${pct}%`, height:'100%', borderRadius:3,
+                          background:pct>=80?'var(--green)':pct>=50?'var(--amber)':'var(--red)' }} />
+                      </div>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </Panel>
+
+          {/* Full table */}
           <Panel>
             <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12 }}>
-              <SectionTitle style={{ margin:0 }}>All Gold Accounts ({filtered.length})</SectionTitle>
-              <button onClick={() => exportGoldCSV(filtered, 'gold-reporting.csv')}
+              <SectionTitle style={{ margin:0 }}>Full Account List ({filtered.length})</SectionTitle>
+              <button onClick={exportPipelineCSV}
                 style={{ padding:'6px 12px', background:'none', border:'1px solid var(--border)', borderRadius:'var(--radius)', fontSize:11, color:'var(--text-secondary)', cursor:'pointer' }}>
                 Export CSV
               </button>
             </div>
             <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
-              <THead cols={['Account','Tier','BDR','VP','Health','Status','Days Inactive','Contacts','Critical Gaps','Coverage','Last Reply']} />
+              <THead cols={['Account','Tier','BDR','VP','Health','Status','Days','Contacts','Crit','Cover','Last Reply']} />
               <tbody>
                 {filtered.map((a,i) => (
-                  <tr key={i} style={{ borderBottom:'1px solid var(--border)', cursor:'pointer' }}
-                    onClick={() => { onSelectAccount(a); setView('overview') }}
+                  <tr key={i} style={{ borderBottom:'1px solid var(--border)' }}
                     onMouseEnter={e => e.currentTarget.style.background='var(--bg-secondary)'}
                     onMouseLeave={e => e.currentTarget.style.background=''}>
                     <td style={{ padding:'7px 10px 7px 0', fontWeight:500 }}>
-                      <a href={a.url} target="_blank" rel="noopener noreferrer" onClick={e=>e.stopPropagation()} style={{ color:'var(--accent)', textDecoration:'none' }}>{a.name}</a>
+                      <a href={a.url} target="_blank" rel="noopener noreferrer" style={{ color:'var(--accent)', textDecoration:'none' }}>{a.name}</a>
                     </td>
                     <td style={{ padding:'7px 10px 7px 0', fontSize:10, color:'var(--text-tertiary)' }}>{a.tier.replace('GOLD - ','')}</td>
                     <td style={{ padding:'7px 10px 7px 0', color:'var(--text-secondary)' }}>{a.assignedBdr||'—'}</td>
@@ -3883,12 +3852,12 @@ function GoldOverviewTab({ accounts, meta, loading, onRefresh, selectedAccount, 
                     <td style={{ padding:'7px 10px 7px 0' }}>
                       <span style={{ fontSize:9, fontWeight:700, textTransform:'uppercase', color:hcColor(a.healthStatus) }}>{a.healthStatus}</span>
                     </td>
-                    <td style={{ padding:'7px 10px 7px 0', color: (a.daysSinceActivity||0)>30?'var(--red)':'var(--text-secondary)' }}>{a.daysSinceActivity!=null?`${a.daysSinceActivity}d`:'—'}</td>
+                    <td style={{ padding:'7px 10px 7px 0', color:(a.daysSinceActivity||0)>30?'var(--red)':'var(--text-secondary)' }}>{a.daysSinceActivity!=null?`${a.daysSinceActivity}d`:'—'}</td>
                     <td style={{ padding:'7px 10px 7px 0' }}>{a.numContacts||0}</td>
                     <td style={{ padding:'7px 10px 7px 0', color:(a.criticalGaps||0)>0?'var(--red)':'var(--text-tertiary)' }}>{a.criticalGaps||0}</td>
                     <td style={{ padding:'7px 10px 7px 0', color:(a.coveredPersonaCount||0)<12?'var(--amber)':'var(--text-secondary)' }}>{a.coveredPersonaCount||0}/22</td>
                     <td style={{ padding:'7px 0', color:a.lastEngagement?.type==='replied'?'var(--green)':'var(--text-tertiary)', whiteSpace:'nowrap' }}>
-                      {a.lastEngagement?.type==='replied' ? new Date(a.lastEngagement.date).toLocaleDateString() : '—'}
+                      {a.lastEngagement?.type==='replied'?new Date(a.lastEngagement.date).toLocaleDateString():'—'}
                     </td>
                   </tr>
                 ))}
@@ -3901,8 +3870,160 @@ function GoldOverviewTab({ accounts, meta, loading, onRefresh, selectedAccount, 
   )
 }
 
-// ─── Gold Command Tab ─────────────────────────────────────────────────────────
-function GoldCommandTab({ accounts, loading, onRefresh, filterBdr, setFilterBdr, BDR_OPTIONS, goldTabTier, setGoldTabTier }) {
+// Per-account To-Do section for Gold Command tab
+// Filters the shared todo store to items linked to this company,
+// and allows creating new items that also appear on the main Dashboard.
+function GoldAccountTodo({ account, safeFetch }) {
+  const [items, setItems]       = useState([])
+  const [loading, setLoading]   = useState(false)
+  const [input, setInput]       = useState('')
+  const [dueDate, setDueDate]   = useState('')
+  const [saving, setSaving]     = useState(false)
+
+  const companyId = account?.id
+
+  // Fetch todos for this company -- filter by contactId or hubspotUrl containing companyId
+  const fetchTodos = useCallback(async () => {
+    if (!companyId) return
+    setLoading(true)
+    try {
+      const data = await safeFetch('/api/hubspot/todo')
+      const all = data.items || data || []
+      // Filter: items linked to this company via hubspotUrl or subtext containing company name
+      const accountItems = all.filter(t =>
+        (t.hubspotUrl && t.hubspotUrl.includes(`/0-2/${companyId}`)) ||
+        (t.subtext && account?.name && t.subtext.toLowerCase().includes(account.name.toLowerCase())) ||
+        (t.text && account?.name && t.autoDetected === false && t.companyId === companyId)
+      )
+      setItems(accountItems)
+    } catch (e) { console.error('[gold-todo]', e) }
+    finally { setLoading(false) }
+  }, [companyId, safeFetch, account?.name])
+
+  useEffect(() => { fetchTodos() }, [fetchTodos])
+
+  const addItem = async () => {
+    if (!input.trim()) return
+    setSaving(true)
+    try {
+      await safeFetch('/api/hubspot/todo', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text:        input.trim(),
+          type:        'manual',
+          dueDate:     dueDate || null,
+          companyId,
+          hubspotUrl:  account?.url,
+          subtext:     account?.name || '',
+        }),
+      })
+      setInput('')
+      setDueDate('')
+      fetchTodos()
+    } catch (e) { console.error('[gold-todo add]', e) }
+    finally { setSaving(false) }
+  }
+
+  const toggleItem = async (id, completed) => {
+    setItems(prev => prev.map(t => t.id === id ? { ...t, completed, completedAt: completed ? new Date().toISOString() : null } : t))
+    try {
+      await safeFetch(`/api/hubspot/todo/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ completed }),
+      })
+    } catch (e) { console.error('[gold-todo toggle]', e) }
+  }
+
+  const deleteItem = async (id) => {
+    setItems(prev => prev.filter(t => t.id !== id))
+    try {
+      await safeFetch(`/api/hubspot/todo/${id}`, { method: 'DELETE' })
+    } catch (e) { console.error('[gold-todo delete]', e) }
+  }
+
+  const active    = items.filter(t => !t.completed)
+  const completed = items.filter(t => t.completed)
+
+  return (
+    <div style={{ background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius)', overflow:'hidden' }}>
+      <div style={{ padding:'9px 13px', borderBottom:'1px solid var(--border)', background:'var(--bg-secondary)', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+        <span style={{ fontSize:10, fontWeight:600, letterSpacing:'.07em', textTransform:'uppercase', color:'var(--text-tertiary)' }}>
+          Account To-Do {items.length > 0 && <span style={{ color:'var(--accent)', marginLeft:6 }}>{active.length}</span>}
+        </span>
+        <span style={{ fontSize:10, color:'var(--text-tertiary)' }}>Also appears on main Dashboard</span>
+      </div>
+      <div style={{ padding:'10px 13px', display:'flex', flexDirection:'column', gap:8 }}>
+        {/* Add input */}
+        <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
+          <input value={input} onChange={e => setInput(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && addItem()}
+            placeholder={`Add to-do for ${account?.name||'account'}…`}
+            style={{ flex:1, minWidth:160, padding:'6px 10px', background:'var(--bg-secondary)', border:'1px solid var(--border)', borderRadius:'var(--radius)', fontSize:12, color:'var(--text)', outline:'none' }} />
+          <input type="datetime-local" value={dueDate} onChange={e => setDueDate(e.target.value)}
+            style={{ padding:'6px 8px', background:'var(--bg-secondary)', border:'1px solid var(--border)', borderRadius:'var(--radius)', fontSize:11, color:'var(--text)', outline:'none' }} />
+          <button onClick={addItem} disabled={saving || !input.trim()}
+            style={{ padding:'6px 14px', background:'var(--accent)', color:'#fff', border:'none', borderRadius:'var(--radius)', fontSize:12, fontWeight:500, cursor:'pointer', opacity:saving||!input.trim()?0.6:1 }}>
+            {saving ? '…' : 'Add'}
+          </button>
+        </div>
+
+        {loading && <div style={{ fontSize:12, color:'var(--text-tertiary)' }}>Loading…</div>}
+
+        {/* Active items */}
+        {active.map(item => (
+          <div key={item.id} style={{ display:'flex', alignItems:'flex-start', gap:8, padding:'5px 4px', borderRadius:'var(--radius)' }}
+            onMouseEnter={e => e.currentTarget.style.background='var(--bg-secondary)'}
+            onMouseLeave={e => e.currentTarget.style.background='transparent'}>
+            <input type="checkbox" checked={false} onChange={() => toggleItem(item.id, true)}
+              style={{ flexShrink:0, cursor:'pointer', accentColor:'var(--accent)', width:15, height:15, marginTop:2 }} />
+            <div style={{ flex:1, minWidth:0 }}>
+              <div style={{ fontSize:12, color:'var(--text)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{item.text}</div>
+              <div style={{ display:'flex', gap:8, marginTop:2 }}>
+                {item.createdAt && <span style={{ fontSize:10, color:'var(--text-tertiary)' }}>
+                  Added {new Date(item.createdAt).toLocaleDateString()}
+                </span>}
+                {item.dueDate && <span style={{ fontSize:10, fontWeight:600,
+                  color:new Date(item.dueDate)<new Date()?'var(--red)':'var(--amber)' }}>
+                  Due {new Date(item.dueDate).toLocaleDateString()}
+                </span>}
+              </div>
+            </div>
+            <button onClick={() => deleteItem(item.id)}
+              style={{ background:'none', border:'none', cursor:'pointer', color:'var(--text-tertiary)', fontSize:14, padding:0, flexShrink:0 }}>×</button>
+          </div>
+        ))}
+
+        {!loading && active.length === 0 && (
+          <div style={{ fontSize:11, color:'var(--text-tertiary)', padding:'4px 0' }}>No open tasks for this account.</div>
+        )}
+
+        {/* Completed */}
+        {completed.length > 0 && (
+          <>
+            <div style={{ fontSize:9, fontWeight:600, textTransform:'uppercase', letterSpacing:'.05em', color:'var(--text-tertiary)', paddingTop:8, borderTop:'1px solid var(--border)', marginTop:4 }}>
+              Completed
+            </div>
+            {completed.map(item => (
+              <div key={item.id} style={{ display:'flex', alignItems:'center', gap:8, padding:'4px', opacity:0.55 }}>
+                <input type="checkbox" checked={true} onChange={() => toggleItem(item.id, false)}
+                  style={{ flexShrink:0, cursor:'pointer', accentColor:'var(--accent)', width:15, height:15 }} />
+                <div style={{ flex:1, fontSize:11, color:'var(--text-tertiary)', textDecoration:'line-through',
+                  overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{item.text}</div>
+                {item.completedAt && <span style={{ fontSize:10, color:'var(--text-tertiary)', flexShrink:0 }}>
+                  ✓ {new Date(item.completedAt).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'})}
+                </span>}
+              </div>
+            ))}
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function GoldCommandTab({ accounts, loading, onRefresh, safeFetch, filterBdr, setFilterBdr, BDR_OPTIONS, goldTabTier, setGoldTabTier }) {
   const [search, setSearch]   = useState('')
   const [selected, setSelected] = useState(null)
   const [sortBy, setSortBy]   = useState('tier')
@@ -4096,6 +4217,9 @@ function GoldCommandTab({ accounts, loading, onRefresh, filterBdr, setFilterBdr,
                     </table>
                   }
                 </div>
+
+                {/* Account To-Do */}
+                <GoldAccountTodo account={sel} safeFetch={safeFetch} />
               </div>
             }
           </div>
