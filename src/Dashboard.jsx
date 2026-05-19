@@ -3176,40 +3176,302 @@ function useGoldSort(accounts, search, sortBy) {
   }, [accounts, search, sortBy])
 }
 
-// Persona heatmap visualization
-function PersonaHeatmap({ account }) {
+// Org chart tree structure for persona hierarchy
+// Grouped by reporting level: C-Suite → Officers → Directors/Managers → Operational
+const PERSONA_TREE = [
+  {
+    level: 0, label: 'Executive', color: 'var(--red)',
+    nodes: [
+      { value: 'Executive/Leadership',   label: 'Executive / Leadership' },
+      { value: 'Operating Officer',      label: 'Operating Officer' },
+      { value: 'Chief Clinical Officer', label: 'Chief Clinical Officer' },
+    ]
+  },
+  {
+    level: 1, label: 'Officers & VPs', color: 'var(--amber)',
+    nodes: [
+      { value: 'Medical Officer',        label: 'Medical Officer' },
+      { value: 'Nursing Officer',        label: 'Nursing Officer' },
+      { value: 'Physician Executive',    label: 'Physician Executive' },
+      { value: 'Finance',                label: 'Finance' },
+    ]
+  },
+  {
+    level: 2, label: 'Strategy & Operations', color: 'var(--accent)',
+    nodes: [
+      { value: 'Strategy',               label: 'Strategy' },
+      { value: 'Innovation',             label: 'Innovation' },
+      { value: 'Business Development',   label: 'Business Development' },
+      { value: 'Population Health',      label: 'Population Health' },
+      { value: 'Value Based Care',       label: 'Value Based Care' },
+      { value: 'Quality Officer',        label: 'Quality Officer' },
+    ]
+  },
+  {
+    level: 3, label: 'Clinical & Service', color: 'var(--green)',
+    nodes: [
+      { value: 'Clinical Operations',    label: 'Clinical Operations' },
+      { value: 'Medical Group',          label: 'Medical Group' },
+      { value: 'Medical',                label: 'Medical Information' },
+      { value: 'Service Line',           label: 'Service Line' },
+      { value: 'Emergency Department',   label: 'Emergency Department' },
+      { value: 'Ambulatory/Urgent Care', label: 'Ambulatory / Urgent Care' },
+    ]
+  },
+  {
+    level: 4, label: 'Patient-Facing & Access', color: 'var(--purple)',
+    nodes: [
+      { value: 'Access/Patient Access',  label: 'Access / Patient Access' },
+      { value: 'Patient Experience',     label: 'Patient Experience' },
+      { value: 'Case Management',        label: 'Case Management' },
+    ]
+  },
+]
+
+function OrgChart({ account }) {
+  const [tooltip, setTooltip] = useState(null)
   if (!account?.personaCoverage) return null
-  const coverage = account.personaCoverage
+
+  const coverageMap = {}
+  account.personaCoverage.forEach(p => { coverageMap[p.persona] = p })
+
   return (
-    <div>
-      <div style={{ display:'flex', flexWrap:'wrap', gap:4, marginBottom:8 }}>
-        {coverage.map((p,i) => {
-          const bg = p.engagement==='replied'  ? 'var(--green)'
-                   : p.engagement==='contacted'? 'rgba(52,201,122,.4)'
-                   : p.engagement==='mapped'   ? 'rgba(79,142,247,.3)'
-                   : 'var(--bg-secondary)'
-          const border = p.covered ? (p.engagement==='replied'?'var(--green)':'var(--accent)') : 'var(--border)'
-          return (
-            <div key={i} title={`${p.label}\n${p.covered ? `${p.contacts.length} contact(s) — ${p.engagement}` : 'No contact mapped'}`}
-              style={{ padding:'3px 8px', borderRadius:4, fontSize:10, fontWeight:500,
-                background:bg, border:`1px solid ${border}`,
-                color: p.engagement==='replied'?'#fff':p.covered?'var(--text)':'var(--text-tertiary)',
-                cursor:'default', position:'relative' }}>
-              {p.label}
-              {!p.covered && <span style={{ position:'absolute', top:-3, right:-3, width:8, height:8, borderRadius:'50%', background:'var(--red)', border:'1px solid var(--bg)' }} />}
-            </div>
-          )
-        })}
-      </div>
-      <div style={{ display:'flex', gap:12, fontSize:10, color:'var(--text-tertiary)', flexWrap:'wrap' }}>
-        <span><span style={{ display:'inline-block', width:10, height:10, borderRadius:2, background:'var(--green)', verticalAlign:'middle', marginRight:4 }} />Replied</span>
-        <span><span style={{ display:'inline-block', width:10, height:10, borderRadius:2, background:'rgba(52,201,122,.4)', verticalAlign:'middle', marginRight:4 }} />Contacted</span>
-        <span><span style={{ display:'inline-block', width:10, height:10, borderRadius:2, background:'rgba(79,142,247,.3)', verticalAlign:'middle', marginRight:4 }} />Mapped only</span>
-        <span><span style={{ display:'inline-block', width:10, height:10, borderRadius:2, background:'var(--bg-secondary)', border:'1px solid var(--border)', verticalAlign:'middle', marginRight:4 }} />Gap <span style={{ color:'var(--red)' }}>●</span></span>
+    <div style={{ display:'flex', flexDirection:'column', gap:0 }}>
+      {PERSONA_TREE.map((tier, ti) => (
+        <div key={ti} style={{ display:'flex', flexDirection:'column', alignItems:'center', position:'relative', marginBottom:4 }}>
+          {/* Tier label */}
+          <div style={{ fontSize:9, fontWeight:600, textTransform:'uppercase', letterSpacing:'.06em', color:'var(--text-tertiary)', marginBottom:4 }}>{tier.label}</div>
+          {/* Nodes row */}
+          <div style={{ display:'flex', gap:6, flexWrap:'wrap', justifyContent:'center' }}>
+            {tier.nodes.map((node, ni) => {
+              const p = coverageMap[node.value]
+              const covered   = p?.covered || false
+              const status    = p?.engagement || 'none'
+              const contacts  = p?.contacts || []
+              const bg    = status==='replied'   ? 'rgba(52,201,122,.18)'
+                          : status==='contacted' ? 'rgba(52,201,122,.08)'
+                          : status==='mapped'    ? 'rgba(79,142,247,.12)'
+                          : 'rgba(240,82,82,.08)'
+              const border= status==='replied'   ? '2px solid var(--green)'
+                          : status==='contacted' ? '2px solid rgba(52,201,122,.4)'
+                          : status==='mapped'    ? '2px solid var(--accent)'
+                          : '2px solid var(--red)'
+              const textCol = status==='replied' ? 'var(--green)'
+                            : status==='contacted'?'var(--text)'
+                            : status==='mapped'   ?'var(--accent)'
+                            : 'var(--red)'
+              return (
+                <div key={ni}
+                  onMouseEnter={() => setTooltip({ node, p, contacts })}
+                  onMouseLeave={() => setTooltip(null)}
+                  style={{ position:'relative', padding:'5px 10px', borderRadius:6, border, background:bg,
+                    cursor:'default', minWidth:90, textAlign:'center', transition:'all .12s' }}>
+                  <div style={{ fontSize:10, fontWeight:600, color:textCol, lineHeight:1.3 }}>{node.label}</div>
+                  {covered && contacts.length > 0 && (
+                    <div style={{ fontSize:9, color:'var(--text-tertiary)', marginTop:2 }}>
+                      {contacts[0].name.split(' ')[0]}{contacts.length > 1 ? ` +${contacts.length-1}` : ''}
+                    </div>
+                  )}
+                  {!covered && (
+                    <div style={{ fontSize:9, color:'var(--red)', marginTop:2 }}>⚠ No contact</div>
+                  )}
+                  {/* Tooltip */}
+                  {tooltip?.node?.value === node.value && (
+                    <div style={{ position:'absolute', bottom:'calc(100% + 6px)', left:'50%', transform:'translateX(-50%)',
+                      background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius)',
+                      padding:'8px 10px', zIndex:100, minWidth:160, boxShadow:'0 4px 16px rgba(0,0,0,.3)', pointerEvents:'none' }}>
+                      <div style={{ fontSize:11, fontWeight:600, color:'var(--text)', marginBottom:4 }}>{node.label}</div>
+                      {!covered
+                        ? <div style={{ fontSize:10, color:'var(--red)' }}>No contact assigned to this persona</div>
+                        : contacts.map((c,i) => (
+                          <div key={i} style={{ fontSize:10, color:'var(--text-secondary)', marginBottom:2 }}>
+                            <span style={{ fontWeight:500, color:'var(--text)' }}>{c.name}</span>
+                            {c.title && <span style={{ color:'var(--text-tertiary)' }}> — {c.title}</span>}
+                            <div style={{ fontSize:9, color: c.replied?'var(--green)':c.sent?'var(--text-tertiary)':'var(--text-tertiary)' }}>
+                              {c.replied ? '✓ Replied' : c.sent ? 'Contacted' : 'Mapped only'}
+                            </div>
+                          </div>
+                        ))
+                      }
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+          {/* Connector line to next tier */}
+          {ti < PERSONA_TREE.length - 1 && (
+            <div style={{ width:2, height:12, background:'var(--border)', margin:'2px auto 0' }} />
+          )}
+        </div>
+      ))}
+      {/* Legend */}
+      <div style={{ display:'flex', gap:12, fontSize:9, color:'var(--text-tertiary)', justifyContent:'center', marginTop:8, flexWrap:'wrap' }}>
+        <span><span style={{ display:'inline-block', width:10, height:10, borderRadius:2, background:'rgba(52,201,122,.18)', border:'2px solid var(--green)', verticalAlign:'middle', marginRight:4 }} />Replied</span>
+        <span><span style={{ display:'inline-block', width:10, height:10, borderRadius:2, background:'rgba(52,201,122,.08)', border:'2px solid rgba(52,201,122,.4)', verticalAlign:'middle', marginRight:4 }} />Contacted</span>
+        <span><span style={{ display:'inline-block', width:10, height:10, borderRadius:2, background:'rgba(79,142,247,.12)', border:'2px solid var(--accent)', verticalAlign:'middle', marginRight:4 }} />Mapped</span>
+        <span><span style={{ display:'inline-block', width:10, height:10, borderRadius:2, background:'rgba(240,82,82,.08)', border:'2px solid var(--red)', verticalAlign:'middle', marginRight:4 }} />Gap</span>
       </div>
     </div>
   )
 }
+
+// Gap Summary — at-a-glance breakdown of all gap factors
+function GapSummary({ account }) {
+  if (!account) return null
+  const coverage = account.personaCoverage || []
+  const missing  = account.missingPersonas  || []
+
+  const personaGap    = missing.length
+  const criticalGaps  = (account.criticalGaps || 0)
+  const highGaps      = (account.highGaps || 0)
+  const mappedNoEmail = coverage.filter(p => p.covered && p.engagement === 'mapped').length
+  const engagedCount  = coverage.filter(p => p.engagement === 'replied' || p.engagement === 'contacted').length
+  const repliedCount  = coverage.filter(p => p.engagement === 'replied').length
+  const hasReply      = account.lastEngagement?.type === 'replied'
+  const hasMeeting    = !!account.lastBooked
+  const daysSince     = account.daysSinceActivity
+  const activityGap   = daysSince == null || daysSince > 30
+
+  const factors = [
+    {
+      label: 'Persona Coverage',
+      value: `${account.coveredPersonaCount || 0} / 22`,
+      status: personaGap === 0 ? 'green' : criticalGaps > 0 ? 'red' : 'amber',
+      detail: personaGap === 0 ? 'All personas mapped' : `${criticalGaps} critical, ${highGaps} high priority gaps`,
+    },
+    {
+      label: 'Critical Gaps',
+      value: criticalGaps,
+      status: criticalGaps === 0 ? 'green' : 'red',
+      detail: criticalGaps === 0 ? 'No critical gaps' : `${criticalGaps} C-suite / officer personas unmapped`,
+    },
+    {
+      label: 'Engagement',
+      value: `${engagedCount} contacted`,
+      status: repliedCount > 0 ? 'green' : engagedCount > 0 ? 'amber' : 'red',
+      detail: repliedCount > 0 ? `${repliedCount} personas have replied` : engagedCount > 0 ? `${mappedNoEmail} mapped with no email sent` : 'No engagement on any persona',
+    },
+    {
+      label: 'Recent Activity',
+      value: daysSince != null ? `${daysSince}d ago` : 'Never',
+      status: !activityGap ? 'green' : daysSince != null && daysSince <= 60 ? 'amber' : 'red',
+      detail: !activityGap ? 'Active within 30 days' : daysSince != null ? `Last activity ${daysSince} days ago` : 'No activity logged',
+    },
+    {
+      label: 'Reply Received',
+      value: hasReply ? 'Yes' : 'None',
+      status: hasReply ? 'green' : 'red',
+      detail: hasReply ? `Last reply: ${new Date(account.lastEngagement.date).toLocaleDateString()}` : 'No replies from any contact',
+    },
+    {
+      label: 'Meeting Booked',
+      value: hasMeeting ? new Date(account.lastBooked).toLocaleDateString() : 'None',
+      status: hasMeeting ? 'green' : 'amber',
+      detail: hasMeeting ? 'At least one meeting on record' : 'No meetings booked yet',
+    },
+    {
+      label: 'Contact Count',
+      value: account.numContacts || 0,
+      status: (account.numContacts || 0) >= 10 ? 'green' : (account.numContacts || 0) >= 5 ? 'amber' : 'red',
+      detail: `${account.numContacts || 0} contacts associated`,
+    },
+    {
+      label: 'Data Quality',
+      value: `${account.coveredPersonaCount || 0}/22 tagged`,
+      status: (account.coveredPersonaCount || 0) >= 16 ? 'green' : (account.coveredPersonaCount || 0) >= 8 ? 'amber' : 'red',
+      detail: 'Based on target_persona field population',
+    },
+  ]
+
+  const statusColor = s => s === 'green' ? 'var(--green)' : s === 'amber' ? 'var(--amber)' : 'var(--red)'
+  const statusBg    = s => s === 'green' ? 'rgba(52,201,122,.08)' : s === 'amber' ? 'rgba(245,166,35,.08)' : 'rgba(240,82,82,.08)'
+  const statusIcon  = s => s === 'green' ? '✓' : s === 'amber' ? '◐' : '✗'
+
+  return (
+    <div style={{ display:'grid', gridTemplateColumns:'repeat(2,1fr)', gap:8 }}>
+      {factors.map((f,i) => (
+        <div key={i} style={{ display:'flex', alignItems:'flex-start', gap:10, padding:'8px 10px', borderRadius:'var(--radius)',
+          background:statusBg(f.status), border:`1px solid ${statusColor(f.status)}33` }}>
+          <span style={{ fontSize:14, color:statusColor(f.status), flexShrink:0, marginTop:1 }}>{statusIcon(f.status)}</span>
+          <div style={{ flex:1, minWidth:0 }}>
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline' }}>
+              <span style={{ fontSize:11, fontWeight:600, color:'var(--text)' }}>{f.label}</span>
+              <span style={{ fontSize:11, fontWeight:700, color:statusColor(f.status), fontFamily:'monospace', marginLeft:8, flexShrink:0 }}>{f.value}</span>
+            </div>
+            <div style={{ fontSize:10, color:'var(--text-tertiary)', marginTop:2, lineHeight:1.4 }}>{f.detail}</div>
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// Health score ring with hover tooltip breakdown
+function HealthRing({ account }) {
+  const [show, setShow] = useState(false)
+  if (!account) return null
+
+  const s = account.healthStatus || 'cold'
+  const color = hcColor(s)
+
+  // Score breakdown
+  const daysSince     = account.daysSinceActivity
+  const recencyPts    = daysSince == null ? 0 : daysSince <= 7 ? 35 : daysSince <= 14 ? 25 : daysSince <= 30 ? 15 : daysSince <= 60 ? 5 : 0
+  const engagePts     = account.lastEngagement?.type === 'replied' ? 30 : account.lastEngagement?.type === 'clicked' ? 15 : account.lastEngagement?.type === 'opened' ? 8 : 0
+  const contactPts    = (account.numContacts || 0) >= 10 ? 15 : (account.numContacts || 0) >= 5 ? 10 : (account.numContacts || 0) >= 2 ? 5 : 0
+  const meetingPts    = account.lastBooked ? 15 : 0
+  const personaPts    = Math.round(((account.coveredPersonaCount || 0) / 22) * 5)
+  const total         = Math.min(100, recencyPts + engagePts + contactPts + meetingPts + personaPts)
+
+  const breakdown = [
+    { label:'Recency of activity',   pts:recencyPts, max:35,  detail: daysSince != null ? `Last activity ${daysSince}d ago` : 'No activity' },
+    { label:'Engagement depth',      pts:engagePts,  max:30,  detail: account.lastEngagement?.type === 'replied' ? 'Has replies' : account.lastEngagement?.type || 'No engagement' },
+    { label:'Contact coverage',      pts:contactPts, max:15,  detail: `${account.numContacts || 0} contacts` },
+    { label:'Meeting booked',        pts:meetingPts, max:15,  detail: account.lastBooked ? new Date(account.lastBooked).toLocaleDateString() : 'None' },
+    { label:'Persona data quality',  pts:personaPts, max:5,   detail: `${account.coveredPersonaCount || 0}/22 personas tagged` },
+  ]
+
+  return (
+    <div style={{ position:'relative', display:'inline-block' }}
+      onMouseEnter={() => setShow(true)}
+      onMouseLeave={() => setShow(false)}>
+      <div style={{ width:60, height:60, borderRadius:'50%', border:`3px solid ${color}`,
+        display:'flex', alignItems:'center', justifyContent:'center', cursor:'help',
+        background: show ? statusBg(s) : 'transparent', transition:'background .15s' }}>
+        <span style={{ fontSize:17, fontWeight:700, color, fontFamily:'monospace' }}>{account.health}</span>
+      </div>
+      <div style={{ fontSize:9, color:'var(--text-tertiary)', textAlign:'center', marginTop:3, textTransform:'uppercase' }}>{s}</div>
+      {show && (
+        <div style={{ position:'absolute', bottom:'calc(100% + 8px)', left:'50%', transform:'translateX(-50%)',
+          background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius)',
+          padding:'10px 12px', zIndex:200, width:220, boxShadow:'0 4px 20px rgba(0,0,0,.4)' }}>
+          <div style={{ fontSize:11, fontWeight:600, color:'var(--text)', marginBottom:8 }}>
+            Health Score: {total}/100
+          </div>
+          {breakdown.map((b,i) => (
+            <div key={i} style={{ marginBottom:6 }}>
+              <div style={{ display:'flex', justifyContent:'space-between', fontSize:10, marginBottom:2 }}>
+                <span style={{ color:'var(--text-secondary)' }}>{b.label}</span>
+                <span style={{ fontWeight:600, color:b.pts>0?'var(--green)':'var(--text-tertiary)', fontFamily:'monospace' }}>{b.pts}/{b.max}</span>
+              </div>
+              <div style={{ height:4, background:'var(--border)', borderRadius:2, overflow:'hidden' }}>
+                <div style={{ width:`${(b.pts/b.max)*100}%`, height:'100%', background:b.pts>=b.max*0.7?'var(--green)':b.pts>0?'var(--amber)':'transparent', borderRadius:2 }} />
+              </div>
+              <div style={{ fontSize:9, color:'var(--text-tertiary)', marginTop:1 }}>{b.detail}</div>
+            </div>
+          ))}
+          <div style={{ fontSize:9, color:'var(--text-tertiary)', marginTop:6, paddingTop:6, borderTop:'1px solid var(--border)' }}>
+            Hover over score ring for breakdown
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Helper for gap summary background
+const statusBg = s => s==='active'?'rgba(52,201,122,.06)':s==='attention'?'rgba(245,166,35,.06)':s==='risk'?'rgba(240,82,82,.06)':'var(--bg-secondary)'
 
 // Gap list with priority badges
 function GapList({ missingPersonas, maxShow = 8 }) {
@@ -3420,8 +3682,8 @@ function GoldOverviewTab({ accounts, meta, loading, onRefresh, selectedAccount, 
                         </span>
                       </div>
                       <div style={{ padding:'12px 14px', display:'flex', gap:14, alignItems:'flex-start' }}>
-                        <div style={{ width:56, height:56, borderRadius:'50%', border:`3px solid ${hcColor(sel.healthStatus)}`, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
-                          <span style={{ fontSize:16, fontWeight:700, color:hcColor(sel.healthStatus), fontFamily:'monospace' }}>{sel.health}</span>
+                        <div style={{ flexShrink:0 }}>
+                          <HealthRing account={sel} />
                         </div>
                         <div style={{ flex:1 }}>
                           <div style={{ fontSize:14, fontWeight:600, color:'var(--text)', marginBottom:2 }}>{sel.name}</div>
@@ -3453,7 +3715,7 @@ function GoldOverviewTab({ accounts, meta, loading, onRefresh, selectedAccount, 
                         <span style={{ fontSize:10, color:'var(--text-tertiary)' }}>{sel.coveredPersonaCount||0}/22 covered · {sel.criticalGaps||0} critical gaps</span>
                       </div>
                       <div style={{ padding:'12px 13px' }}>
-                        <PersonaHeatmap account={sel} />
+                        <OrgChart account={sel} />
                       </div>
                     </div>
 
@@ -3471,6 +3733,16 @@ function GoldOverviewTab({ accounts, meta, loading, onRefresh, selectedAccount, 
                         </div>
                       </div>
                     )}
+
+                    {/* Gap Summary */}
+                    <div style={{ background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius)', overflow:'hidden' }}>
+                      <div style={{ padding:'9px 13px', borderBottom:'1px solid var(--border)', background:'var(--bg-secondary)' }}>
+                        <span style={{ fontSize:10, fontWeight:600, letterSpacing:'.07em', textTransform:'uppercase', color:'var(--text-tertiary)' }}>Account Score Breakdown</span>
+                      </div>
+                      <div style={{ padding:'10px 13px' }}>
+                        <GapSummary account={sel} />
+                      </div>
+                    </div>
 
                     {/* Outreach bars */}
                     <div style={{ background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius)', overflow:'hidden' }}>
@@ -3707,12 +3979,7 @@ function GoldCommandTab({ accounts, loading, onRefresh, filterBdr, setFilterBdr,
                     </div>
                   </div>
                   <div style={{ display:'flex', gap:8, alignItems:'center', flexShrink:0 }}>
-                    <div style={{ textAlign:'center' }}>
-                      <div style={{ width:52, height:52, borderRadius:'50%', border:`3px solid ${hcColor(sel.healthStatus)}`, display:'flex', alignItems:'center', justifyContent:'center' }}>
-                        <span style={{ fontSize:16, fontWeight:700, color:hcColor(sel.healthStatus), fontFamily:'monospace' }}>{sel.health}</span>
-                      </div>
-                      <div style={{ fontSize:9, color:'var(--text-tertiary)', marginTop:3, textTransform:'uppercase' }}>{sel.healthStatus}</div>
-                    </div>
+                    <HealthRing account={sel} />
                     <a href={sel.url} target="_blank" rel="noopener noreferrer"
                       style={{ padding:'7px 12px', background:'var(--accent)', color:'#fff', borderRadius:'var(--radius)', fontSize:12, fontWeight:500, textDecoration:'none' }}>
                       HubSpot ↗
@@ -3740,7 +4007,7 @@ function GoldCommandTab({ accounts, loading, onRefresh, filterBdr, setFilterBdr,
                     <span style={{ fontSize:10, color:'var(--text-tertiary)' }}>{sel.coveredPersonaCount||0}/22 personas covered</span>
                   </div>
                   <div style={{ padding:'12px 13px' }}>
-                    <PersonaHeatmap account={sel} />
+                    <OrgChart account={sel} />
                   </div>
                 </div>
 
@@ -3777,6 +4044,16 @@ function GoldCommandTab({ accounts, loading, onRefresh, filterBdr, setFilterBdr,
                         </div>
                       ))}
                     </div>
+                  </div>
+                </div>
+
+                {/* Account Score Breakdown */}
+                <div style={{ background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius)', overflow:'hidden' }}>
+                  <div style={{ padding:'9px 13px', borderBottom:'1px solid var(--border)', background:'var(--bg-secondary)' }}>
+                    <span style={{ fontSize:10, fontWeight:600, letterSpacing:'.07em', textTransform:'uppercase', color:'var(--text-tertiary)' }}>Account Score Breakdown</span>
+                  </div>
+                  <div style={{ padding:'10px 13px' }}>
+                    <GapSummary account={sel} />
                   </div>
                 </div>
 
