@@ -246,7 +246,33 @@ const REPORT_PERIOD_OPTIONS = [
   { value:'custom',   label:'Custom range…' },
 ]
 
-// ─── Team roster with HubSpot owner IDs ──────────────────────────────────────
+// ─── Shared formatting helpers ────────────────────────────────────────────────
+const fmt      = n => typeof n === 'number' ? n.toLocaleString() : (n ?? '—')
+const fmtMoney = n => n ? `$${Math.round(n).toLocaleString()}` : '$0'
+const fmtPct   = n => n != null ? `${n}%` : '—'
+const fmtDate  = d => d ? new Date(d).toLocaleDateString('en-US', { month:'short', day:'numeric', year:'numeric' }) : '—'
+const openHS   = url => window.open(url, '_blank', 'noopener,noreferrer')
+
+function KpiCard({ label, value, sub, href, accent }) {
+  return (
+    <div onClick={() => href && openHS(href)} title={href ? 'Open in HubSpot ↗' : ''}
+      style={{ background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius-lg)', padding:'14px 16px', cursor: href ? 'pointer' : 'default', transition:'border-color .15s' }}
+      onMouseEnter={e => href && (e.currentTarget.style.borderColor='var(--accent)')}
+      onMouseLeave={e => href && (e.currentTarget.style.borderColor='var(--border)')}>
+      <div style={{ fontSize:12, color:'var(--text-tertiary)', marginBottom:4 }}>{label}</div>
+      <div style={{ fontSize:22, fontWeight:600, color: accent ? 'var(--accent)' : 'var(--text)' }}>{value}</div>
+      {sub && <div style={{ fontSize:11, color:'var(--text-tertiary)', marginTop:3 }}>{sub}{href ? ' ↗' : ''}</div>}
+    </div>
+  )
+}
+
+function THead({ cols }) {
+  return (
+    <thead><tr>{cols.map(h => (
+      <th key={h} style={{ textAlign:'left', fontSize:11, fontWeight:500, color:'var(--text-tertiary)', textTransform:'uppercase', letterSpacing:'.04em', padding:'0 10px 8px 0', borderBottom:'1px solid var(--border)', whiteSpace:'nowrap' }}>{h}</th>
+    ))}</tr></thead>
+  )
+}
 const TEAM_MEMBERS = [
   { name: 'Chris Knapp',  ownerId: '78304576',  group: 'bdr'      },
   { name: 'Chiara Pate',  ownerId: '87806380',  group: 'bdr'      },
@@ -2076,33 +2102,7 @@ function ReportsTab({ safeFetch, owners, currentUserName }) {
     fetchReport()
   }, [fetchReport])
 
-  const fmt      = n => typeof n === 'number' ? n.toLocaleString() : (n ?? '—')
-  const fmtMoney = n => n ? `$${Math.round(n).toLocaleString()}` : '$0'
-  const fmtPct   = n => n != null ? `${n}%` : '—'
-  const fmtDate  = d => d ? new Date(d).toLocaleDateString('en-US', { month:'short', day:'numeric', year:'numeric' }) : '—'
-  const openHS   = url => window.open(url, '_blank', 'noopener,noreferrer')
-
-  const SECTIONS = [
-    { key:'email_activity',  label:'Email Activity' },
-    { key:'marketing',       label:'Marketing' },
-    { key:'sequences',       label:'Sequences' },
-    { key:'deals',           label:'Deals' },
-    { key:'team_activity',   label:'Team Activity' },
-    { key:'gold_activity',   label:'Gold Activity' },
-    { key:'gold_work_log',   label:'Gold Work Log' },
-    { key:'weekly_recap',    label:'Weekly Recap' },
-  ]
-
-  const KpiCard = ({ label, value, sub, href, accent }) => (
-    <div onClick={() => href && openHS(href)} title={href ? 'Open in HubSpot ↗' : ''}
-      style={{ background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius-lg)', padding:'14px 16px', cursor: href ? 'pointer' : 'default', transition:'border-color .15s' }}
-      onMouseEnter={e => href && (e.currentTarget.style.borderColor='var(--accent)')}
-      onMouseLeave={e => href && (e.currentTarget.style.borderColor='var(--border)')}>
-      <div style={{ fontSize:12, color:'var(--text-tertiary)', marginBottom:4 }}>{label}</div>
-      <div style={{ fontSize:22, fontWeight:600, color: accent ? 'var(--accent)' : 'var(--text)' }}>{value}</div>
-      {sub && <div style={{ fontSize:11, color:'var(--text-tertiary)', marginTop:3 }}>{sub}{href ? ' ↗' : ''}</div>}
-    </div>
-  )
+  const PAGE_SIZE = 25
 
   const Pager = ({ page, setPage, total }) => {
     const pages = Math.ceil(total / PAGE_SIZE)
@@ -2118,11 +2118,16 @@ function ReportsTab({ safeFetch, owners, currentUserName }) {
     )
   }
 
-  const THead = ({ cols }) => (
-    <thead><tr>{cols.map(h => (
-      <th key={h} style={{ textAlign:'left', fontSize:11, fontWeight:500, color:'var(--text-tertiary)', textTransform:'uppercase', letterSpacing:'.04em', padding:'0 10px 8px 0', borderBottom:'1px solid var(--border)', whiteSpace:'nowrap' }}>{h}</th>
-    ))}</tr></thead>
-  )
+  const SECTIONS = [
+    { key:'email_activity',  label:'Email Activity' },
+    { key:'marketing',       label:'Marketing' },
+    { key:'sequences',       label:'Sequences' },
+    { key:'deals',           label:'Deals' },
+    { key:'team_activity',   label:'Team Activity' },
+    { key:'gold_activity',   label:'Gold Activity' },
+    { key:'gold_work_log',   label:'Gold Work Log' },
+    { key:'weekly_recap',    label:'Weekly Recap' },
+  ]
 
   return (
     <div>
