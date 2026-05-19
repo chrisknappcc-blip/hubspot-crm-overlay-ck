@@ -3348,9 +3348,17 @@ export const handler = async (event, context) => {
             clickRate: s.enrolled > 0 ? +((s.clicked / s.enrolled) * 100).toFixed(1) : 0,
           })).sort((a,b) => b.enrolled - a.enrolled).slice(0, 30);
 
+          // Compliance counts -- opted out and bounced contacts
+          const [optedOut, bounced, badAddress] = await Promise.all([
+            count1([...bdrFilters(), { propertyName: "hs_email_optout", operator: "EQ", value: "true" }]),
+            count1([...bdrFilters(), { propertyName: "hs_email_bounce", operator: "EQ", value: "true" }]),
+            count1([...bdrFilters(), { propertyName: "hs_email_bad_address", operator: "EQ", value: "true" }]),
+          ]);
+
           return ok({
             section: "sequences", period, rep: rep || "all",
             totals: { enrolled, replied: seqReplied, opened: seqOpened, clicked: seqClicked, replyRate, openRate, clickRate },
+            compliance: { optedOut, bounced, badAddress },
             byRep: repData,
             sequences,
             links: { dashboard: DASHBOARD, sequences: SEQUENCES },
