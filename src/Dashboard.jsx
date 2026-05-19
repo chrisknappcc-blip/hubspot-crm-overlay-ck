@@ -979,14 +979,14 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
         <div style={{ fontSize:13, fontWeight:500, letterSpacing:'.05em', textTransform:'uppercase', color:'var(--accent)', marginRight:8 }}>CarePathIQ</div>
 
         {[
-          { key:'dashboard', label:'Dashboard' },
-          { key:'contacts',  label:'Contacts' },
-          { key:'reports',   label:'Reports' },
-          { key:'map-tool',  label:'Market Mapper' },
+          { key:'dashboard',     label:'Dashboard' },
+          { key:'gold-command',  label:'Gold Accounts' },
+          { key:'gold-overview', label:'Gold Overview' },
+          { key:'reports',       label:'Reports' },
+          { key:'contacts',      label:'Contacts' },
+          { key:'map-tool',      label:'Market Mapper' },
           { key:'cpiq',          label:'CPIQ' },
           { key:'fin-analysis',  label:'Financial Analysis' },
-          { key:'gold-overview', label:'Gold Overview' },
-          { key:'gold-command',  label:'Gold Command' },
           { key:'contact-intel', label:'Contact Intelligence', badge:'SOON' },
           // Dynamic tabs from registry
           ...dynamicTabs.map(t => ({ key:`dyn-${t.id}`, label:t.label, badge:t.badge, url:t.url, tabType:t.type })),
@@ -3130,14 +3130,14 @@ function GoldOverviewTab({ accounts, meta, loading, onRefresh, selectedAccount, 
   const filtered = useMemo(() => {
     let list = [...accounts]
     if (search) list = list.filter(a => a.name.toLowerCase().includes(search.toLowerCase()))
-    if (sortBy === 'health')   list.sort((a,b) => b.health - a.health)
+    if (sortBy === 'health')   list.sort((a,b) => (b.health||0) - (a.health||0))
     if (sortBy === 'activity') list.sort((a,b) => {
       const da = a.lastActivityDate ? new Date(a.lastActivityDate).getTime() : 0
       const db = b.lastActivityDate ? new Date(b.lastActivityDate).getTime() : 0
       return db - da
     })
-    if (sortBy === 'gaps')     list.sort((a,b) => b.missingPersonas.length - a.missingPersonas.length)
-    if (sortBy === 'tier')     list.sort((a,b) => a.tierRank - b.tierRank)
+    if (sortBy === 'gaps')     list.sort((a,b) => (b.missingPersonas||[]).length - (a.missingPersonas||[]).length)
+    if (sortBy === 'tier')     list.sort((a,b) => (a.tierRank||0) - (b.tierRank||0))
     return list
   }, [accounts, search, sortBy])
 
@@ -3453,14 +3453,14 @@ function GoldCommandTab({ accounts, loading, onRefresh, filterBdr, setFilterBdr,
   const filtered = useMemo(() => {
     let list = [...accounts]
     if (search) list = list.filter(a => a.name.toLowerCase().includes(search.toLowerCase()))
-    if (sortBy === 'health')   list.sort((a,b) => b.health - a.health)
+    if (sortBy === 'health')   list.sort((a,b) => (b.health||0) - (a.health||0))
     if (sortBy === 'activity') list.sort((a,b) => {
       const da = a.lastActivityDate ? new Date(a.lastActivityDate).getTime() : 0
       const db = b.lastActivityDate ? new Date(b.lastActivityDate).getTime() : 0
       return db - da
     })
-    if (sortBy === 'gaps')     list.sort((a,b) => b.missingPersonas.length - a.missingPersonas.length)
-    if (sortBy === 'tier')     list.sort((a,b) => a.tierRank - b.tierRank)
+    if (sortBy === 'gaps')     list.sort((a,b) => (b.missingPersonas||[]).length - (a.missingPersonas||[]).length)
+    if (sortBy === 'tier')     list.sort((a,b) => (a.tierRank||0) - (b.tierRank||0))
     return list
   }, [accounts, search, sortBy])
 
