@@ -2318,35 +2318,123 @@ function ReportsTab({ safeFetch, owners, currentUserName }) {
       {!loading && data && section === 'sequences' && (() => {
         const T = data.totals || {}
         const L = data.links || {}
-        return (
-          <div>
-            <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:10, marginBottom:10 }}>
-              <KpiCard label="Enrolled"    value={fmt(T.enrolled)} sub="Contacts in sequences"            href={L.sequences} />
-              <KpiCard label="Replies"     value={fmt(T.replied)}  sub={`${fmtPct(T.replyRate)} reply rate`}  href={L.sequences} />
-              <KpiCard label="Opens"       value={fmt(T.opened)}   sub={`${fmtPct(T.openRate)} open rate`}   href={L.sequences} />
-              <KpiCard label="Clicks"      value={fmt(T.clicked)}  sub={`${fmtPct(T.clickRate)} click rate`} href={L.sequences} />
+        const C = data.compliance || {}
+        const sequences = data.sequences || []
+        const topByReply = [...sequences].filter(s => s.enrolled >= 3).sort((a,b) => b.replyRate - a.replyRate).slice(0, 10)
+        const topByEnroll = [...sequences].sort((a,b) => b.enrolled - a.enrolled).slice(0, 10)
+
+        // Mini bar component
+        const Bar = ({ value, max, color = 'var(--accent)' }) => (
+          <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+            <div style={{ flex:1, height:6, background:'var(--bg-secondary)', borderRadius:3, overflow:'hidden' }}>
+              <div style={{ width:`${max > 0 ? Math.min((value/max)*100,100) : 0}%`, height:'100%', background:color, borderRadius:3, transition:'width .3s' }} />
             </div>
-            <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:10, marginBottom:'1.5rem' }}>
-              <KpiCard label="Reply rate"  value={fmtPct(T.replyRate)}  sub="Of enrolled contacts" href={L.sequences} accent />
-              <KpiCard label="Open rate"   value={fmtPct(T.openRate)}   sub="Of enrolled contacts" href={L.sequences} accent />
-              <KpiCard label="Click rate"  value={fmtPct(T.clickRate)}  sub="Of enrolled contacts" href={L.sequences} accent />
+          </div>
+        )
+
+        return (
+          <div style={{ display:'flex', flexDirection:'column', gap:16 }}>
+            {/* KPI strip */}
+            <div style={{ display:'grid', gridTemplateColumns:'repeat(7,1fr)', gap:10 }}>
+              <KpiCard label="Enrolled"    value={fmt(T.enrolled)}   sub="Contacts in sequences"  href={L.sequences} />
+              <KpiCard label="Opens"       value={fmt(T.opened)}     sub="Unique opens"            href={L.sequences} />
+              <KpiCard label="Open Rate"   value={fmtPct(T.openRate)} sub="Of enrolled"            href={L.sequences} accent />
+              <KpiCard label="Clicks"      value={fmt(T.clicked)}    sub="Link clicks"             href={L.sequences} />
+              <KpiCard label="Click Rate"  value={fmtPct(T.clickRate)} sub="Of enrolled"           href={L.sequences} accent />
+              <KpiCard label="Replies"     value={fmt(T.replied)}    sub="Responses received"      href={L.sequences} />
+              <KpiCard label="Reply Rate"  value={fmtPct(T.replyRate)} sub="Of enrolled"           href={L.sequences} accent />
             </div>
 
+            {/* Compliance row */}
+            <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:10 }}>
+              <div style={{ background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius)', padding:'12px 14px', display:'flex', alignItems:'center', gap:10 }}>
+                <div style={{ width:8, height:8, borderRadius:'50%', background: C.optedOut > 0 ? 'var(--amber)' : 'var(--green)', flexShrink:0 }} />
+                <div>
+                  <div style={{ fontSize:11, color:'var(--text-tertiary)', marginBottom:2 }}>Opted out contacts</div>
+                  <div style={{ fontSize:16, fontWeight:600, color:'var(--text)' }}>{fmt(C.optedOut || 0)}</div>
+                  <div style={{ fontSize:10, color:'var(--text-tertiary)' }}>{C.optedOut === 0 ? '✓ None enrolled in sequences' : 'Suppressed from sequences'}</div>
+                </div>
+              </div>
+              <div style={{ background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius)', padding:'12px 14px', display:'flex', alignItems:'center', gap:10 }}>
+                <div style={{ width:8, height:8, borderRadius:'50%', background: C.bounced > 0 ? 'var(--amber)' : 'var(--green)', flexShrink:0 }} />
+                <div>
+                  <div style={{ fontSize:11, color:'var(--text-tertiary)', marginBottom:2 }}>Email bounces</div>
+                  <div style={{ fontSize:16, fontWeight:600, color:'var(--text)' }}>{fmt(C.bounced || 0)}</div>
+                  <div style={{ fontSize:10, color:'var(--text-tertiary)' }}>Hard bounce suppression active</div>
+                </div>
+              </div>
+              <div style={{ background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius)', padding:'12px 14px', display:'flex', alignItems:'center', gap:10 }}>
+                <div style={{ width:8, height:8, borderRadius:'50%', background: C.badAddress > 0 ? 'var(--red)' : 'var(--green)', flexShrink:0 }} />
+                <div>
+                  <div style={{ fontSize:11, color:'var(--text-tertiary)', marginBottom:2 }}>Invalid addresses</div>
+                  <div style={{ fontSize:16, fontWeight:600, color:'var(--text)' }}>{fmt(C.badAddress || 0)}</div>
+                  <div style={{ fontSize:10, color:'var(--text-tertiary)' }}>{C.badAddress > 0 ? 'Flag for Data Quality cleanup' : '✓ No invalid addresses'}</div>
+                </div>
+              </div>
+            </div>
+
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16 }}>
+              {/* Top sequences by reply rate */}
+              <Panel>
+                <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:12 }}>
+                  <SectionTitle style={{ margin:0 }}>Top sequences by reply rate</SectionTitle>
+                  <span style={{ fontSize:10, color:'var(--text-tertiary)' }}>min. 3 enrolled</span>
+                </div>
+                {topByReply.length === 0
+                  ? <div style={{ fontSize:12, color:'var(--text-tertiary)' }}>No sequence data for this period.</div>
+                  : topByReply.map((s,i) => (
+                    <div key={i} style={{ marginBottom:10, cursor:'pointer' }} onClick={() => openHS(s.sequenceUrl || L.sequences)}>
+                      <div style={{ display:'flex', justifyContent:'space-between', marginBottom:3 }}>
+                        <span style={{ fontSize:12, color:'var(--text)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', maxWidth:'75%' }}>{s.sequenceName}</span>
+                        <span style={{ fontSize:12, fontWeight:600, color:'var(--accent)', flexShrink:0 }}>{fmtPct(s.replyRate)}</span>
+                      </div>
+                      <Bar value={s.replyRate} max={topByReply[0]?.replyRate || 1} color="var(--accent)" />
+                      <div style={{ fontSize:10, color:'var(--text-tertiary)', marginTop:2 }}>{fmt(s.enrolled)} enrolled · {fmt(s.replied)} replies</div>
+                    </div>
+                  ))
+                }
+              </Panel>
+
+              {/* Top sequences by enrollment */}
+              <Panel>
+                <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:12 }}>
+                  <SectionTitle style={{ margin:0 }}>Top sequences by enrollment</SectionTitle>
+                  <button onClick={() => openHS(L.sequences)} style={{ fontSize:11, color:'var(--accent)', background:'none', border:'none', cursor:'pointer', padding:0 }}>View all ↗</button>
+                </div>
+                {topByEnroll.length === 0
+                  ? <div style={{ fontSize:12, color:'var(--text-tertiary)' }}>No sequence data for this period.</div>
+                  : topByEnroll.map((s,i) => (
+                    <div key={i} style={{ marginBottom:10, cursor:'pointer' }} onClick={() => openHS(s.sequenceUrl || L.sequences)}>
+                      <div style={{ display:'flex', justifyContent:'space-between', marginBottom:3 }}>
+                        <span style={{ fontSize:12, color:'var(--text)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', maxWidth:'75%' }}>{s.sequenceName}</span>
+                        <span style={{ fontSize:12, fontWeight:500, color:'var(--text-secondary)', flexShrink:0 }}>{fmt(s.enrolled)}</span>
+                      </div>
+                      <Bar value={s.enrolled} max={topByEnroll[0]?.enrolled || 1} color="var(--text-tertiary)" />
+                      <div style={{ fontSize:10, color:'var(--text-tertiary)', marginTop:2 }}>
+                        {fmtPct(s.openRate)} open · {fmtPct(s.replyRate)} reply · {fmtPct(s.clickRate)} click
+                      </div>
+                    </div>
+                  ))
+                }
+              </Panel>
+            </div>
+
+            {/* byRep breakdown */}
             {(data.byRep||[]).length > 1 && (
-              <Panel style={{ marginBottom:12 }}>
+              <Panel>
                 <SectionTitle>By rep</SectionTitle>
                 <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
-                  <THead cols={['Rep','Enrolled','Replies','Reply %','Opens','Open %','Clicks','Click %']} />
+                  <THead cols={['Rep','Enrolled','Opens','Open %','Replies','Reply %','Clicks','Click %']} />
                   <tbody>
                     {(data.byRep||[]).map((r,i) => (
-                      <tr key={i} style={{ borderBottom:i<data.byRep.length-1?'1px solid var(--border)':'none' }}>
+                      <tr key={i} style={{ borderBottom:'1px solid var(--border)' }}>
                         <td style={{ padding:'8px 10px 8px 0', fontWeight:500 }}>{r.rep}</td>
-                        <td style={{ padding:'8px 10px 8px 0', color:'var(--text-secondary)' }}>{fmt(r.enrolled)}</td>
-                        <td style={{ padding:'8px 10px 8px 0', color:'var(--text-secondary)' }}>{fmt(r.replied)}</td>
-                        <td style={{ padding:'8px 10px 8px 0', color:'var(--accent)' }}>{fmtPct(r.replyRate)}</td>
-                        <td style={{ padding:'8px 10px 8px 0', color:'var(--text-secondary)' }}>{fmt(r.opened)}</td>
+                        <td style={{ padding:'8px 10px 8px 0' }}>{fmt(r.enrolled)}</td>
+                        <td style={{ padding:'8px 10px 8px 0' }}>{fmt(r.opened)}</td>
                         <td style={{ padding:'8px 10px 8px 0', color:'var(--accent)' }}>{fmtPct(r.openRate)}</td>
-                        <td style={{ padding:'8px 10px 8px 0', color:'var(--text-secondary)' }}>{fmt(r.clicked)}</td>
+                        <td style={{ padding:'8px 10px 8px 0' }}>{fmt(r.replied)}</td>
+                        <td style={{ padding:'8px 10px 8px 0', color:'var(--accent)' }}>{fmtPct(r.replyRate)}</td>
+                        <td style={{ padding:'8px 10px 8px 0' }}>{fmt(r.clicked)}</td>
                         <td style={{ padding:'8px 0', color:'var(--accent)' }}>{fmtPct(r.clickRate)}</td>
                       </tr>
                     ))}
@@ -2355,33 +2443,32 @@ function ReportsTab({ safeFetch, owners, currentUserName }) {
               </Panel>
             )}
 
+            {/* Full sequence table */}
             <Panel>
-              <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:12 }}>
-                <SectionTitle style={{ margin:0 }}>By sequence</SectionTitle>
-                <button onClick={() => openHS(L.sequences)} style={{ fontSize:11, color:'var(--accent)', background:'none', border:'none', cursor:'pointer', padding:0 }}>View all in HubSpot ↗</button>
-              </div>
+              <SectionTitle>All sequences ({sequences.length})</SectionTitle>
               <div style={{ fontSize:11, color:'var(--text-tertiary)', marginBottom:10 }}>
-                Based on hs_latest_sequence_enrolled — shows most recently enrolled sequence per contact.
+                Ranked by enrollment. Click any row to open in HubSpot.
               </div>
-              {(data.sequences||[]).length === 0
+              {sequences.length === 0
                 ? <div style={{ fontSize:13, color:'var(--text-tertiary)' }}>No sequence data in this period.</div>
-                : <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
-                    <THead cols={['Sequence','Enrolled','Replies','Reply %','Opens','Open %','Clicks','Click %']} />
+                : <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
+                    <THead cols={['Sequence','Enrolled','Opens','Open %','Replies','Reply %','Clicks','Click %']} />
                     <tbody>
-                      {(data.sequences||[]).map((s,i) => (
-                        <tr key={i} onClick={() => openHS(s.sequenceUrl || L.sequences)} style={{ borderBottom:i<data.sequences.length-1?'1px solid var(--border)':'none', cursor:'pointer' }}
+                      {sequences.map((s,i) => (
+                        <tr key={i} onClick={() => openHS(s.sequenceUrl || L.sequences)}
+                          style={{ borderBottom:'1px solid var(--border)', cursor:'pointer' }}
                           onMouseEnter={e => e.currentTarget.style.background='var(--bg-secondary)'}
                           onMouseLeave={e => e.currentTarget.style.background=''}>
-                          <td style={{ padding:'8px 10px 8px 0', color:'var(--accent)', maxWidth:240, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                          <td style={{ padding:'7px 10px 7px 0', color:'var(--accent)', maxWidth:220, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
                             {s.sequenceName || s.sequenceId}
                           </td>
-                          <td style={{ padding:'8px 10px 8px 0', color:'var(--text-secondary)' }}>{fmt(s.enrolled)}</td>
-                          <td style={{ padding:'8px 10px 8px 0', color:'var(--text-secondary)' }}>{fmt(s.replied)}</td>
-                          <td style={{ padding:'8px 10px 8px 0', color:'var(--accent)' }}>{fmtPct(s.replyRate)}</td>
-                          <td style={{ padding:'8px 10px 8px 0', color:'var(--text-secondary)' }}>{fmt(s.opened)}</td>
-                          <td style={{ padding:'8px 10px 8px 0', color:'var(--accent)' }}>{fmtPct(s.openRate)}</td>
-                          <td style={{ padding:'8px 10px 8px 0', color:'var(--text-secondary)' }}>{fmt(s.clicked)}</td>
-                          <td style={{ padding:'8px 0', color:'var(--accent)' }}>{fmtPct(s.clickRate)}</td>
+                          <td style={{ padding:'7px 10px 7px 0' }}>{fmt(s.enrolled)}</td>
+                          <td style={{ padding:'7px 10px 7px 0' }}>{fmt(s.opened)}</td>
+                          <td style={{ padding:'7px 10px 7px 0', color:'var(--accent)' }}>{fmtPct(s.openRate)}</td>
+                          <td style={{ padding:'7px 10px 7px 0' }}>{fmt(s.replied)}</td>
+                          <td style={{ padding:'7px 10px 7px 0', color:'var(--accent)' }}>{fmtPct(s.replyRate)}</td>
+                          <td style={{ padding:'7px 10px 7px 0' }}>{fmt(s.clicked)}</td>
+                          <td style={{ padding:'7px 0', color:'var(--accent)' }}>{fmtPct(s.clickRate)}</td>
                         </tr>
                       ))}
                     </tbody>
