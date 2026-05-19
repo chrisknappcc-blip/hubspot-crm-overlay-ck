@@ -3421,39 +3421,51 @@ export const handler = async (event, context) => {
         if (section === "sequences") {
           const bdr = bdrFilters();
 
-          // Sequence aggregate counts via contact properties
-          const [enrolled, seqReplied, seqOpened, seqClicked] = await Promise.all([
-            count1([...bdrFilters(), ...df("hs_latest_sequence_enrolled_date")]),
-            countOr("hs_email_last_reply_date", "hs_sales_email_last_replied", bdr),
-            count1([...bdr, ...df("hs_email_last_open_date")]),
-            count1([...bdr, ...df("hs_email_last_click_date")]),
+          // ── Totals ────────────────────────────────────────────────────────────
+          // enrolled = contacts enrolled in period (hs_latest_sequence_enrolled_date >= since)
+          // Opens/clicks/replies scoped to currently-enrolled contacts to avoid inflating
+          // rates with non-sequence email activity from the general contact pool
+          const seqActiveF = { propertyName: "hs_sequences_is_enrolled", operator: "EQ", value: "true" };
+          const enrolledPeriodFilters = sinceISO
+            ? [...bdr, { propertyName: "hs_latest_sequence_enrolled_date", operator: "GTE", value: sinceISO }]
+            : [...bdr, seqActiveF];
+
+          const enrolled = await count1(enrolledPeriodFilters);
+          await new Promise(r => setTimeout(r, 200));
+
+          const [seqReplied, seqOpened, seqClicked] = await Promise.all([
+            count1([...bdr, seqActiveF, { propertyName: "hs_sales_email_last_replied", operator: sinceISO ? "GTE" : "HAS_PROPERTY", ...(sinceISO ? { value: sinceISO } : {}) }]),
+            count1([...bdr, seqActiveF, { propertyName: "hs_email_last_open_date",     operator: sinceISO ? "GTE" : "HAS_PROPERTY", ...(sinceISO ? { value: sinceISO } : {}) }]),
+            count1([...bdr, seqActiveF, { propertyName: "hs_email_last_click_date",    operator: sinceISO ? "GTE" : "HAS_PROPERTY", ...(sinceISO ? { value: sinceISO } : {}) }]),
           ]);
 
           const replyRate = enrolled > 0 ? +((seqReplied / enrolled) * 100).toFixed(1) : 0;
           const openRate  = enrolled > 0 ? +((seqOpened  / enrolled) * 100).toFixed(1) : 0;
           const clickRate = enrolled > 0 ? +((seqClicked / enrolled) * 100).toFixed(1) : 0;
 
-          // Per-rep breakdown
-          // Batch: one query per metric across all reps (10 queries vs 32 sequential)
-          const seqEnrolledCounts = await countAllRepsForMetric("hs_latest_sequence_enrolled_date");
+          // ── Per-rep breakdown ─────────────────────────────────────────────────
           await new Promise(r => setTimeout(r, 300));
-          const seqRepliedCounts  = await countAllRepsForMetric("hs_email_last_reply_date");
-          await new Promise(r => setTimeout(r, 300));
-          const seqOpenedCounts   = await countAllRepsForMetric("hs_email_last_open_date");
-          await new Promise(r => setTimeout(r, 300));
-          const seqClickedCounts  = await countAllRepsForMetric("hs_email_last_click_date");
-          const repData = targetReps.map(repName => {
-            const rEnrolled = seqEnrolledCounts[repName] || 0;
-            const rReplied  = seqRepliedCounts[repName]  || 0;
-            const rOpened   = seqOpenedCounts[repName]   || 0;
-            const rClicked  = seqClickedCounts[repName]  || 0;
-            return {
+          const repData = [];
+          for (const repName of targetReps) {
+            const ownerId = REP_OWNER_ID_MAP[repName];
+            const repF = ownerId
+              ? { propertyName: "hubspot_owner_id", operator: "EQ", value: ownerId }
+              : { propertyName: "assigned_bdr",     operator: "EQ", value: repName };
+            const periodF = sinceISO ? { propertyName: "hs_latest_sequence_enrolled_date", operator: "GTE", value: sinceISO } : seqActiveF;
+            const [rEnrolled, rReplied, rOpened, rClicked] = await Promise.all([
+              count1([repF, periodF]),
+              count1([repF, seqActiveF, { propertyName: "hs_sales_email_last_replied", operator: sinceISO ? "GTE" : "HAS_PROPERTY", ...(sinceISO ? { value: sinceISO } : {}) }]),
+              count1([repF, seqActiveF, { propertyName: "hs_email_last_open_date",     operator: sinceISO ? "GTE" : "HAS_PROPERTY", ...(sinceISO ? { value: sinceISO } : {}) }]),
+              count1([repF, seqActiveF, { propertyName: "hs_email_last_click_date",    operator: sinceISO ? "GTE" : "HAS_PROPERTY", ...(sinceISO ? { value: sinceISO } : {}) }]),
+            ]);
+            repData.push({
               rep: repName, enrolled: rEnrolled, replied: rReplied, opened: rOpened, clicked: rClicked,
               replyRate: rEnrolled > 0 ? +((rReplied / rEnrolled) * 100).toFixed(1) : 0,
               openRate:  rEnrolled > 0 ? +((rOpened  / rEnrolled) * 100).toFixed(1) : 0,
               clickRate: rEnrolled > 0 ? +((rClicked / rEnrolled) * 100).toFixed(1) : 0,
-            };
-          });
+            });
+            await new Promise(r => setTimeout(r, 150));
+          }
 
           // Per-sequence breakdown
           const bySequence = {};
