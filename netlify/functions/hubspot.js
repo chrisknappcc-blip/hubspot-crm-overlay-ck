@@ -1504,7 +1504,6 @@ export const handler = async (event, context) => {
             personasWithNoEngagement,
             coveredPersonaCount: coveredPersonas.size,
             totalPersonas: TARGET_PERSONAS.length,
-            hasPersonaData,
             lastBooked:      p.hs_last_booked_meeting_date || null,
             lastCall:        p.hs_last_logged_call_date || null,
             // Last send across all contacts
