@@ -2021,6 +2021,9 @@ function ReportsTab({ safeFetch, owners, currentUserName }) {
   const [dealsPage, setDealsPage]       = useState(0)
   const PAGE_SIZE = 25
 
+  // Result cache: key → data. Survives tab switches, cleared on explicit refresh.
+  const reportCache = useRef({})
+
   // Custom date range
   const [customFrom, setCustomFrom] = useState('')
   const [customTo, setCustomTo]     = useState('')
@@ -2033,6 +2036,41 @@ function ReportsTab({ safeFetch, owners, currentUserName }) {
 
   const LOG_TYPES = ['call','email','linkedin','meeting','note','other']
 
+  const fetchReport = useCallback(async (forceRefresh = false) => {
+    const { bdrNames, ownerIds } = expandFilter(rep)
+    const params = new URLSearchParams({ section, period })
+    if (bdrNames.length)  params.set('rep', bdrNames.join(','))
+    if (ownerIds.length)  params.set('owner_id', ownerIds.join(','))
+    if (owner)            params.set('owner', owner)
+    if (period === 'custom' && customFrom) params.set('customFrom', customFrom)
+    if (period === 'custom' && customTo)   params.set('customTo',   customTo)
+    const cacheKey = params.toString()
+
+    // Return cached result immediately if available and not forced refresh
+    if (!forceRefresh && reportCache.current[cacheKey]) {
+      setData(reportCache.current[cacheKey])
+      return
+    }
+
+    setLoading(true)
+    setData(null)
+    setActivityPage(0)
+    setDealsPage(0)
+    try {
+      const result = await safeFetch(`/api/hubspot/reports?${params}`)
+      reportCache.current[cacheKey] = result
+      setData(result)
+    } catch (e) {
+      console.error('[reports]', e)
+    } finally {
+      setLoading(false)
+    }
+  }, [section, period, rep, owner, customFrom, customTo])
+
+  useEffect(() => {
+    fetchReport()
+  }, [fetchReport])
+
   const addLogEntry = useCallback(async () => {
     if (!logInput.trim()) return
     setLogSaving(true)
@@ -2044,17 +2082,19 @@ function ReportsTab({ safeFetch, owners, currentUserName }) {
       })
       setLogInput('')
       setLogCompany('')
-      fetchReport()
+      reportCache.current = {} // bust cache so activity log refreshes
+      fetchReport(true)
     } catch (e) { console.error('[activity-log]', e) }
     finally { setLogSaving(false) }
-  }, [logInput, logType, logCompany])
+  }, [logInput, logType, logCompany, fetchReport])
 
   const removeLogEntry = useCallback(async (id) => {
     try {
       await safeFetch(`/api/hubspot/activity-log/${id}`, { method: 'DELETE' })
-      fetchReport()
+      reportCache.current = {}
+      fetchReport(true)
     } catch (e) { console.error('[activity-log delete]', e) }
-  }, [])
+  }, [fetchReport])
 
   // When switching sections
   const handleSetSection = useCallback((s) => {
@@ -2074,32 +2114,6 @@ function ReportsTab({ safeFetch, owners, currentUserName }) {
     { value: '', label: 'All owners' },
     ...owners.filter(o => o.name && o.name.trim()).map(o => ({ value: o.id, label: o.name }))
   ], [owners])
-
-  const fetchReport = useCallback(async () => {
-    setLoading(true)
-    setData(null)
-    setActivityPage(0)
-    setDealsPage(0)
-    try {
-      const { bdrNames, ownerIds } = expandFilter(rep)
-      const params = new URLSearchParams({ section, period })
-      if (bdrNames.length)  params.set('rep', bdrNames.join(','))
-      if (ownerIds.length)  params.set('owner_id', ownerIds.join(','))
-      if (owner)            params.set('owner', owner)
-      if (period === 'custom' && customFrom) params.set('customFrom', customFrom)
-      if (period === 'custom' && customTo)   params.set('customTo',   customTo)
-      const result = await safeFetch(`/api/hubspot/reports?${params}`)
-      setData(result)
-    } catch (e) {
-      console.error('[reports]', e)
-    } finally {
-      setLoading(false)
-    }
-  }, [section, period, rep, owner, customFrom, customTo])
-
-  useEffect(() => {
-    fetchReport()
-  }, [fetchReport])
 
   const Pager = ({ page, setPage, total }) => {
     const pages = Math.ceil(total / PAGE_SIZE)
@@ -2155,7 +2169,7 @@ function ReportsTab({ safeFetch, owners, currentUserName }) {
           {section === 'deals' && (
             <Select value={owner} onChange={setOwner} options={ownerOptions} />
           )}
-          <button onClick={fetchReport}
+          <button onClick={() => { reportCache.current = {}; fetchReport(true) }}
             style={{ fontSize:12, color:'var(--text-secondary)', background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius)', padding:'6px 14px', cursor:'pointer' }}>
             Refresh
           </button>
@@ -2744,56 +2758,99 @@ function ReportsTab({ safeFetch, owners, currentUserName }) {
         const t = data.totals || {}
         const byRep = data.byRep || []
         const byAccount = data.byAccount || []
+
+        const exportCSV = () => {
+          const rows = [
+            ['Account','Tier','BDR','Last Activity','Last Call','Last Meeting','Last Email','Notes'],
+            ...byAccount.map(a => [a.name, a.tier, a.assignedBdr,
+              a.lastActivity ? new Date(a.lastActivity).toLocaleDateString() : '—',
+              a.lastCall     ? new Date(a.lastCall).toLocaleDateString()     : '—',
+              a.lastMeeting  ? new Date(a.lastMeeting).toLocaleDateString()  : '—',
+              a.lastEmail    ? new Date(a.lastEmail).toLocaleDateString()    : '—',
+              a.noteCount || 0,
+            ])
+          ]
+          const csv = rows.map(r => r.map(v => `"${String(v||'').replace(/"/g,'""')}"`).join(',')).join('\n')
+          const link = document.createElement('a'); link.href = URL.createObjectURL(new Blob([csv],{type:'text/csv'}))
+          link.download = `gold-activity-${new Date().toISOString().slice(0,10)}.csv`; link.click()
+        }
+
         return (
           <div style={{ display:'flex', flexDirection:'column', gap:16 }}>
             {/* KPI strip */}
             <div style={{ display:'grid', gridTemplateColumns:'repeat(6,1fr)', gap:10 }}>
-              <KpiCard label="Gold Accounts"  value={fmt(data.goldAccountCount||0)} accent />
-              <KpiCard label="Gold Contacts"  value={fmt(data.goldContactCount||0)} />
-              <KpiCard label="Emails Sent"    value={fmt(t.sent)}    />
-              <KpiCard label="Opens"          value={fmt(t.opens)}   />
-              <KpiCard label="Open Rate"      value={`${t.openRate||0}%`} />
-              <KpiCard label="Replies"        value={fmt(t.replies)} />
+              <KpiCard label="Gold Accounts"    value={fmt(t.totalAccounts||0)} />
+              <KpiCard label="Active This Period" value={fmt(t.accountsTouched||0)} accent />
+              <KpiCard label="Calls Logged"     value={fmt(t.totalCalls||0)} />
+              <KpiCard label="Meetings Booked"  value={fmt(t.totalMeetings||0)} />
+              <KpiCard label="Emails Logged"    value={fmt(t.totalEmails||0)} />
+              <KpiCard label="Total Notes"      value={fmt(t.totalNotes||0)} />
             </div>
 
-            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16 }}>
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 2fr', gap:16 }}>
               {/* byRep */}
               <Panel>
                 <SectionTitle>By Rep</SectionTitle>
-                <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
-                  <THead cols={['Rep','Sent','Opens','Clicks','Replies','Sequences']} />
-                  <tbody>
-                    {byRep.map((r,i) => (
-                      <tr key={i} style={{ borderBottom:'1px solid var(--border)' }}>
-                        <td style={{ padding:'8px 10px 8px 0', fontWeight:500 }}>{r.rep}</td>
-                        <td style={{ padding:'8px 10px 8px 0' }}>{fmt(r.sent)}</td>
-                        <td style={{ padding:'8px 10px 8px 0' }}>{fmt(r.opens)}</td>
-                        <td style={{ padding:'8px 10px 8px 0' }}>{fmt(r.clicks)}</td>
-                        <td style={{ padding:'8px 10px 8px 0' }}>{fmt(r.replies)}</td>
-                        <td style={{ padding:'8px 0' }}>{fmt(r.sequences)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                {byRep.length === 0
+                  ? <div style={{ fontSize:12, color:'var(--text-tertiary)' }}>No Gold activity logged this period.</div>
+                  : <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
+                    <THead cols={['Rep','Accounts','Calls','Meetings','Emails','Notes']} />
+                    <tbody>
+                      {byRep.map((r,i) => (
+                        <tr key={i} style={{ borderBottom:'1px solid var(--border)' }}>
+                          <td style={{ padding:'7px 10px 7px 0', fontWeight:500 }}>{r.rep}</td>
+                          <td style={{ padding:'7px 10px 7px 0' }}>{r.accounts}</td>
+                          <td style={{ padding:'7px 10px 7px 0', color:r.calls>0?'var(--accent)':'var(--text-tertiary)' }}>{r.calls}</td>
+                          <td style={{ padding:'7px 10px 7px 0', color:r.meetings>0?'var(--green)':'var(--text-tertiary)' }}>{r.meetings}</td>
+                          <td style={{ padding:'7px 10px 7px 0' }}>{r.emails}</td>
+                          <td style={{ padding:'7px 0' }}>{r.notes}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                }
               </Panel>
 
-              {/* byAccount */}
+              {/* byAccount — sorted most recent activity first */}
               <Panel>
-                <SectionTitle>Gold Accounts</SectionTitle>
-                <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
-                  <THead cols={['Account','Tier']} />
-                  <tbody>
-                    {byAccount.map((a,i) => (
-                      <tr key={i} style={{ borderBottom:'1px solid var(--border)' }}>
-                        <td style={{ padding:'7px 10px 7px 0' }}>
-                          <a href={a.url} target="_blank" rel="noopener noreferrer"
-                            style={{ color:'var(--accent)', textDecoration:'none', fontWeight:500 }}>{a.name}</a>
-                        </td>
-                        <td style={{ padding:'7px 0', color:'var(--text-tertiary)', fontSize:11 }}>{a.tier}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12 }}>
+                  <SectionTitle style={{ margin:0 }}>Activity by Account ({byAccount.length})</SectionTitle>
+                  <button onClick={exportCSV}
+                    style={{ padding:'5px 10px', background:'none', border:'1px solid var(--border)', borderRadius:'var(--radius)', fontSize:11, color:'var(--text-secondary)', cursor:'pointer' }}>
+                    Export CSV
+                  </button>
+                </div>
+                {byAccount.length === 0
+                  ? <div style={{ fontSize:12, color:'var(--text-tertiary)' }}>No Gold accounts had activity this period.</div>
+                  : <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
+                    <THead cols={['Account','Tier','BDR','Last Activity','Call','Meeting','Email','Notes']} />
+                    <tbody>
+                      {byAccount.map((a,i) => (
+                        <tr key={i} style={{ borderBottom:'1px solid var(--border)', cursor:'pointer' }}
+                          onClick={() => window.open(a.url,'_blank','noopener,noreferrer')}
+                          onMouseEnter={e => e.currentTarget.style.background='var(--bg-secondary)'}
+                          onMouseLeave={e => e.currentTarget.style.background=''}>
+                          <td style={{ padding:'7px 10px 7px 0', fontWeight:500, color:'var(--accent)' }}>{a.name}</td>
+                          <td style={{ padding:'7px 10px 7px 0', fontSize:10, color:'var(--text-tertiary)' }}>{(a.tier||'').replace('GOLD - ','')}</td>
+                          <td style={{ padding:'7px 10px 7px 0', color:'var(--text-secondary)' }}>{a.assignedBdr||'—'}</td>
+                          <td style={{ padding:'7px 10px 7px 0', color:'var(--text-secondary)', whiteSpace:'nowrap' }}>
+                            {a.lastActivity ? new Date(a.lastActivity).toLocaleDateString() : '—'}
+                          </td>
+                          <td style={{ padding:'7px 10px 7px 0', color:a.lastCall?'var(--accent)':'var(--text-tertiary)' }}>
+                            {a.lastCall ? new Date(a.lastCall).toLocaleDateString() : '—'}
+                          </td>
+                          <td style={{ padding:'7px 10px 7px 0', color:a.lastMeeting?'var(--green)':'var(--text-tertiary)' }}>
+                            {a.lastMeeting ? new Date(a.lastMeeting).toLocaleDateString() : '—'}
+                          </td>
+                          <td style={{ padding:'7px 10px 7px 0', color:a.lastEmail?'var(--text-secondary)':'var(--text-tertiary)' }}>
+                            {a.lastEmail ? new Date(a.lastEmail).toLocaleDateString() : '—'}
+                          </td>
+                          <td style={{ padding:'7px 0' }}>{a.noteCount||0}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                }
               </Panel>
             </div>
           </div>
