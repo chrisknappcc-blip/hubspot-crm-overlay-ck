@@ -3714,117 +3714,87 @@ export const handler = async (event, context) => {
         // Activity specifically on Gold tier contacts, sliced by rep and by account
         if (section === "gold_activity") {
           const GOLD_TIERS = [
-            "GOLD - 1-10","GOLD - 11-20","GOLD - 21-30","GOLD - 41-50","GOLD - 51-60",
-            "GOLD - 61-70","GOLD - 71-80","GOLD - 81-90","GOLD - 91-100",
+            "GOLD - 1-10","GOLD - 11-20","GOLD - 21-30","GOLD - 31-40","GOLD - 41-50",
+            "GOLD - 51-60","GOLD - 61-70","GOLD - 71-80","GOLD - 81-90","GOLD - 91-100",
           ];
 
-          // Get Gold company IDs and names
+          // Fetch Gold companies with all activity fields in ONE query
           const goldCompanies = await hsPost(user.userId, "/crm/v3/objects/companies/search", {
-            filterGroups: [{ filters: [{ propertyName: "priority_tier__bdr", operator: "IN", values: GOLD_TIERS }] }],
-            properties: ["name","priority_tier__bdr","domain"],
-            sorts: [{ propertyName: "priority_tier__bdr", direction: "ASCENDING" }],
+            filterGroups: [{ filters: [
+              { propertyName: "priority_tier__bdr", operator: "IN", values: GOLD_TIERS },
+              ...(sinceISO ? [{ propertyName: "notes_last_updated", operator: "GTE", value: sinceISO }] : []),
+            ]}],
+            properties: [
+              "name","priority_tier__bdr","assigned_bdr","hubspot_owner_id",
+              "notes_last_contacted","notes_last_updated","num_contacted_notes",
+              "hs_last_logged_call_date","hs_last_booked_meeting_date",
+              "hs_last_logged_outgoing_email_date","hs_lastmodifieddate",
+            ],
+            sorts: [{ propertyName: "notes_last_updated", direction: "DESCENDING" }],
             limit: 200,
           }).catch(() => ({ results: [] }));
 
-          const goldCompanyIds = (goldCompanies.results||[]).map(c => c.id);
-          const goldCompanyMap = Object.fromEntries((goldCompanies.results||[]).map(c => [c.id, { name: c.properties?.name || "", tier: c.properties?.priority_tier__bdr || "" }]));
+          // Also fetch ALL gold companies for the total count (without date filter)
+          const allGoldCompanies = sinceISO ? await hsPost(user.userId, "/crm/v3/objects/companies/search", {
+            filterGroups: [{ filters: [{ propertyName: "priority_tier__bdr", operator: "IN", values: GOLD_TIERS }] }],
+            properties: ["name","priority_tier__bdr","assigned_bdr","hubspot_owner_id","notes_last_contacted","notes_last_updated"],
+            sorts: [{ propertyName: "priority_tier__bdr", direction: "ASCENDING" }],
+            limit: 200,
+          }).catch(() => ({ results: [] })) : goldCompanies;
 
-          // Get contacts at Gold companies via batch associations
-          let goldContactIds = [];
-          if (goldCompanyIds.length > 0) {
-            try {
-              const assocData = await hsPost(user.userId, "/crm/v4/associations/companies/contacts/batch/read", {
-                inputs: goldCompanyIds.slice(0, 100).map(id => ({ id })),
-              });
-              console.log("[gold_activity] assoc response sample:", JSON.stringify(assocData).slice(0, 300));
-              for (const result of (assocData.results||[])) {
-                // v4 API: result.to contains array of { toObjectId, associationTypes }
-                const toItems = result.to || result.results || [];
-                for (const assoc of toItems) {
-                  const id = assoc.toObjectId || assoc.id || assoc.objectId;
-                  if (id) goldContactIds.push(String(id));
-                }
-              }
-              console.log("[gold_activity] gold contact IDs found:", goldContactIds.length);
-            } catch (e) { console.error("[gold_activity] assoc:", e.message); }
+          const activeResults  = goldCompanies.results || [];
+          const allResults     = allGoldCompanies.results || [];
+
+          // Build per-rep activity breakdown from company-level fields
+          const repActivity = {};
+          const ALL_REP_IDS = { ...REP_OWNER_ID_MAP, "Chris Knapp":"78304576", "Chiara Pate":"87806380" };
+          ALL_REPS.forEach(r => { repActivity[r] = { rep:r, accounts:0, calls:0, meetings:0, emails:0, notes:0 } });
+
+          for (const co of activeResults) {
+            const p = co.properties || {};
+            const bdr = p.assigned_bdr || "";
+            const ownerId = p.hubspot_owner_id || "";
+            const ownerIdToName = Object.fromEntries(Object.entries(REP_OWNER_ID_MAP).map(([n,id])=>[id,n]));
+            const repName = bdr || ownerIdToName[ownerId] || null;
+            if (repName && repActivity[repName]) {
+              repActivity[repName].accounts++;
+              if (p.hs_last_logged_call_date && (!sinceISO || p.hs_last_logged_call_date >= sinceISO)) repActivity[repName].calls++;
+              if (p.hs_last_booked_meeting_date && (!sinceISO || p.hs_last_booked_meeting_date >= sinceISO)) repActivity[repName].meetings++;
+              if (p.hs_last_logged_outgoing_email_date && (!sinceISO || p.hs_last_logged_outgoing_email_date >= sinceISO)) repActivity[repName].emails++;
+              repActivity[repName].notes += parseInt(p.num_contacted_notes || "0");
+            }
           }
 
-          // Count Gold activity using simple total counts (not per-rep breakdown).
-          // Gold contact IDs were fetched via batch associations above.
-          // Run one query per metric across ALL Gold contacts, then one per-rep pass
-          // using only the first chunk (100 IDs) for the breakdown to stay within rate limits.
-          const TOP_GOLD_IDS = goldContactIds.slice(0, 100); // first 100 for per-rep
-
-          const countGoldMetric = async (dateProp) => {
-            if (!TOP_GOLD_IDS.length) return {};
-            const dateF = sinceISO
-              ? { propertyName: dateProp, operator: "GTE", value: sinceISO }
-              : { propertyName: dateProp, operator: "HAS_PROPERTY" };
-            const results = await Promise.all(ALL_REPS.map(async repName => {
-              const ownerId = REP_OWNER_ID_MAP[repName];
-              const repF = ownerId
-                ? { propertyName: "hubspot_owner_id", operator: "EQ", value: ownerId }
-                : { propertyName: "assigned_bdr",     operator: "EQ", value: repName };
-              try {
-                const d = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
-                  filterGroups: [{ filters: [repF, dateF,
-                    { propertyName: "hs_object_id", operator: "IN", values: TOP_GOLD_IDS },
-                  ]}],
-                  properties: ["hs_object_id"], limit: 1,
-                });
-                return [repName, d.total || 0];
-              } catch { return [repName, 0]; }
-            }));
-            return Object.fromEntries(results);
-          };
-          const gSent    = await countGoldMetric("hs_email_last_send_date");
-          await new Promise(r => setTimeout(r, 300));
-          const gOpens   = await countGoldMetric("hs_email_last_open_date");
-          await new Promise(r => setTimeout(r, 300));
-          const gClicks  = await countGoldMetric("hs_email_last_click_date");
-          await new Promise(r => setTimeout(r, 300));
-          const gReplies = await countGoldMetric("hs_email_last_reply_date");
-          await new Promise(r => setTimeout(r, 300));
-          const gSeqs    = await countGoldMetric("hs_latest_sequence_enrolled_date");
-
-          const byRep = targetReps.map(repName => ({
-            rep:      repName,
-            sent:     gSent[repName]    || 0,
-            opens:    gOpens[repName]   || 0,
-            clicks:   gClicks[repName]  || 0,
-            replies:  gReplies[repName] || 0,
-            sequences:gSeqs[repName]    || 0,
-          }));
-
-          // By account: fetch recent contacts at each Gold company with activity
-          const byAccount = (goldCompanies.results||[]).slice(0, 50).map(co => {
-            const p = co.properties||{};
+          // Per-account activity rows sorted by most recent
+          const byAccount = activeResults.map(co => {
+            const p = co.properties || {};
             return {
-              companyId: co.id,
-              name:      p.name || "",
-              tier:      p.priority_tier__bdr || "",
-              url:       `https://app.hubspot.com/contacts/39921549/record/0-2/${co.id}`,
+              companyId:    co.id,
+              name:         p.name || "",
+              tier:         p.priority_tier__bdr || "",
+              assignedBdr:  p.assigned_bdr || "",
+              url:          `https://app.hubspot.com/contacts/39921549/record/0-2/${co.id}`,
+              lastActivity: p.notes_last_updated || p.notes_last_contacted || null,
+              lastCall:     p.hs_last_logged_call_date || null,
+              lastMeeting:  p.hs_last_booked_meeting_date || null,
+              lastEmail:    p.hs_last_logged_outgoing_email_date || null,
+              noteCount:    parseInt(p.num_contacted_notes || "0"),
             };
           });
 
-          const totals = byRep.reduce((acc, r) => ({
-            sent:      acc.sent      + r.sent,
-            opens:     acc.opens     + r.opens,
-            clicks:    acc.clicks    + r.clicks,
-            replies:   acc.replies   + r.replies,
-            sequences: acc.sequences + r.sequences,
-          }), { sent:0, opens:0, clicks:0, replies:0, sequences:0 });
+          const totals = {
+            accountsTouched:   activeResults.length,
+            totalAccounts:     allResults.length,
+            totalCalls:        Object.values(repActivity).reduce((s,r) => s+r.calls, 0),
+            totalMeetings:     Object.values(repActivity).reduce((s,r) => s+r.meetings, 0),
+            totalEmails:       Object.values(repActivity).reduce((s,r) => s+r.emails, 0),
+            totalNotes:        Object.values(repActivity).reduce((s,r) => s+r.notes, 0),
+          };
 
           return ok({
             section: "gold_activity", period,
-            goldAccountCount: goldCompanyIds.length,
-            goldContactCount: goldContactIds.length,
-            totals: {
-              ...totals,
-              openRate:  totals.sent > 0 ? +((totals.opens   / totals.sent) * 100).toFixed(1) : 0,
-              replyRate: totals.sent > 0 ? +((totals.replies / totals.sent) * 100).toFixed(1) : 0,
-            },
-            byRep,
+            totals,
+            byRep:    Object.values(repActivity).filter(r => r.accounts > 0),
             byAccount,
           });
         }
