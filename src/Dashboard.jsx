@@ -2858,145 +2858,186 @@ function ReportsTab({ safeFetch, owners, currentUserName }) {
       })()}
 
       {/* ── Gold Work Log ── */}
-      {!loading && data && section === 'gold_work_log' && (() => {
-        const S = data.summary || {}
-        const accounts = data.accounts || []
-        const activeAccounts = accounts.filter(a => a.activityInPeriod)
-        const inactiveAccounts = accounts.filter(a => !a.activityInPeriod)
+{!loading && data && section === 'gold_work_log' && (() => {
+        const S  = data.summary || {}
+        const accounts  = data.accounts  || []
+        const notWorked = data.notWorked  || []
+        const byRep     = data.byRep      || []
 
-        const scoreColor = (score) => score >= 75 ? 'var(--green)' : score >= 50 ? 'var(--amber)' : 'var(--red)'
-        const ScoreBadge = ({ score }) => (
-          <span style={{ fontSize:11, fontWeight:600, color: scoreColor(score), background:'var(--bg-secondary)', borderRadius:4, padding:'2px 6px' }}>
-            {score}%
-          </span>
-        )
+        const exportCSV = () => {
+          const rows = [
+            ['Account','Tier','Rep','Last Activity','Last Call','Last Meeting','Last Email','Notes','Contacts','Buying Roles','Deals','Activities This Period'],
+            ...accounts.map(a => [
+              a.name, a.tier, a.rep,
+              a.lastActivity  ? new Date(a.lastActivity).toLocaleDateString()  : '—',
+              a.lastCall      ? new Date(a.lastCall).toLocaleDateString()      : '—',
+              a.lastMeeting   ? new Date(a.lastMeeting).toLocaleDateString()   : '—',
+              a.lastEmail     ? new Date(a.lastEmail).toLocaleDateString()     : '—',
+              a.noteCount     || 0,
+              a.contactCount  || 0,
+              a.buyingRoles   || 0,
+              a.deals         || 0,
+              (a.activities||[]).map(ac => ac.type).join('; '),
+            ]),
+            [''],
+            ['NOT WORKED THIS PERIOD'],
+            ['Account','Tier','Rep','Last Activity'],
+            ...notWorked.map(a => [
+              a.name, a.tier, a.rep,
+              a.lastActivity ? new Date(a.lastActivity).toLocaleDateString() : 'Never',
+            ]),
+          ]
+          const csv = rows.map(r => r.map(v => `"${String(v||'').replace(/"/g,'""')}"`).join(',')).join('\n')
+          const link = document.createElement('a')
+          link.href = URL.createObjectURL(new Blob([csv],{type:'text/csv'}))
+          link.download = `gold-work-log-${new Date().toISOString().slice(0,10)}.csv`
+          link.click()
+        }
 
-        const exportText = () => {
+        const copyRecap = () => {
           const lines = [
-            `Gold Account Work Log — ${data.period}`,
+            `Gold Account Work Log — ${data.periodLabel || data.period}`,
             `Generated: ${new Date().toLocaleString()}`,
             ``,
             `SUMMARY`,
-            `Total Gold Accounts: ${S.totalAccounts}`,
-            `Active This Period:  ${S.activeThisPeriod}`,
-            `Avg Data Score:      ${S.avgDataScore}%`,
-            `Missing Job Titles:  ${S.totalMissingTitles}`,
-            `Missing Personas:    ${S.totalMissingPersonas}`,
-            `Missing Buying Roles:${S.totalMissingBuyingRoles}`,
+            `Total Gold Accounts:   ${S.totalAccounts}`,
+            `Worked This Period:    ${S.workedThisPeriod}`,
+            `Not Touched:           ${S.notWorked}`,
+            `Calls Logged:          ${S.totalCalls}`,
+            `Meetings Booked:       ${S.totalMeetings}`,
+            `Emails Logged:         ${S.totalEmails}`,
             ``,
-            `ACTIVE ACCOUNTS (${activeAccounts.length})`,
-            ...activeAccounts.map(a =>
-              `${a.tier.replace('GOLD - ','')} | ${a.name.padEnd(35)} | Data: ${a.dataScore}% | Last: ${a.lastContacted ? new Date(a.lastContacted).toLocaleDateString() : 'never'} | Missing: ${[a.missingTitle > 0 ? `${a.missingTitle} titles` : '', a.missingPersona > 0 ? `${a.missingPersona} personas` : '', a.missingBuyingRole > 0 ? `${a.missingBuyingRole} roles` : ''].filter(Boolean).join(', ') || 'none'}`
-            ),
+            `BY REP`,
+            ...byRep.map(r => `${r.rep.padEnd(18)} Accts:${String(r.accounts).padStart(3)}  Calls:${String(r.calls).padStart(3)}  Meetings:${String(r.meetings).padStart(3)}  Emails:${String(r.emails).padStart(3)}`),
             ``,
-            `INACTIVE ACCOUNTS (${inactiveAccounts.length})`,
-            ...inactiveAccounts.map(a => `${a.tier.replace('GOLD - ','')} | ${a.name}`),
+            `ACCOUNTS WORKED (${accounts.length})`,
+            ...accounts.map(a => `${a.tier.replace('GOLD - ','').padEnd(8)} ${a.name.padEnd(35)} ${a.rep.padEnd(14)} ${a.activities.map(ac => ac.type).join(', ') || 'Updated'}`),
+            ``,
+            `NOT WORKED THIS PERIOD (${notWorked.length})`,
+            ...notWorked.map(a => `${a.tier.replace('GOLD - ','').padEnd(8)} ${a.name}`),
           ]
           navigator.clipboard.writeText(lines.join('\n')).then(() => alert('Copied to clipboard!'))
         }
 
         return (
           <div style={{ display:'flex', flexDirection:'column', gap:16 }}>
-            {/* Header */}
+            {/* Header + export */}
             <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between' }}>
               <div>
                 <div style={{ fontSize:18, fontWeight:600, color:'var(--text)' }}>Gold Account Work Log</div>
-                <div style={{ fontSize:12, color:'var(--text-tertiary)', marginTop:2 }}>Activity and data completeness for Gold tier accounts</div>
+                <div style={{ fontSize:12, color:'var(--text-tertiary)', marginTop:2 }}>{data.periodLabel} — what got done on Gold accounts</div>
               </div>
-              <button onClick={exportText}
-                style={{ padding:'8px 16px', background:'none', border:'1px solid var(--border)', borderRadius:'var(--radius)', fontSize:12, color:'var(--text-secondary)', cursor:'pointer' }}>
-                Copy recap
-              </button>
+              <div style={{ display:'flex', gap:8 }}>
+                <button onClick={copyRecap}
+                  style={{ padding:'8px 16px', background:'none', border:'1px solid var(--border)', borderRadius:'var(--radius)', fontSize:12, color:'var(--text-secondary)', cursor:'pointer' }}>
+                  Copy recap
+                </button>
+                <button onClick={exportCSV}
+                  style={{ padding:'8px 16px', background:'var(--accent)', color:'#fff', border:'none', borderRadius:'var(--radius)', fontSize:12, fontWeight:500, cursor:'pointer' }}>
+                  Export CSV
+                </button>
+              </div>
             </div>
 
-            {/* Summary KPIs */}
+            {/* KPI strip */}
             <div style={{ display:'grid', gridTemplateColumns:'repeat(6,1fr)', gap:10 }}>
-              <KpiCard label="Gold Accounts"    value={fmt(S.totalAccounts)}       />
-              <KpiCard label="Active This Period" value={fmt(S.activeThisPeriod)}  accent />
-              <KpiCard label="Avg Data Score"   value={`${S.avgDataScore}%`}       />
-              <KpiCard label="Missing Titles"   value={fmt(S.totalMissingTitles)}  />
-              <KpiCard label="Missing Personas" value={fmt(S.totalMissingPersonas)} />
-              <KpiCard label="Missing Roles"    value={fmt(S.totalMissingBuyingRoles)} />
+              <KpiCard label="Total Gold Accts"  value={fmt(S.totalAccounts||0)} />
+              <KpiCard label="Worked This Period" value={fmt(S.workedThisPeriod||0)} accent />
+              <KpiCard label="Not Touched"        value={fmt(S.notWorked||0)} />
+              <KpiCard label="Calls Logged"       value={fmt(S.totalCalls||0)} />
+              <KpiCard label="Meetings Booked"    value={fmt(S.totalMeetings||0)} />
+              <KpiCard label="Emails Logged"      value={fmt(S.totalEmails||0)} />
             </div>
 
-            {/* Active accounts */}
-            <Panel>
-              <SectionTitle>Active this period ({activeAccounts.length})</SectionTitle>
-              {activeAccounts.length === 0
-                ? <div style={{ fontSize:12, color:'var(--text-tertiary)' }}>No Gold accounts had logged activity this period.</div>
-                : <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
-                    <THead cols={['Account','Tier','Last Contacted','Contacts','Data Score','Missing Titles','Missing Personas','Missing Roles','']} />
-                    <tbody>
-                      {activeAccounts.map((a,i) => (
-                        <tr key={i} style={{ borderBottom:'1px solid var(--border)' }}>
-                          <td style={{ padding:'7px 10px 7px 0', fontWeight:500 }}>
-                            <a href={a.url} target="_blank" rel="noopener noreferrer"
-                              style={{ color:'var(--accent)', textDecoration:'none' }}>{a.name}</a>
-                          </td>
-                          <td style={{ padding:'7px 10px 7px 0', fontSize:10, color:'var(--text-tertiary)' }}>{a.tier.replace('GOLD - ','')}</td>
-                          <td style={{ padding:'7px 10px 7px 0', color:'var(--text-secondary)', whiteSpace:'nowrap' }}>
-                            {a.lastContacted ? new Date(a.lastContacted).toLocaleDateString() : '—'}
-                          </td>
-                          <td style={{ padding:'7px 10px 7px 0' }}>{fmt(a.totalContacts)}</td>
-                          <td style={{ padding:'7px 10px 7px 0' }}><ScoreBadge score={a.dataScore} /></td>
-                          <td style={{ padding:'7px 10px 7px 0', color: a.missingTitle > 0 ? 'var(--amber)' : 'var(--text-tertiary)' }}>{a.missingTitle > 0 ? `${a.missingTitle} missing` : '✓'}</td>
-                          <td style={{ padding:'7px 10px 7px 0', color: a.missingPersona > 0 ? 'var(--amber)' : 'var(--text-tertiary)' }}>{a.missingPersona > 0 ? `${a.missingPersona} missing` : '✓'}</td>
-                          <td style={{ padding:'7px 10px 7px 0', color: a.missingBuyingRole > 0 ? 'var(--amber)' : 'var(--text-tertiary)' }}>{a.missingBuyingRole > 0 ? `${a.missingBuyingRole} missing` : '✓'}</td>
-                          <td style={{ padding:'7px 0' }}>
-                            <a href={a.url} target="_blank" rel="noopener noreferrer"
-                              style={{ fontSize:10, color:'var(--text-tertiary)', textDecoration:'none' }}>↗</a>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-              }
-            </Panel>
-
-            {/* Inactive accounts — needs attention */}
-            {inactiveAccounts.length > 0 && (
+            {/* By rep */}
+            {byRep.length > 0 && (
               <Panel>
-                <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:12 }}>
-                  <SectionTitle style={{ margin:0 }}>No activity this period ({inactiveAccounts.length})</SectionTitle>
-                  <span style={{ fontSize:10, fontWeight:600, color:'var(--red)', background:'rgba(239,68,68,0.1)', borderRadius:4, padding:'2px 6px' }}>Needs attention</span>
-                </div>
+                <SectionTitle>Work by Rep</SectionTitle>
                 <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
-                  <THead cols={['Account','Tier','Last Contacted','Contacts','Data Score','Missing Data','']} />
+                  <THead cols={['Rep','Accounts Touched','Calls','Meetings','Emails','Notes']} />
                   <tbody>
-                    {inactiveAccounts.slice(0, 25).map((a,i) => (
+                    {byRep.map((r,i) => (
                       <tr key={i} style={{ borderBottom:'1px solid var(--border)' }}>
-                        <td style={{ padding:'7px 10px 7px 0', fontWeight:500 }}>
-                          <a href={a.url} target="_blank" rel="noopener noreferrer"
-                            style={{ color:'var(--accent)', textDecoration:'none' }}>{a.name}</a>
-                        </td>
-                        <td style={{ padding:'7px 10px 7px 0', fontSize:10, color:'var(--text-tertiary)' }}>{a.tier.replace('GOLD - ','')}</td>
-                        <td style={{ padding:'7px 10px 7px 0', color: !a.lastContacted ? 'var(--red)' : 'var(--text-secondary)', whiteSpace:'nowrap' }}>
-                          {a.lastContacted ? new Date(a.lastContacted).toLocaleDateString() : 'Never'}
-                        </td>
-                        <td style={{ padding:'7px 10px 7px 0' }}>{fmt(a.totalContacts)}</td>
-                        <td style={{ padding:'7px 10px 7px 0' }}><ScoreBadge score={a.dataScore} /></td>
-                        <td style={{ padding:'7px 10px 7px 0', color:'var(--amber)', fontSize:11 }}>
-                          {[
-                            a.missingTitle > 0 ? `${a.missingTitle} titles` : '',
-                            a.missingPersona > 0 ? `${a.missingPersona} personas` : '',
-                            a.missingBuyingRole > 0 ? `${a.missingBuyingRole} roles` : '',
-                          ].filter(Boolean).join(' · ') || '—'}
-                        </td>
-                        <td style={{ padding:'7px 0' }}>
-                          <a href={a.url} target="_blank" rel="noopener noreferrer"
-                            style={{ fontSize:10, color:'var(--text-tertiary)', textDecoration:'none' }}>↗</a>
-                        </td>
+                        <td style={{ padding:'7px 10px 7px 0', fontWeight:500 }}>{r.rep}</td>
+                        <td style={{ padding:'7px 10px 7px 0' }}>{r.accounts}</td>
+                        <td style={{ padding:'7px 10px 7px 0', color:r.calls>0?'var(--accent)':'var(--text-tertiary)' }}>{r.calls}</td>
+                        <td style={{ padding:'7px 10px 7px 0', color:r.meetings>0?'var(--green)':'var(--text-tertiary)' }}>{r.meetings}</td>
+                        <td style={{ padding:'7px 10px 7px 0' }}>{r.emails}</td>
+                        <td style={{ padding:'7px 0' }}>{r.notes}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </Panel>
             )}
+
+            {/* Accounts worked */}
+            <Panel>
+              <SectionTitle>Accounts Worked This Period ({accounts.length})</SectionTitle>
+              {accounts.length === 0
+                ? <div style={{ fontSize:12, color:'var(--text-tertiary)' }}>No Gold account activity recorded this period.</div>
+                : <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
+                  <THead cols={['Account','Tier','Rep','Last Activity','Activities','Call','Meeting','Email','Notes','Contacts','Roles','Deals']} />
+                  <tbody>
+                    {accounts.map((a,i) => (
+                      <tr key={i} style={{ borderBottom:'1px solid var(--border)', cursor:'pointer' }}
+                        onClick={() => window.open(a.url,'_blank','noopener,noreferrer')}
+                        onMouseEnter={e => e.currentTarget.style.background='var(--bg-secondary)'}
+                        onMouseLeave={e => e.currentTarget.style.background=''}>
+                        <td style={{ padding:'7px 10px 7px 0', fontWeight:500, color:'var(--accent)', maxWidth:160, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{a.name}</td>
+                        <td style={{ padding:'7px 10px 7px 0', fontSize:10, color:'var(--text-tertiary)' }}>{(a.tier||'').replace('GOLD - ','')}</td>
+                        <td style={{ padding:'7px 10px 7px 0', color:'var(--text-secondary)', whiteSpace:'nowrap' }}>{a.rep||'—'}</td>
+                        <td style={{ padding:'7px 10px 7px 0', color:'var(--text-secondary)', whiteSpace:'nowrap' }}>
+                          {a.lastActivity ? new Date(a.lastActivity).toLocaleDateString() : '—'}
+                        </td>
+                        <td style={{ padding:'7px 10px 7px 0' }}>
+                          <div style={{ display:'flex', gap:3, flexWrap:'wrap' }}>
+                            {(a.activities||[]).slice(0,3).map((ac,j) => (
+                              <span key={j} style={{ fontSize:9, fontWeight:600, textTransform:'uppercase', padding:'1px 5px', borderRadius:3,
+                                background: ac.type==='Call'?'rgba(79,142,247,.12)':ac.type==='Meeting'?'rgba(52,201,122,.12)':'var(--bg-secondary)',
+                                color: ac.type==='Call'?'var(--accent)':ac.type==='Meeting'?'var(--green)':'var(--text-tertiary)' }}>
+                                {ac.type}
+                              </span>
+                            ))}
+                          </div>
+                        </td>
+                        <td style={{ padding:'7px 10px 7px 0', color:a.lastCall?'var(--accent)':'var(--text-tertiary)', fontSize:11 }}>{a.lastCall?new Date(a.lastCall).toLocaleDateString():'—'}</td>
+                        <td style={{ padding:'7px 10px 7px 0', color:a.lastMeeting?'var(--green)':'var(--text-tertiary)', fontSize:11 }}>{a.lastMeeting?new Date(a.lastMeeting).toLocaleDateString():'—'}</td>
+                        <td style={{ padding:'7px 10px 7px 0', fontSize:11, color:'var(--text-secondary)' }}>{a.lastEmail?new Date(a.lastEmail).toLocaleDateString():'—'}</td>
+                        <td style={{ padding:'7px 10px 7px 0' }}>{a.noteCount||0}</td>
+                        <td style={{ padding:'7px 10px 7px 0' }}>{a.contactCount||0}</td>
+                        <td style={{ padding:'7px 10px 7px 0', color:(a.buyingRoles||0)>0?'var(--text-secondary)':'var(--text-tertiary)' }}>{a.buyingRoles||0}</td>
+                        <td style={{ padding:'7px 0', color:(a.deals||0)>0?'var(--green)':'var(--text-tertiary)' }}>{a.deals||0}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              }
+            </Panel>
+
+            {/* Not worked */}
+            {notWorked.length > 0 && (
+              <Panel>
+                <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:12 }}>
+                  <SectionTitle style={{ margin:0 }}>Not Touched This Period ({S.notWorked})</SectionTitle>
+                  <span style={{ fontSize:10, fontWeight:700, color:'var(--red)', background:'rgba(240,82,82,.1)', borderRadius:4, padding:'2px 8px' }}>Needs attention</span>
+                </div>
+                <div style={{ display:'flex', flexWrap:'wrap', gap:6 }}>
+                  {notWorked.map((a,i) => (
+                    <a key={i} href={a.url} target="_blank" rel="noopener noreferrer"
+                      style={{ fontSize:11, padding:'4px 10px', borderRadius:'var(--radius)', display:'inline-flex', gap:8, alignItems:'center',
+                        background:'rgba(240,82,82,.05)', border:'1px solid rgba(240,82,82,.2)', color:'var(--text)', textDecoration:'none' }}>
+                      <span>{a.name}</span>
+                      <span style={{ fontSize:9, color:'var(--text-tertiary)' }}>{(a.tier||'').replace('GOLD - ','')}</span>
+                      {a.lastActivity && <span style={{ fontSize:10, color:'var(--red)' }}>{Math.floor((Date.now() - new Date(a.lastActivity)) / 86400000)}d ago</span>}
+                    </a>
+                  ))}
+                </div>
+              </Panel>
+            )}
           </div>
         )
       })()}
-
-      {/* ── Weekly Recap ── */}
       {!loading && data && section === 'weekly_recap' && (() => {
         const t = data.totals || {}
         const byRep = data.byRep || []
