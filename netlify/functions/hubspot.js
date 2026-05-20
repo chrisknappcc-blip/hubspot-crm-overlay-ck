@@ -3436,9 +3436,12 @@ export const handler = async (event, context) => {
             return baseGroups.map(g => ({ filters: [...g.filters, seqActiveF] }));
           };
 
-          const repliedF = { propertyName: "hs_sales_email_last_replied", operator: sinceISO ? "GTE" : "HAS_PROPERTY", ...(sinceISO ? { value: sinceISO } : {}) };
-          const openedF  = { propertyName: "hs_email_last_open_date",     operator: sinceISO ? "GTE" : "HAS_PROPERTY", ...(sinceISO ? { value: sinceISO } : {}) };
-          const clickedF = { propertyName: "hs_email_last_click_date",    operator: sinceISO ? "GTE" : "HAS_PROPERTY", ...(sinceISO ? { value: sinceISO } : {}) };
+          // KPI bar engagement metrics use HAS_PROPERTY (all-time, matching bottom table)
+          // Enrolled uses the period filter. Opens/clicks/replies show lifetime engagement
+          // on currently-enrolled contacts — consistent with the per-sequence table below.
+          const repliedF = { propertyName: "hs_sales_email_last_replied", operator: "HAS_PROPERTY" };
+          const openedF  = { propertyName: "hs_email_last_open_date",     operator: "HAS_PROPERTY" };
+          const clickedF = { propertyName: "hs_email_last_click_date",    operator: "HAS_PROPERTY" };
 
           const enrolledGroups = sinceISO
             ? (() => {
