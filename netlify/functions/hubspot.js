@@ -132,49 +132,60 @@ async function getValidHubSpotToken(userId) {
   return tokens.hubspot;
 }
 
-// ─── HubSpot rate limiter ─────────────────────────────────────────────────────
-// HubSpot allows 10 search requests/second per OAuth token (secondly limit).
-// We enforce 120ms minimum between calls per userId to stay safely under.
-// Uses a simple queue per userId so concurrent calls serialize automatically.
-const _hsQueues = {};
-function hsThrottle(userId) {
-  if (!_hsQueues[userId]) _hsQueues[userId] = Promise.resolve();
-  const wait = _hsQueues[userId].then(() => new Promise(r => setTimeout(r, 120)));
-  _hsQueues[userId] = wait;
-  return wait;
+// ─── HubSpot API helpers with 429 retry ──────────────────────────────────────
+// Retries up to 3 times on rate limit (429), with exponential backoff.
+// This makes individual requests resilient to transient rate limit spikes.
+
+async function hsApiCall(fn, retries = 3) {
+  for (let i = 0; i < retries; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      const is429 = err.status === 429 || (err.message && err.message.includes('429'));
+      if (is429 && i < retries - 1) {
+        const wait = 1000 * (i + 1); // 1s, 2s, 3s
+        console.warn(`[hubspot] 429 rate limit, retry ${i+1}/${retries-1} in ${wait}ms`);
+        await new Promise(r => setTimeout(r, wait));
+        continue;
+      }
+      throw err;
+    }
+  }
 }
 
 async function hsGet(userId, path, params = {}) {
-  await hsThrottle(userId);
-  const token = await getValidHubSpotToken(userId);
-  const url   = new URL(`${HS_API}${path}`);
-  Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, String(v)));
-  const res = await fetch(url, {
-    headers: { Authorization: `Bearer ${token.access_token}` },
+  return hsApiCall(async () => {
+    const token = await getValidHubSpotToken(userId);
+    const url   = new URL(`${HS_API}${path}`);
+    Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, String(v)));
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${token.access_token}` },
+    });
+    if (!res.ok) {
+      const err = await res.text();
+      throw new ApiError(`HubSpot API error (${res.status}): ${err}`, res.status);
+    }
+    return res.json();
   });
-  if (!res.ok) {
-    const err = await res.text();
-    throw new ApiError(`HubSpot API error (${res.status}): ${err}`, res.status);
-  }
-  return res.json();
 }
 
 async function hsPost(userId, path, body) {
-  await hsThrottle(userId);
-  const token = await getValidHubSpotToken(userId);
-  const res = await fetch(`${HS_API}${path}`, {
-    method: "POST",
-    headers: {
-      Authorization:  `Bearer ${token.access_token}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
+  return hsApiCall(async () => {
+    const token = await getValidHubSpotToken(userId);
+    const res = await fetch(`${HS_API}${path}`, {
+      method: "POST",
+      headers: {
+        Authorization:  `Bearer ${token.access_token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const err = await res.text();
+      throw new ApiError(`HubSpot API error (${res.status}): ${err}`, res.status);
+    }
+    return res.json();
   });
-  if (!res.ok) {
-    const err = await res.text();
-    throw new ApiError(`HubSpot API error (${res.status}): ${err}`, res.status);
-  }
-  return res.json();
 }
 
 
