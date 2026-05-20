@@ -132,7 +132,20 @@ async function getValidHubSpotToken(userId) {
   return tokens.hubspot;
 }
 
+// ─── HubSpot rate limiter ─────────────────────────────────────────────────────
+// HubSpot allows 10 search requests/second per OAuth token (secondly limit).
+// We enforce 120ms minimum between calls per userId to stay safely under.
+// Uses a simple queue per userId so concurrent calls serialize automatically.
+const _hsQueues = {};
+function hsThrottle(userId) {
+  if (!_hsQueues[userId]) _hsQueues[userId] = Promise.resolve();
+  const wait = _hsQueues[userId].then(() => new Promise(r => setTimeout(r, 120)));
+  _hsQueues[userId] = wait;
+  return wait;
+}
+
 async function hsGet(userId, path, params = {}) {
+  await hsThrottle(userId);
   const token = await getValidHubSpotToken(userId);
   const url   = new URL(`${HS_API}${path}`);
   Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, String(v)));
@@ -147,6 +160,7 @@ async function hsGet(userId, path, params = {}) {
 }
 
 async function hsPost(userId, path, body) {
+  await hsThrottle(userId);
   const token = await getValidHubSpotToken(userId);
   const res = await fetch(`${HS_API}${path}`, {
     method: "POST",
