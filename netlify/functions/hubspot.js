@@ -3453,7 +3453,8 @@ export const handler = async (event, context) => {
              "hs_latest_sequence_enrolled_date","hs_email_last_reply_date",
              "hs_sales_email_last_replied","hs_email_last_open_date",
              "hs_email_last_click_date"],
-            200
+            "hs_latest_sequence_enrolled_date",
+            500
           );
 
           const enrolled   = allSeqContacts.length;
