@@ -568,6 +568,23 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
   const [goldTabTier, setGoldTabTier]     = useState('')
   const [goldSelectedAccount, setGoldSelectedAccount] = useState(null)
 
+  // ── Persisted report filter state ─────────────────────────────────────────
+  // Lifted up to Dashboard so state survives tab switches (ReportsTab unmounts/remounts)
+  const [reportSection, setReportSection] = useState('email_activity')
+  const [reportPeriod,  setReportPeriod]  = useState('week')   // default 7 days
+  const [reportRep,     setReportRep]     = useState(() => {
+    if (!user) return 'all'
+    const full = `${user.firstName||''} ${user.lastName||''}`.trim()
+    const match = TEAM_MEMBERS.find(m =>
+      m.name.toLowerCase() === full.toLowerCase() ||
+      (user.firstName && m.name.toLowerCase().startsWith(user.firstName.toLowerCase()))
+    )
+    return match?.name || 'all'
+  })
+  const [reportOwner, setReportOwner]     = useState('')
+  const [reportCustomFrom, setReportCustomFrom] = useState('')
+  const [reportCustomTo,   setReportCustomTo]   = useState('')
+
   // Activity summary
   const [activityData, setActivityData]       = useState(null)
   const [activityDays, setActivityDays]       = useState('7')
@@ -1888,7 +1905,17 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
 
         {/* ── Reports tab ── */}
         {activeTab === 'reports' && (
-          <ReportsTab safeFetch={safeFetch} owners={owners} currentUserName={currentUserName} />
+          <ReportsTab
+            safeFetch={safeFetch}
+            owners={owners}
+            currentUserName={currentUserName}
+            section={reportSection}     setSection={setReportSection}
+            period={reportPeriod}       setPeriod={setReportPeriod}
+            rep={reportRep}             setRep={setReportRep}
+            owner={reportOwner}         setOwner={setReportOwner}
+            customFrom={reportCustomFrom} setCustomFrom={setReportCustomFrom}
+            customTo={reportCustomTo}   setCustomTo={setReportCustomTo}
+          />
         )}
 
         {/* ── Financial Analysis tab ── */}
@@ -2004,11 +2031,10 @@ const PORTAL    = '39921549'
 const HS_BASE   = 'https://app.hubspot.com'
 const DASHBOARD = `${HS_BASE}/reports-dashboard/${PORTAL}/view/19874520`
 
-function ReportsTab({ safeFetch, owners, currentUserName }) {
-  const [section, setSection]     = useState('email_activity')
-  const [period, setPeriod]       = useState('month')
-  const [rep, setRep]             = useState(() => currentUserName || 'all')
-  const [owner, setOwner]         = useState('')
+function ReportsTab({ safeFetch, owners, currentUserName,
+  section, setSection, period, setPeriod, rep, setRep,
+  owner, setOwner, customFrom, setCustomFrom, customTo, setCustomTo }) {
+
   const [data, setData]           = useState(null)
   const [loading, setLoading]     = useState(false)
   const [activityPage, setActivityPage] = useState(0)
@@ -2017,10 +2043,6 @@ function ReportsTab({ safeFetch, owners, currentUserName }) {
 
   // Result cache: key → data. Survives tab switches, cleared on explicit refresh.
   const reportCache = useRef({})
-
-  // Custom date range
-  const [customFrom, setCustomFrom] = useState('')
-  const [customTo, setCustomTo]     = useState('')
 
   // Manual activity log
   const [logInput, setLogInput]       = useState('')
@@ -2097,8 +2119,7 @@ function ReportsTab({ safeFetch, owners, currentUserName }) {
   const handleSetSection = useCallback((s) => {
     setSection(s)
     if (s === 'deals') setPeriod('year')
-    else if (s === 'weekly_recap' || s === 'gold_work_log') setPeriod('week')
-    else setPeriod('month')
+    else setPeriod('week')
   }, [])
 
   const ownerMap = useMemo(() => {
