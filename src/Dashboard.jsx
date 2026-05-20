@@ -2040,7 +2040,6 @@ function ReportsTab({ safeFetch, owners, currentUserName }) {
     if (period === 'custom' && customTo)   params.set('customTo',   customTo)
     const cacheKey = params.toString()
 
-    // Return cached result immediately if available and not forced refresh
     if (!forceRefresh && reportCache.current[cacheKey]) {
       setData(reportCache.current[cacheKey])
       return
@@ -2056,13 +2055,17 @@ function ReportsTab({ safeFetch, owners, currentUserName }) {
       setData(result)
     } catch (e) {
       console.error('[reports]', e)
+      setData(null)
     } finally {
       setLoading(false)
     }
   }, [section, period, rep, owner, customFrom, customTo])
 
   useEffect(() => {
-    fetchReport()
+    // Debounce: wait 400ms after last filter change before fetching
+    // Prevents stacking requests when user rapidly changes filters
+    const t = setTimeout(() => fetchReport(), 400)
+    return () => clearTimeout(t)
   }, [fetchReport])
 
   const addLogEntry = useCallback(async () => {
