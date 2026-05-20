@@ -2932,8 +2932,25 @@ export const handler = async (event, context) => {
         const MKT_EMAIL     = `${HS_BASE}/email/${PORTAL}/manage`;
 
         const now = Date.now();
+        // "Today" = since midnight Eastern Time (CarePathIQ/Cipher team is EST/EDT)
+        // Netlify runs in UTC so we must apply Eastern offset manually
+        // EDT = UTC-4 (Mar 2nd Sun to Nov 1st Sun), EST = UTC-5 otherwise
+        const isEDT = (() => {
+          const d = new Date();
+          const yr = d.getUTCFullYear();
+          // EDT starts 2nd Sunday of March, ends 1st Sunday of November
+          const edtStart = new Date(yr, 2, 8 - new Date(yr, 2, 1).getDay()); // approx
+          const edtEnd   = new Date(yr, 10, 1 - new Date(yr, 10, 1).getDay() + 7); // approx
+          edtStart.setHours(2); edtEnd.setHours(2);
+          return d >= edtStart && d < edtEnd;
+        })();
+        const etOffsetMs = (isEDT ? 4 : 5) * 3600000;
+        const etNow      = now - etOffsetMs;
+        const etMidnight = etNow - (etNow % 86400000);
+        const todaySince = etMidnight + etOffsetMs; // convert back to UTC
+
         const PERIOD_MS = {
-          today:    () => now - (now % 86400000),
+          today:    () => todaySince,
           week:     () => now - 7   * 86400000,
           month:    () => now - 30  * 86400000,
           quarter:  () => now - 90  * 86400000,
