@@ -3419,101 +3419,67 @@ export const handler = async (event, context) => {
         // Shows: Enrollment count, clicks, opens, replies, unsubscribes, bounces
         // matching HubSpot's "Sequence Enrollments - Sales Team" report.
         if (section === "sequences") {
-          const bdr = bdrFilters();
           const seqActiveF = { propertyName: "hs_sequences_is_enrolled", operator: "EQ", value: "true" };
           const isEveryoneFilter = repNames.length === 0 && ownerIds.length === 0;
 
-          // Build filterGroups for sequence metrics:
-          // - For "Everyone": just seqActive + optional date (no rep filter, avoids excluding AEs)
-          // - For specific rep: OR across assigned_bdr / hubspot_owner_id + seqActive + date
-          const seqTotalGroups = (extraFilter) => {
-            const dateF = extraFilter ? [extraFilter] : [];
-            if (isEveryoneFilter) {
-              return [{ filters: [seqActiveF, ...dateF] }];
-            }
-            // Per-rep: OR across bdr/owner with seqActive
-            const baseGroups = contactFilterGroups(extraFilter);
-            return baseGroups.map(g => ({ filters: [...g.filters, seqActiveF] }));
-          };
+          // Single source of truth: fetch all enrolled contacts for the period
+          // KPI bar, byRep, and bySequence all derive from this one contact set
+          // so they will always be consistent regardless of period or rep filter
+          const seqContactGroups = isEveryoneFilter
+            ? [{ filters: sinceISO
+                ? [{ propertyName: "hs_latest_sequence_enrolled_date", operator: "GTE", value: sinceISO }]
+                : [seqActiveF] }]
+            : contactFilterGroups(sinceISO
+                ? { propertyName: "hs_latest_sequence_enrolled_date", operator: "GTE", value: sinceISO }
+                : null);
 
-          // KPI bar engagement metrics use HAS_PROPERTY (all-time, matching bottom table)
-          // Enrolled uses the period filter. Opens/clicks/replies show lifetime engagement
-          // on currently-enrolled contacts — consistent with the per-sequence table below.
-          const repliedF = { propertyName: "hs_sales_email_last_replied", operator: "HAS_PROPERTY" };
-          const openedF  = { propertyName: "hs_email_last_open_date",     operator: "HAS_PROPERTY" };
-          const clickedF = { propertyName: "hs_email_last_click_date",    operator: "HAS_PROPERTY" };
+          const allSeqContacts = await fetchC(
+            seqContactGroups,
+            ["assigned_bdr","hubspot_owner_id","hs_latest_sequence_enrolled",
+             "hs_latest_sequence_enrolled_date","hs_email_last_reply_date",
+             "hs_sales_email_last_replied","hs_email_last_open_date",
+             "hs_email_last_click_date"],
+            200
+          );
 
-          const enrolledGroups = sinceISO
-            ? (() => {
-                const dateF = { propertyName: "hs_latest_sequence_enrolled_date", operator: "GTE", value: sinceISO };
-                if (isEveryoneFilter) return [{ filters: [dateF] }];
-                return contactFilterGroups(dateF);
-              })()
-            : seqTotalGroups(null);
-
-          // Sequential with gaps to avoid 429 when dashboard is also loading
-          const enrolled   = await countC(enrolledGroups);
-          await new Promise(r => setTimeout(r, 200));
-          const seqReplied = await countC(seqTotalGroups(repliedF));
-          await new Promise(r => setTimeout(r, 200));
-          const seqOpened  = await countC(seqTotalGroups(openedF));
-          await new Promise(r => setTimeout(r, 200));
-          const seqClicked = await countC(seqTotalGroups(clickedF));
+          const enrolled   = allSeqContacts.length;
+          const seqOpened  = allSeqContacts.filter(c => c.properties?.hs_email_last_open_date).length;
+          const seqClicked = allSeqContacts.filter(c => c.properties?.hs_email_last_click_date).length;
+          const seqReplied = allSeqContacts.filter(c =>
+            c.properties?.hs_email_last_reply_date || c.properties?.hs_sales_email_last_replied
+          ).length;
 
           const replyRate = enrolled > 0 ? +((seqReplied / enrolled) * 100).toFixed(1) : 0;
           const openRate  = enrolled > 0 ? +((seqOpened  / enrolled) * 100).toFixed(1) : 0;
           const clickRate = enrolled > 0 ? +((seqClicked / enrolled) * 100).toFixed(1) : 0;
 
-          // ── Per-rep breakdown ─────────────────────────────────────────────────
-          await new Promise(r => setTimeout(r, 300));
+          // Per-rep: tally from same contact set
           const repData = [];
           for (const repName of targetReps) {
             const ownerId = REP_OWNER_ID_MAP[repName];
-            const repF = ownerId
-              ? { propertyName: "hubspot_owner_id", operator: "EQ", value: ownerId }
-              : { propertyName: "assigned_bdr",     operator: "EQ", value: repName };
-            const periodF = sinceISO
-              ? { propertyName: "hs_latest_sequence_enrolled_date", operator: "GTE", value: sinceISO }
-              : seqActiveF;
-            const rEnrolled = await count1([repF, periodF]);
-            await new Promise(r => setTimeout(r, 150));
-            const rReplied  = await count1([repF, seqActiveF, repliedF]);
-            await new Promise(r => setTimeout(r, 150));
-            const rOpened   = await count1([repF, seqActiveF, openedF]);
-            await new Promise(r => setTimeout(r, 150));
-            const rClicked  = await count1([repF, seqActiveF, clickedF]);
+            const repContacts = allSeqContacts.filter(c => ownerId
+              ? c.properties?.hubspot_owner_id === ownerId
+              : c.properties?.assigned_bdr === repName
+            );
+            const rEnrolled = repContacts.length;
+            const rOpened   = repContacts.filter(c => c.properties?.hs_email_last_open_date).length;
+            const rClicked  = repContacts.filter(c => c.properties?.hs_email_last_click_date).length;
+            const rReplied  = repContacts.filter(c =>
+              c.properties?.hs_email_last_reply_date || c.properties?.hs_sales_email_last_replied
+            ).length;
             repData.push({
               rep: repName, enrolled: rEnrolled, replied: rReplied, opened: rOpened, clicked: rClicked,
               replyRate: rEnrolled > 0 ? +((rReplied / rEnrolled) * 100).toFixed(1) : 0,
               openRate:  rEnrolled > 0 ? +((rOpened  / rEnrolled) * 100).toFixed(1) : 0,
               clickRate: rEnrolled > 0 ? +((rClicked / rEnrolled) * 100).toFixed(1) : 0,
             });
-            await new Promise(r => setTimeout(r, 200));
           }
 
-          // Per-sequence breakdown
+          // Per-sequence breakdown — reuse allSeqContacts (already fetched above)
           const bySequence = {};
+          // Reuse allSeqContacts — no second fetch needed
           try {
-            // For Everyone: fetch all enrolled contacts without rep filter
-            // For specific rep: use contactFilterGroups with enrollment date filter
-            const seqContactGroups = isEveryoneFilter
-              ? [{ filters: sinceISO
-                  ? [{ propertyName: "hs_latest_sequence_enrolled_date", operator: "GTE", value: sinceISO }]
-                  : [seqActiveF]
-                }]
-              : contactFilterGroups(sinceISO
-                  ? { propertyName: "hs_latest_sequence_enrolled_date", operator: "GTE", value: sinceISO }
-                  : null);
-
-            const seqContacts = await fetchC(
-              seqContactGroups,
-              ["assigned_bdr","hs_latest_sequence_enrolled","hs_latest_sequence_enrolled_date",
-               "hs_email_last_reply_date","hs_sales_email_last_replied",
-               "hs_email_last_open_date","hs_email_last_click_date"],
-              "hs_latest_sequence_enrolled_date", 500
-            );
-            console.log(`[reports sequences] fetched ${seqContacts.length} contacts`);
-            for (const c of seqContacts) {
+            for (const c of allSeqContacts) {
               const p = c.properties || {};
               const seqId = p.hs_latest_sequence_enrolled || "Unknown";
               if (!bySequence[seqId]) bySequence[seqId] = { sequenceId: seqId, enrolled:0, replied:0, opened:0, clicked:0 };
@@ -3522,7 +3488,6 @@ export const handler = async (event, context) => {
               if (p.hs_email_last_open_date)  bySequence[seqId].opened++;
               if (p.hs_email_last_click_date) bySequence[seqId].clicked++;
             }
-            console.log(`[reports sequences] grouped into ${Object.keys(bySequence).length} sequences`);
           } catch (e) { console.error("[reports sequences]", e.message); }
 
           // Resolve sequence names
