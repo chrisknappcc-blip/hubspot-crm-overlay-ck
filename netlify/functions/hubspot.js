@@ -980,6 +980,107 @@ export const handler = async (event, context) => {
           limit:  200,
         }).catch(() => ({ results: [] }));
 
+        // OOO / auto-reply subject patterns — case-insensitive substring match
+        const OOO_PATTERNS = [
+          "automatic reply",
+          "auto reply",
+          "auto-reply",
+          "out of office",
+          "ooo:",
+          "on vacation",
+          "away from office",
+          "i am out of",
+          "i'm out of",
+          "currently out",
+          "away until",
+          "on leave",
+        ];
+
+        // Fetch incoming email subjects for reply contacts in one batch
+        // so we can filter out OOO without N+1 queries
+        const replyContactIds = (repliesData.results || []).map(c => c.id);
+        let oooContactIds = new Set();
+        if (replyContactIds.length > 0) {
+          try {
+            // Search for INCOMING_EMAIL engagements for these contacts with OOO-like subjects
+            // We check all recent incoming emails for these contacts
+            const incomingEmails = await hsPost(user.userId, "/crm/v3/objects/emails/search", {
+              filterGroups: [{
+                filters: [
+                  { propertyName: "hs_email_direction", operator: "EQ", value: "INCOMING_EMAIL" },
+                  { propertyName: "hs_timestamp", operator: "GTE", value: sinceISO },
+                ]
+              }],
+              properties: ["hs_email_subject", "hs_timestamp"],
+              sorts: [{ propertyName: "hs_timestamp", direction: "DESCENDING" }],
+              limit: 200,
+            }).catch(() => ({ results: [] }));
+
+            // For contacts that ONLY have OOO replies (no real replies), mark as OOO
+            // We do this by checking if subject starts with an OOO pattern
+            // and cross-referencing with the reply contacts
+            // Since we can't join easily, check subjects from results
+            // and fetch associated contacts
+            const oooEmailIds = (incomingEmails.results || [])
+              .filter(e => {
+                const subj = (e.properties?.hs_email_subject || "").toLowerCase();
+                return OOO_PATTERNS.some(p => subj.startsWith(p) || subj.includes(p));
+              })
+              .map(e => e.id);
+
+            if (oooEmailIds.length > 0) {
+              // Get contact associations for OOO emails
+              const assocData = await hsPost(user.userId, "/crm/v4/associations/emails/contacts/batch/read", {
+                inputs: oooEmailIds.slice(0, 100).map(id => ({ id })),
+              }).catch(() => ({ results: [] }));
+
+              // Build set of contact IDs that have OOO emails
+              const oooContactsWithOOO = new Set();
+              for (const r of (assocData.results || [])) {
+                for (const assoc of (r.to || [])) {
+                  oooContactsWithOOO.add(String(assoc.toObjectId));
+                }
+              }
+
+              // Now fetch real (non-OOO) incoming emails for the same period
+              const realEmails = await hsPost(user.userId, "/crm/v3/objects/emails/search", {
+                filterGroups: [{
+                  filters: [
+                    { propertyName: "hs_email_direction", operator: "EQ", value: "INCOMING_EMAIL" },
+                    { propertyName: "hs_timestamp", operator: "GTE", value: sinceISO },
+                  ]
+                }],
+                properties: ["hs_email_subject"],
+                limit: 200,
+              }).catch(() => ({ results: [] }));
+
+              const realEmailIds = (realEmails.results || [])
+                .filter(e => {
+                  const subj = (e.properties?.hs_email_subject || "").toLowerCase();
+                  return !OOO_PATTERNS.some(p => subj.startsWith(p) || subj.includes(p));
+                })
+                .map(e => e.id);
+
+              if (realEmailIds.length > 0) {
+                const realAssocData = await hsPost(user.userId, "/crm/v4/associations/emails/contacts/batch/read", {
+                  inputs: realEmailIds.slice(0, 100).map(id => ({ id })),
+                }).catch(() => ({ results: [] }));
+
+                // Remove contacts from OOO list if they ALSO have a real reply
+                for (const r of (realAssocData.results || [])) {
+                  for (const assoc of (r.to || [])) {
+                    oooContactsWithOOO.delete(String(assoc.toObjectId));
+                  }
+                }
+              }
+
+              oooContactIds = oooContactsWithOOO;
+            }
+          } catch (e) {
+            console.error("[tasks] OOO filter error:", e.message);
+          }
+        }
+
         const repliesAwaitingResponse = (repliesData.results || [])
           .map(c => {
             const p = c.properties || {};
@@ -989,15 +1090,16 @@ export const handler = async (event, context) => {
             if (replyTs === 0) return null;
             const replyDate = replyTs === salesReplyTs ? p.hs_sales_email_last_replied : p.hs_email_last_reply_date;
 
-            // Check all available activity timestamps on the contact
-            const lastActivityTs = Math.max(
-              p.hs_last_sales_activity_timestamp ? new Date(p.hs_last_sales_activity_timestamp).getTime() : 0,
-              p.hs_email_last_send_date           ? new Date(p.hs_email_last_send_date).getTime()           : 0,
-              p.notes_last_contacted              ? new Date(p.notes_last_contacted).getTime()              : 0,
+            // Filter out contacts that only have OOO/auto-reply emails
+            if (oooContactIds.has(String(c.id))) return null;
+
+            // Check if YOU manually responded after the reply
+            const lastManualActivityTs = Math.max(
+              p.notes_last_contacted ? new Date(p.notes_last_contacted).getTime() : 0,
             );
 
-            // If ANY activity happened after the reply, someone responded -- exclude
-            if (lastActivityTs > replyTs) return null;
+            // Only exclude if a manual activity (logged call, note, meeting) happened after reply
+            if (lastManualActivityTs > replyTs) return null;
 
             // Get contact owner info
             const contactOwnerId   = p.hubspot_owner_id || null;
