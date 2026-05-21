@@ -1676,44 +1676,49 @@ export const handler = async (event, context) => {
           }
         }
 
-        // Count contacts where EITHER propA or propB >= since, filtered by rep
-        async function countEitherForRep(propA, propB, repName) {
+        // ── Email counts via engagement object (actual email rows, not contact-level dates) ──
+        // sequence emails: hs_sequence_id HAS_PROPERTY + outgoing direction
+        // individual emails: hs_sequence_id NOT_HAS_PROPERTY + outgoing direction
+        async function countEmailsForRep(repName, sequenceOnly) {
           const ownerId = OWNER_ID_MAP[repName];
-          const filter  = ownerId
+          const ownerFilter = ownerId
             ? { propertyName: "hubspot_owner_id", operator: "EQ", value: ownerId }
-            : { propertyName: "assigned_bdr",     operator: "EQ", value: repName };
+            : null;
+          const filters = [
+            { propertyName: "hs_email_direction", operator: "EQ", value: "EMAIL" },
+            { propertyName: "hs_timestamp", operator: "GTE", value: sinceISO },
+            { propertyName: "hs_sequence_id", operator: sequenceOnly ? "HAS_PROPERTY" : "NOT_HAS_PROPERTY" },
+          ];
+          if (ownerFilter) filters.push(ownerFilter);
           try {
-            const data = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
-              filterGroups: [
-                { filters: [filter, { propertyName: propA, operator: "GTE", value: sinceISO }] },
-                { filters: [filter, { propertyName: propB, operator: "GTE", value: sinceISO }] },
-              ],
-              properties: ["assigned_bdr"],
+            const data = await hsPost(user.userId, "/crm/v3/objects/emails/search", {
+              filterGroups: [{ filters }],
+              properties: ["hs_timestamp"],
               limit: 1,
             });
             return data.total || 0;
           } catch (err) {
-            console.error(`[activity] countEitherForRep ${propA}/${propB} ${repName}:`, err.message);
+            console.error(`[activity] countEmailsForRep ${repName} seq=${sequenceOnly}:`, err.message);
             return 0;
           }
         }
 
-        // Run counts SEQUENTIALLY per rep and per query to stay within rate limits.
-        // 8 reps × 5 queries = 40 calls -- sequential with gaps avoids 429s.
+        // Run counts SEQUENTIALLY per rep to stay within rate limits.
         const repResults = [];
         for (const repName of targetReps) {
-          const emailsSent        = await countEitherForRep("hs_email_last_send_date", "hs_last_sales_activity_timestamp", repName);
+          const seqEmails         = await countEmailsForRep(repName, true);
           await new Promise(r => setTimeout(r, 150));
+          const indivEmails       = await countEmailsForRep(repName, false);
+          await new Promise(r => setTimeout(r, 150));
+          const emailsSent        = seqEmails + indivEmails;
           const sequencesStarted  = await countForRep("hs_latest_sequence_enrolled_date", repName);
           await new Promise(r => setTimeout(r, 150));
-          const replies           = await countEitherForRep("hs_email_last_reply_date", "hs_sales_email_last_replied", repName);
+          const replies           = await countForRep("hs_email_last_reply_date", repName);
           await new Promise(r => setTimeout(r, 150));
-          const clicks            = await countEitherForRep("hs_email_last_click_date", "hs_sales_email_last_clicked", repName);
-          await new Promise(r => setTimeout(r, 150));
-          const opens             = await countEitherForRep("hs_email_last_open_date", "hs_sales_email_last_opened", repName);
-          console.log(`[activity] rep=${repName} emailsSent=${emailsSent} sequences=${sequencesStarted} replies=${replies} clicks=${clicks} opens=${opens}`);
-          repResults.push({ repName, emailsSent, sequencesStarted, replies, clicks, opens });
-          await new Promise(r => setTimeout(r, 200)); // gap between reps
+          const opens             = await countForRep("hs_email_last_open_date", repName);
+          console.log(`[activity] rep=${repName} seqEmails=${seqEmails} indivEmails=${indivEmails} total=${emailsSent} sequences=${sequencesStarted} replies=${replies} opens=${opens}`);
+          repResults.push({ repName, emailsSent, seqEmails, indivEmails, sequencesStarted, replies, opens });
+          await new Promise(r => setTimeout(r, 200));
         }
 
         // Optional AE pass: also count by hubspot_owner_id
@@ -1772,16 +1777,19 @@ export const handler = async (event, context) => {
         // Sum totals
         const totals = repResults.reduce((acc, r) => {
           acc.emailsSent       += r.emailsSent;
-          acc.sequencesStarted += r.sequencesStarted;
-          acc.replies          += r.replies;
-          acc.clicks           += r.clicks;
-          acc.opens            += r.opens;
+          acc.seqEmails        += r.seqEmails        || 0;
+          acc.indivEmails      += r.indivEmails      || 0;
+          acc.sequencesStarted += r.sequencesStarted || 0;
+          acc.replies          += r.replies          || 0;
+          acc.opens            += r.opens            || 0;
           return acc;
-        }, { emailsSent:0, sequencesStarted:0, replies:0, clicks:0, opens:0 });
+        }, { emailsSent:0, seqEmails:0, indivEmails:0, sequencesStarted:0, replies:0, opens:0 });
 
         const summary = {
           outbound: {
             emailsSent:       totals.emailsSent       + (includeOwned ? ownedCounts.emailsSent : 0),
+            seqEmails:        totals.seqEmails        + (includeOwned ? ownedCounts.seqEmails   || 0 : 0),
+            indivEmails:      totals.indivEmails      + (includeOwned ? ownedCounts.indivEmails || 0 : 0),
             sequencesStarted: totals.sequencesStarted,
             callsLogged:      engTotals.calls,
             meetingsLogged:   engTotals.meetings,
@@ -1798,6 +1806,8 @@ export const handler = async (event, context) => {
         const byRep = Object.fromEntries(repResults.map(r => [r.repName, {
           outbound: {
             emailsSent:       r.emailsSent,
+            seqEmails:        r.seqEmails   || 0,
+            indivEmails:      r.indivEmails || 0,
             sequencesStarted: r.sequencesStarted,
             callsLogged:      engByRep[r.repName]?.calls    || 0,
             meetingsLogged:   engByRep[r.repName]?.meetings || 0,
@@ -3856,22 +3866,54 @@ export const handler = async (event, context) => {
 
         // ── WEEKLY RECAP ──────────────────────────────────────────────────────
         if (section === "weekly_recap") {
-          // Collect all activity for the period across the team (or filtered rep)
-          const sentCounts  = await countAllRepsForMetric("hs_email_last_send_date");
-          await new Promise(r => setTimeout(r, 300));
+          // ── Email counts via engagement object ──
+          // seq emails:   hs_sequence_id HAS_PROPERTY + outgoing + timestamp >= since
+          // indiv emails: hs_sequence_id NOT_HAS_PROPERTY + outgoing + timestamp >= since
+          async function countEmailsByType(ownerId, assignedBdr, sequenceOnly) {
+            const ownerFilter  = ownerId   ? { propertyName: "hubspot_owner_id", operator: "EQ", value: ownerId } : null;
+            const bdrFilter    = assignedBdr ? { propertyName: "hs_body_preview",  operator: "EQ", value: assignedBdr } : null;
+            const baseFilters  = [
+              { propertyName: "hs_email_direction", operator: "EQ",  value: "EMAIL" },
+              { propertyName: "hs_timestamp",       operator: "GTE", value: sinceISO },
+              { propertyName: "hs_sequence_id",     operator: sequenceOnly ? "HAS_PROPERTY" : "NOT_HAS_PROPERTY" },
+            ];
+            if (untilISO) baseFilters.push({ propertyName: "hs_timestamp", operator: "LTE", value: untilISO });
+            if (ownerFilter)  baseFilters.push(ownerFilter);
+            try {
+              const d = await hsPost(user.userId, "/crm/v3/objects/emails/search", {
+                filterGroups: [{ filters: baseFilters }],
+                properties: ["hs_timestamp"],
+                limit: 1,
+              });
+              return d.total || 0;
+            } catch { return 0; }
+          }
+
+          // Opens and replies still via contact-level props (no per-email open tracking on engagements)
           const openCounts  = await countAllRepsForMetric("hs_email_last_open_date");
-          await new Promise(r => setTimeout(r, 300));
-          const clickCounts = await countAllRepsForMetric("hs_email_last_click_date");
           await new Promise(r => setTimeout(r, 300));
           const replyCounts = await countAllRepsForMetric("hs_email_last_reply_date");
           await new Promise(r => setTimeout(r, 300));
           const seqCounts   = await countAllRepsForMetric("hs_latest_sequence_enrolled_date");
 
+          // Build per-rep counts using engagement object for email sent
+          const repEmailCounts = {};
+          for (const repName of targetReps) {
+            const ownerId     = OWNER_ID_MAP[repName];
+            const assignedBdr = !ownerId ? repName : null;
+            const seqEmails   = await countEmailsByType(ownerId, assignedBdr, true);
+            await new Promise(r => setTimeout(r, 150));
+            const indivEmails = await countEmailsByType(ownerId, assignedBdr, false);
+            await new Promise(r => setTimeout(r, 150));
+            repEmailCounts[repName] = { seqEmails, indivEmails, total: seqEmails + indivEmails };
+          }
+
           const byRep = targetReps.map(repName => ({
             rep:       repName,
-            sent:      sentCounts[repName]  || 0,
+            sent:      repEmailCounts[repName]?.total     || 0,
+            seqEmails: repEmailCounts[repName]?.seqEmails || 0,
+            indivEmails: repEmailCounts[repName]?.indivEmails || 0,
             opens:     openCounts[repName]  || 0,
-            clicks:    clickCounts[repName] || 0,
             replies:   replyCounts[repName] || 0,
             sequences: seqCounts[repName]   || 0,
           }));
@@ -3891,12 +3933,13 @@ export const handler = async (event, context) => {
           });
 
           const totals = byRep.reduce((acc, r) => ({
-            sent:      acc.sent      + r.sent,
-            opens:     acc.opens     + r.opens,
-            clicks:    acc.clicks    + r.clicks,
-            replies:   acc.replies   + r.replies,
-            sequences: acc.sequences + r.sequences,
-          }), { sent:0, opens:0, clicks:0, replies:0, sequences:0 });
+            sent:        acc.sent        + r.sent,
+            seqEmails:   acc.seqEmails   + (r.seqEmails   || 0),
+            indivEmails: acc.indivEmails + (r.indivEmails || 0),
+            opens:       acc.opens       + r.opens,
+            replies:     acc.replies     + r.replies,
+            sequences:   acc.sequences   + r.sequences,
+          }), { sent:0, seqEmails:0, indivEmails:0, opens:0, replies:0, sequences:0 });
 
           return ok({
             section: "weekly_recap",
