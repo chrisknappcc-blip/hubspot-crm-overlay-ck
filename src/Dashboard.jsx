@@ -2678,22 +2678,33 @@ function ReportsTab({ safeFetch, owners, currentUserName,
                 <div style={{ fontSize:12, color:'var(--text-tertiary)', marginTop:2 }}>Live view of all outreach activity. Log manual entries below — they appear across all reports.</div>
               </div>
             </div>
-            {/* KPI strip */}
+            {/* KPI strip — two rows: Email stats + Sequence stats */}
             <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
-              {/* Row 1: Email breakdown */}
-              <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr 1fr 1fr', gap:10 }}>
+              {/* Row 1: Email outreach */}
+              <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr 1fr', gap:10 }}>
                 <div style={{ padding:'14px 16px', background:'var(--surface)', border:'2px solid var(--accent)', borderRadius:'var(--radius)', display:'flex', flexDirection:'column', gap:2 }}>
                   <div style={{ fontSize:11, fontWeight:600, textTransform:'uppercase', letterSpacing:'.06em', color:'var(--accent)', opacity:.8 }}>Total Outreach</div>
-                  <div style={{ fontSize:28, fontWeight:700, color:'var(--accent)', lineHeight:1 }}>{fmt((t.seqEmails||0) + (t.indivEmails||0) || t.sent)}</div>
+                  <div style={{ fontSize:28, fontWeight:700, color:'var(--accent)', lineHeight:1 }}>{fmt(t.sent || 0)}</div>
                   <div style={{ fontSize:11, color:'var(--text-secondary)', marginTop:2 }}>
                     {fmt(t.seqEmails||0)} sequence · {fmt(t.indivEmails||0)} individual
                   </div>
                 </div>
-                <KpiCard label="Opens"       value={fmt(t.opens)}            sub={`${t.openRate||0}% open rate`} />
-                <KpiCard label="Clicks"      value={fmt(t.clicks)}           sub={`${t.clickRate||0}% click rate`} />
-                <KpiCard label="Replies"     value={fmt(t.replies)}          sub={`${t.replyRate||0}% reply rate`} />
-                <KpiCard label="Sequences"   value={fmt(t.sequences)}        sub="Enrollments" />
-                <KpiCard label="To-Do Done"  value={fmt(t.completedTodos)}   accent />
+                <KpiCard label="Opens"   value={fmt(t.opens)}   sub={`${t.openRate||0}% open rate`} />
+                <KpiCard label="Clicks"  value={fmt(t.clicks)}  sub={`${t.clickRate||0}% click rate`} />
+                <KpiCard label="Replies" value={fmt(t.replies)} sub={`${t.replyRate||0}% reply rate`} />
+                <KpiCard label="To-Do Done" value={fmt(t.completedTodos)} accent />
+              </div>
+              {/* Row 2: Sequence stats */}
+              <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr 1fr', gap:10 }}>
+                <div style={{ padding:'14px 16px', background:'var(--surface)', border:'1px solid var(--border)', borderRadius:'var(--radius)', display:'flex', flexDirection:'column', gap:2 }}>
+                  <div style={{ fontSize:11, fontWeight:600, textTransform:'uppercase', letterSpacing:'.06em', color:'var(--text-tertiary)' }}>Sequences</div>
+                  <div style={{ fontSize:28, fontWeight:700, color:'var(--text)', lineHeight:1 }}>{fmt(t.sequences||0)}</div>
+                  <div style={{ fontSize:11, color:'var(--text-secondary)', marginTop:2 }}>Enrollments this period</div>
+                </div>
+                <KpiCard label="Seq Opens"   value={fmt(t.opens)}   sub={`${t.seqOpenRate||0}% of enrolled`} />
+                <KpiCard label="Seq Clicks"  value={fmt(t.clicks)}  sub={`${t.clickRate||0}% click rate`} />
+                <KpiCard label="Seq Replies" value={fmt(t.replies)} sub={`${t.seqReplyRate||0}% of enrolled`} />
+                <div />
               </div>
             </div>
 
