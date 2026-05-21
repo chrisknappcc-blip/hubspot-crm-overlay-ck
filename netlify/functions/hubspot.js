@@ -1713,9 +1713,20 @@ export const handler = async (event, context) => {
           const emailsSent        = seqEmails + indivEmails;
           const sequencesStarted  = await countForRep("hs_latest_sequence_enrolled_date", repName);
           await new Promise(r => setTimeout(r, 150));
-          const replies           = await countForRep("hs_email_last_reply_date", repName);
+          // Replies + opens via engagement object — correctly scoped to this rep
+          // avoids cross-rep contamination from contact-level date properties
+          const ownerId_r   = OWNER_ID_MAP[repName];
+          const repFilters  = [
+            { propertyName: "hs_timestamp", operator: "GTE", value: sinceISO },
+          ];
+          if (ownerId_r) repFilters.push({ propertyName: "hubspot_owner_id", operator: "EQ", value: ownerId_r });
+          const replyData = await hsPost(user.userId, "/crm/v3/objects/emails/search", {
+            filterGroups: [{ filters: [...repFilters, { propertyName: "hs_email_direction", operator: "EQ", value: "INCOMING_EMAIL" }] }],
+            properties: ["hs_timestamp"], limit: 1,
+          }).catch(() => ({ total: 0 }));
+          const replies = replyData.total || 0;
           await new Promise(r => setTimeout(r, 150));
-          const opens             = await countForRep("hs_email_last_open_date", repName);
+          const opens = await countForRep("hs_email_last_open_date", repName);
           console.log(`[activity] rep=${repName} seqEmails=${seqEmails} indivEmails=${indivEmails} total=${emailsSent} sequences=${sequencesStarted} replies=${replies} opens=${opens}`);
           repResults.push({ repName, emailsSent, seqEmails, indivEmails, sequencesStarted, replies, opens });
           await new Promise(r => setTimeout(r, 200));
@@ -3892,30 +3903,45 @@ export const handler = async (event, context) => {
           // Opens and replies still via contact-level props (no per-email open tracking on engagements)
           const openCounts  = await countAllRepsForMetric("hs_email_last_open_date");
           await new Promise(r => setTimeout(r, 300));
-          const replyCounts = await countAllRepsForMetric("hs_email_last_reply_date");
-          await new Promise(r => setTimeout(r, 300));
           const seqCounts   = await countAllRepsForMetric("hs_latest_sequence_enrolled_date");
 
-          // Build per-rep counts using engagement object for email sent
+          // Build per-rep counts using engagement object for email sent AND replies
+          // Replies via INCOMING_EMAIL engagement — correctly scoped per rep, no cross-rep bleed
           const repEmailCounts = {};
           for (const repName of targetReps) {
-            const ownerId     = OWNER_ID_MAP[repName];
+            const ownerId     = REP_OWNER_ID_MAP[repName];
             const assignedBdr = !ownerId ? repName : null;
             const seqEmails   = await countEmailsByType(ownerId, assignedBdr, true);
             await new Promise(r => setTimeout(r, 150));
             const indivEmails = await countEmailsByType(ownerId, assignedBdr, false);
             await new Promise(r => setTimeout(r, 150));
-            repEmailCounts[repName] = { seqEmails, indivEmails, total: seqEmails + indivEmails };
+            // Replies = incoming emails directed to this rep
+            const replyFilters = [
+              { propertyName: "hs_email_direction", operator: "EQ",  value: "INCOMING_EMAIL" },
+              { propertyName: "hs_timestamp",       operator: "GTE", value: sinceISO },
+            ];
+            if (untilISO) replyFilters.push({ propertyName: "hs_timestamp", operator: "LTE", value: untilISO });
+            if (ownerId)  replyFilters.push({ propertyName: "hubspot_owner_id", operator: "EQ", value: ownerId });
+            const replyData = await hsPost(user.userId, "/crm/v3/objects/emails/search", {
+              filterGroups: [{ filters: replyFilters }],
+              properties: ["hs_timestamp"], limit: 1,
+            }).catch(() => ({ total: 0 }));
+            await new Promise(r => setTimeout(r, 150));
+            repEmailCounts[repName] = {
+              seqEmails, indivEmails,
+              total:   seqEmails + indivEmails,
+              replies: replyData.total || 0,
+            };
           }
 
           const byRep = targetReps.map(repName => ({
-            rep:       repName,
-            sent:      repEmailCounts[repName]?.total     || 0,
-            seqEmails: repEmailCounts[repName]?.seqEmails || 0,
+            rep:         repName,
+            sent:        repEmailCounts[repName]?.total     || 0,
+            seqEmails:   repEmailCounts[repName]?.seqEmails || 0,
             indivEmails: repEmailCounts[repName]?.indivEmails || 0,
-            opens:     openCounts[repName]  || 0,
-            replies:   replyCounts[repName] || 0,
-            sequences: seqCounts[repName]   || 0,
+            opens:       openCounts[repName]  || 0,
+            replies:     repEmailCounts[repName]?.replies || 0,
+            sequences:   seqCounts[repName]   || 0,
           }));
 
           // Completed To-Do items for the period
