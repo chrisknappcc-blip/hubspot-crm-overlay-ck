@@ -440,6 +440,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
   const [contacts, setContacts]           = useState([])
   const [contactsTotal, setContactsTotal] = useState(0)
   const [repSyncState, setRepSyncState]   = useState({ running:false, done:false, updated:0, skipped:0, total:0, progress:'' })
+  const [adminOpen, setAdminOpen]           = useState(false)
   const [feed, setFeed]               = useState([])
   const [loading, setLoading]         = useState(true)
   const [signalsHasMore, setSignalsHasMore] = useState(false)
@@ -1108,69 +1109,77 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
               <MetricCard label="Bot opens filtered" value={botCount}          sub="Not shown in feed"   subType="neutral" />
             </div>
 
-            {/* Primary Rep Sync panel */}
-            {(() => {
-              const runRepSync = async () => {
-                setRepSyncState({ running:true, done:false, updated:0, skipped:0, total:0, progress:'Starting…' })
-                let totalUpdated = 0, totalSkipped = 0, grandTotal = 0
-                let batchStart = 0
-                try {
-                  while (true) {
-                    setRepSyncState(s => ({ ...s, progress: grandTotal > 0
-                      ? `Processing ${Math.min(batchStart+50, grandTotal)} of ${grandTotal} contacts…`
-                      : 'Fetching Gold contacts…'
-                    }))
-                    const res = await safeFetch(`/api/hubspot/sync-primary-rep`, {
-                      method: 'POST',
-                      headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({ batchStart, batchSize: 50 }),
-                    })
-                    totalUpdated += res.updated || 0
-                    totalSkipped += res.skipped || 0
-                    grandTotal    = res.total   || grandTotal
-                    if (res.done || !res.hasMore) break
-                    batchStart = res.nextBatch
-                    await new Promise(r => setTimeout(r, 300))
+            {/* Admin panel — only visible to Chris Knapp */}
+            {currentUserName === 'Chris Knapp' && (
+              <div style={{ marginBottom:'1.25rem' }}>
+                <button onClick={() => setAdminOpen(o => !o)}
+                  style={{ fontSize:11, color:'var(--text-tertiary)', background:'none', border:'none',
+                    cursor:'pointer', padding:'2px 0', display:'flex', alignItems:'center', gap:5 }}>
+                  <span style={{ fontSize:10 }}>{adminOpen ? '▼' : '▶'}</span>
+                  Admin tools
+                </button>
+                {adminOpen && (() => {
+                  const runRepSync = async () => {
+                    setRepSyncState({ running:true, done:false, updated:0, skipped:0, total:0, progress:'Starting…' })
+                    let totalUpdated = 0, totalSkipped = 0, grandTotal = 0
+                    let batchStart = 0
+                    try {
+                      while (true) {
+                        setRepSyncState(s => ({ ...s, progress: grandTotal > 0
+                          ? `Processing ${Math.min(batchStart+50, grandTotal)} of ${grandTotal} contacts…`
+                          : 'Fetching Gold contacts…'
+                        }))
+                        const res = await safeFetch(`/api/hubspot/sync-primary-rep`, {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ batchStart, batchSize: 50 }),
+                        })
+                        totalUpdated += res.updated || 0
+                        totalSkipped += res.skipped || 0
+                        grandTotal    = res.total   || grandTotal
+                        if (res.done || !res.hasMore) break
+                        batchStart = res.nextBatch
+                        await new Promise(r => setTimeout(r, 300))
+                      }
+                      setRepSyncState({ running:false, done:true, updated:totalUpdated, skipped:totalSkipped, total:grandTotal, progress:'' })
+                    } catch(e) {
+                      setRepSyncState(s => ({ ...s, running:false, progress:`Error: ${e.message}` }))
+                    }
                   }
-                  setRepSyncState({ running:false, done:true, updated:totalUpdated, skipped:totalSkipped, total:grandTotal, progress:'' })
-                } catch(e) {
-                  setRepSyncState(s => ({ ...s, running:false, progress:`Error: ${e.message}` }))
-                }
-              }
-              const s = repSyncState
-              return (
-                <div style={{ marginBottom:'1.25rem', padding:'10px 14px', background:'var(--bg-panel)',
-                  border:'1px solid var(--border)', borderRadius:'var(--radius-lg)',
-                  display:'flex', alignItems:'center', gap:14, flexWrap:'wrap' }}>
-                  <div style={{ flex:1, minWidth:200 }}>
-                    <div style={{ fontSize:12, fontWeight:600, color:'var(--text)', marginBottom:2 }}>
-                      Primary Outreach Rep Sync
+                  const s = repSyncState
+                  return (
+                    <div style={{ marginTop:8, padding:'10px 14px', background:'var(--bg-panel)',
+                      border:'1px solid var(--border)', borderRadius:'var(--radius-lg)',
+                      display:'flex', alignItems:'center', gap:14, flexWrap:'wrap' }}>
+                      <div style={{ flex:1, minWidth:200 }}>
+                        <div style={{ fontSize:12, fontWeight:600, color:'var(--text)', marginBottom:2 }}>
+                          Primary Outreach Rep Sync
+                        </div>
+                        <div style={{ fontSize:11, color:'var(--text-tertiary)' }}>
+                          {s.done
+                            ? `✓ Complete — ${s.updated.toLocaleString()} updated · ${s.skipped.toLocaleString()} unchanged · ${s.total.toLocaleString()} Gold contacts`
+                            : s.running
+                            ? s.progress
+                            : 'Sets primary_outreach_rep based on most recent engagement owner. AE activity overrides BDR. Do Not Contact skipped.'}
+                        </div>
+                      </div>
+                      {s.running && (
+                        <div style={{ fontSize:11, color:'var(--accent)' }}>
+                          {s.total > 0 ? `${Math.round(((s.updated+s.skipped)/s.total)*100)}%` : '…'}
+                        </div>
+                      )}
+                      <button onClick={runRepSync} disabled={s.running}
+                        style={{ padding:'6px 14px', background: s.running ? 'var(--bg)' : 'var(--accent)',
+                          color: s.running ? 'var(--text-tertiary)' : '#fff',
+                          border:'none', borderRadius:'var(--radius)', fontSize:12,
+                          fontWeight:600, cursor: s.running ? 'not-allowed' : 'pointer', flexShrink:0 }}>
+                        {s.running ? '⟳ Running…' : s.done ? 'Re-sync' : 'Run Sync'}
+                      </button>
                     </div>
-                    <div style={{ fontSize:11, color:'var(--text-tertiary)' }}>
-                      {s.done
-                        ? `✓ Complete — ${s.updated.toLocaleString()} updated · ${s.skipped.toLocaleString()} unchanged · ${s.total.toLocaleString()} Gold contacts`
-                        : s.running
-                        ? s.progress
-                        : 'Sets primary_outreach_rep based on most recent engagement owner. AE activity overrides BDR. Do Not Contact contacts skipped.'}
-                    </div>
-                  </div>
-                  {s.running && (
-                    <div style={{ fontSize:11, color:'var(--accent)' }}>
-                      {s.total > 0 ? `${Math.round(((s.updated+s.skipped)/s.total)*100)}%` : '…'}
-                    </div>
-                  )}
-                  <button
-                    onClick={runRepSync}
-                    disabled={s.running}
-                    style={{ padding:'6px 14px', background: s.running ? 'var(--bg)' : 'var(--accent)',
-                      color: s.running ? 'var(--text-tertiary)' : '#fff',
-                      border:'none', borderRadius:'var(--radius)', fontSize:12,
-                      fontWeight:600, cursor: s.running ? 'not-allowed' : 'pointer', flexShrink:0 }}>
-                    {s.running ? '⟳ Running…' : s.done ? 'Re-sync' : 'Run Sync'}
-                  </button>
-                </div>
-              )
-            })()}
+                  )
+                })()}
+              </div>
+            )}
 
             {/* Filter bar */}
             <div style={{ display:'flex', flexWrap:'wrap', gap:8, marginBottom:'1.25rem', padding:'10px 14px', background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius-lg)', alignItems:'center' }}>
