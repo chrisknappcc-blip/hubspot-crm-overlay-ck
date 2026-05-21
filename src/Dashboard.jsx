@@ -3074,7 +3074,7 @@ function ReportsTab({ safeFetch, owners, currentUserName,
             `Generated: ${new Date().toLocaleString()}`,
             ``,
             `── OUTREACH TOTALS ──`,
-            `Emails Sent:       ${t.sent}`,
+            `Total Outreach:    ${t.sent} (${t.seqEmails||0} sequence, ${t.indivEmails||0} individual)`,
             `Opens:             ${t.opens} (${t.openRate}%)`,
             `Clicks:            ${t.clicks}`,
             `Replies:           ${t.replies} (${t.replyRate}%)`,
@@ -3099,7 +3099,9 @@ function ReportsTab({ safeFetch, owners, currentUserName,
             ['Type','Rep','Metric','Value','Date'],
             // HubSpot activity
             ...byRep.flatMap(r => [
-              ['HubSpot','rep','Emails Sent',r.sent,''],
+              ['HubSpot',r.rep,'Total Sent',r.sent,''],
+              ['HubSpot',r.rep,'Sequence Emails',r.seqEmails||0,''],
+              ['HubSpot',r.rep,'Individual Emails',r.indivEmails||0,''],
               ['HubSpot',r.rep,'Opens',r.opens,''],
               ['HubSpot',r.rep,'Clicks',r.clicks,''],
               ['HubSpot',r.rep,'Replies',r.replies,''],
@@ -3139,32 +3141,42 @@ function ReportsTab({ safeFetch, owners, currentUserName,
               </div>
             </div>
 
-            {/* KPI strip */}
-            <div style={{ display:'grid', gridTemplateColumns:'repeat(7,1fr)', gap:10 }}>
-              <KpiCard label="Emails Sent"    value={fmt(t.sent)}     />
-              <KpiCard label="Opens"          value={fmt(t.opens)}    />
-              <KpiCard label="Open Rate"      value={`${t.openRate||0}%`} />
-              <KpiCard label="Replies"        value={fmt(t.replies)}  />
-              <KpiCard label="Reply Rate"     value={`${t.replyRate||0}%`} />
-              <KpiCard label="Sequences"      value={fmt(t.sequences)} />
-              <KpiCard label="To-Do Done"     value={fmt(t.completedTodos)} accent />
+            {/* KPI strip — Total Outreach + breakdown + engagement metrics */}
+            <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
+              {/* Row 1: Email breakdown */}
+              <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr 1fr 1fr', gap:10 }}>
+                {/* Total Outreach — spans wider, prominent */}
+                <div style={{ padding:'14px 16px', background:'var(--surface)', border:'2px solid var(--accent)', borderRadius:'var(--radius)', display:'flex', flexDirection:'column', gap:2 }}>
+                  <div style={{ fontSize:11, fontWeight:600, textTransform:'uppercase', letterSpacing:'.06em', color:'var(--accent)', opacity:.8 }}>Total Outreach</div>
+                  <div style={{ fontSize:28, fontWeight:700, color:'var(--accent)', lineHeight:1 }}>{fmt(t.sent)}</div>
+                  <div style={{ fontSize:11, color:'var(--text-secondary)', marginTop:2 }}>
+                    {fmt(t.seqEmails||0)} sequence · {fmt(t.indivEmails||0)} individual
+                  </div>
+                </div>
+                <KpiCard label="Sequence Emails"   value={fmt(t.seqEmails||0)}   sub="Via sequences" />
+                <KpiCard label="Individual Emails" value={fmt(t.indivEmails||0)} sub="1:1 direct" />
+                <KpiCard label="Opens"             value={fmt(t.opens)}          sub={`${t.openRate||0}% open rate`} />
+                <KpiCard label="Replies"           value={fmt(t.replies)}        sub={`${t.replyRate||0}% reply rate`} />
+                <KpiCard label="To-Do Done"        value={fmt(t.completedTodos)} accent />
+              </div>
             </div>
 
             {/* byRep table */}
             <Panel>
               <SectionTitle>Activity by Rep</SectionTitle>
               <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
-                <THead cols={['Rep','Sent','Opens','Open%','Clicks','Replies','Reply%','Sequences']} />
+                <THead cols={['Rep','Total Sent','Seq Emails','Indiv Emails','Opens','Open%','Replies','Reply%','Sequences']} />
                 <tbody>
                   {byRep.map((r,i) => (
                     <tr key={i} style={{ borderBottom:'1px solid var(--border)' }}>
                       <td style={{ padding:'8px 10px 8px 0', fontWeight:500 }}>{r.rep}</td>
-                      <td style={{ padding:'8px 10px 8px 0' }}>{fmt(r.sent)}</td>
+                      <td style={{ padding:'8px 10px 8px 0', fontWeight:600 }}>{fmt(r.sent)}</td>
+                      <td style={{ padding:'8px 10px 8px 0', color:'var(--text-secondary)' }}>{fmt(r.seqEmails||0)}</td>
+                      <td style={{ padding:'8px 10px 8px 0', color:'var(--text-secondary)' }}>{fmt(r.indivEmails||0)}</td>
                       <td style={{ padding:'8px 10px 8px 0' }}>{fmt(r.opens)}</td>
                       <td style={{ padding:'8px 10px 8px 0', color:'var(--text-secondary)' }}>
                         {r.sent > 0 ? ((r.opens/r.sent)*100).toFixed(1) : 0}%
                       </td>
-                      <td style={{ padding:'8px 10px 8px 0' }}>{fmt(r.clicks)}</td>
                       <td style={{ padding:'8px 10px 8px 0' }}>{fmt(r.replies)}</td>
                       <td style={{ padding:'8px 10px 8px 0', color:'var(--text-secondary)' }}>
                         {r.sent > 0 ? ((r.replies/r.sent)*100).toFixed(1) : 0}%
