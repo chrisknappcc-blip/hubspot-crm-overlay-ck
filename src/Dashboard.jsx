@@ -438,6 +438,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
   const [signals, setSignals]         = useState([])
   const [botSignals, setBotSignals]   = useState([])
   const [contacts, setContacts]       = useState([])
+  const [contactsTotal, setContactsTotal] = useState(0)
   const [feed, setFeed]               = useState([])
   const [loading, setLoading]         = useState(true)
   const [signalsHasMore, setSignalsHasMore] = useState(false)
@@ -743,6 +744,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
       try {
         const contactData = await safeFetch(`/api/hubspot/contacts${filterParams ? '?' + filterParams : ''}`)
         setContacts(contactData.contacts || [])
+        setContactsTotal(contactData.total || 0)
       } catch (ce) { console.error('[contacts]', ce) }
 
       // Fire tier-2 background fetch if more results exist
@@ -1101,7 +1103,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
             <div style={{ display:'grid', gridTemplateColumns:'repeat(4,minmax(0,1fr))', gap:10, marginBottom:'1.25rem' }}>
               <MetricCard label="Hot signals"        value={hotCount}          sub="Replies + clicks"    subType="up" />
               <MetricCard label="Warm signals"       value={warmCount}         sub="Opens w/ engagement" subType="neutral" />
-              <MetricCard label="Active contacts"    value={contacts.length}   sub={loadingMore ? 'Loading more...' : 'In HubSpot'} subType="neutral" />
+              <MetricCard label="Active contacts"    value={contactsTotal || contacts.length}   sub={loadingMore ? 'Loading more...' : 'In HubSpot'} subType="neutral" />
               <MetricCard label="Bot opens filtered" value={botCount}          sub="Not shown in feed"   subType="neutral" />
             </div>
 
@@ -2677,14 +2679,22 @@ function ReportsTab({ safeFetch, owners, currentUserName,
               </div>
             </div>
             {/* KPI strip */}
-            <div style={{ display:'grid', gridTemplateColumns:'repeat(7,1fr)', gap:10 }}>
-              <KpiCard label="Emails Sent"    value={fmt(t.sent)}    />
-              <KpiCard label="Opens"          value={fmt(t.opens)}   />
-              <KpiCard label="Open Rate"      value={`${t.openRate||0}%`} />
-              <KpiCard label="Clicks"         value={fmt(t.clicks)}  />
-              <KpiCard label="Replies"        value={fmt(t.replies)} />
-              <KpiCard label="Sequences"      value={fmt(t.sequences)} />
-              <KpiCard label="To-Do Completed" value={fmt(t.completedTodos)} accent />
+            <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
+              {/* Row 1: Email breakdown */}
+              <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr 1fr 1fr', gap:10 }}>
+                <div style={{ padding:'14px 16px', background:'var(--surface)', border:'2px solid var(--accent)', borderRadius:'var(--radius)', display:'flex', flexDirection:'column', gap:2 }}>
+                  <div style={{ fontSize:11, fontWeight:600, textTransform:'uppercase', letterSpacing:'.06em', color:'var(--accent)', opacity:.8 }}>Total Outreach</div>
+                  <div style={{ fontSize:28, fontWeight:700, color:'var(--accent)', lineHeight:1 }}>{fmt((t.seqEmails||0) + (t.indivEmails||0) || t.sent)}</div>
+                  <div style={{ fontSize:11, color:'var(--text-secondary)', marginTop:2 }}>
+                    {fmt(t.seqEmails||0)} sequence · {fmt(t.indivEmails||0)} individual
+                  </div>
+                </div>
+                <KpiCard label="Opens"       value={fmt(t.opens)}            sub={`${t.openRate||0}% open rate`} />
+                <KpiCard label="Clicks"      value={fmt(t.clicks)}           sub={`${t.clickRate||0}% click rate`} />
+                <KpiCard label="Replies"     value={fmt(t.replies)}          sub={`${t.replyRate||0}% reply rate`} />
+                <KpiCard label="Sequences"   value={fmt(t.sequences)}        sub="Enrollments" />
+                <KpiCard label="To-Do Done"  value={fmt(t.completedTodos)}   accent />
+              </div>
             </div>
 
             {/* byRep table */}
