@@ -1119,7 +1119,7 @@ export const handler = async (event, context) => {
               replyDate,
               contactOwner:     contactOwnerName,
               isOwnedBySelected: selectedRepOwnerId ? String(contactOwnerId) === selectedRepOwnerId : false,
-              lastOutboundDate: lastActivityTs > 0 ? new Date(lastActivityTs).toISOString() : null,
+              lastOutboundDate: null, // lastActivityTs removed — manual activity no longer tracked here
               waitingHours:     Math.round((now - replyTs) / (1000 * 60 * 60)),
               subject:          p.hs_email_last_email_name || null,
               url: `https://app.hubspot.com/contacts/39921549/record/0-1/${c.id}`,
