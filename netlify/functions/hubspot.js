@@ -4333,13 +4333,16 @@ export const handler = async (event, context) => {
           "Matt Valin":   "76104455",
           "Joseph Haine": "55217954",
           "Tim Grisham":  "83862037",
-          "Irene Wong":   "289209454",
-          "Cole Hooper":  "85819247",
           "John Hansel":  "743772047",
         };
+        // These reps do outreach for specific cases (conferences etc) but are never
+        // primary_outreach_rep — excluded from the allowed values on the HubSpot property
+        const EXCLUDED_FROM_PRIMARY = new Set(["289209454", "85819247"]); // Irene Wong, Cole Hooper
         const ALL_OWNER_ID_TO_NAME = {
           ...Object.fromEntries(Object.entries(BDR_OWNER_IDS).map(([n,id]) => [id, n])),
           ...Object.fromEntries(Object.entries(AE_OWNER_IDS).map(([n,id]) => [id, n])),
+          "289209454": "Irene Wong",  // known but excluded from primary_outreach_rep
+          "85819247":  "Cole Hooper", // known but excluded from primary_outreach_rep
         };
         const BDR_OWNER_ID_SET = new Set(Object.values(BDR_OWNER_IDS));
         const AE_OWNER_ID_SET  = new Set(Object.values(AE_OWNER_IDS));
@@ -4489,7 +4492,7 @@ export const handler = async (event, context) => {
 
           let newRep = assignedBdr; // default
 
-          if (lastOwnerName) {
+          if (lastOwnerName && !EXCLUDED_FROM_PRIMARY.has(lastOwnerId)) {
             const lastOwnerIsBdr = BDR_OWNER_ID_SET.has(lastOwnerId);
             const lastOwnerIsAe  = AE_OWNER_ID_SET.has(lastOwnerId);
 
@@ -4503,6 +4506,8 @@ export const handler = async (event, context) => {
               newRep = bdrIsAssigned ? lastOwnerName : (assignedBdr || currentRep);
             }
           }
+          // If excluded rep (Irene/Cole) logged most recent activity, fall back to assigned_bdr
+          // Their activity doesn't change ownership — newRep stays as assignedBdr default
 
           // Only write if value is actually changing
           if (newRep && newRep !== currentRep) {
