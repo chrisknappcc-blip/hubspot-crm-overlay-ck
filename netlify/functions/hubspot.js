@@ -4322,6 +4322,7 @@ export const handler = async (event, context) => {
         const batchStart   = body.batchStart   || 0;
         const batchSize    = body.batchSize    || 50;
         const forceRefresh = body.forceRefresh || false;
+        const fullCrm      = body.fullCrm      || false;
 
         // All reps and their owner IDs
         const BDR_OWNER_IDS = {
@@ -4360,20 +4361,36 @@ export const handler = async (event, context) => {
           return ok({ done: true, updated: 0, skipped: 0, total: 0, message: "No Gold companies found" });
         }
 
-        // Step 2: Fetch Gold contacts (paginated, this batch)
-        // Get all contacts associated with Gold companies
+        // Step 2: Fetch contacts — Gold only or full CRM
         let allContactIds = [];
-        for (let i = 0; i < goldCompanyIds.length; i += 100) {
-          const batch = goldCompanyIds.slice(i, i + 100);
-          const assocData = await hsPost(user.userId, "/crm/v4/associations/companies/contacts/batch/read", {
-            inputs: batch.map(id => ({ id })),
-          }).catch(() => ({ results: [] }));
-          for (const r of (assocData.results || [])) {
-            for (const assoc of (r.to || [])) {
-              allContactIds.push(String(assoc.toObjectId));
-            }
+
+        if (fullCrm) {
+          // Full CRM: paginate through all contacts
+          // Only fetch IDs for efficiency — we get properties in the batch read below
+          let after = undefined;
+          while (true) {
+            const params = { limit: 100, properties: "hs_object_id" };
+            if (after) params.after = after;
+            const data = await hsGet(user.userId, "/crm/v3/objects/contacts", params).catch(() => ({ results: [] }));
+            allContactIds.push(...(data.results || []).map(c => String(c.id)));
+            if (!data.paging?.next?.after || allContactIds.length >= 100000) break;
+            after = data.paging.next.after;
+            await new Promise(r => setTimeout(r, 100));
           }
-          if (i + 100 < goldCompanyIds.length) await new Promise(r => setTimeout(r, 150));
+        } else {
+          // Gold only: get contacts via company associations
+          for (let i = 0; i < goldCompanyIds.length; i += 100) {
+            const batch = goldCompanyIds.slice(i, i + 100);
+            const assocData = await hsPost(user.userId, "/crm/v4/associations/companies/contacts/batch/read", {
+              inputs: batch.map(id => ({ id })),
+            }).catch(() => ({ results: [] }));
+            for (const r of (assocData.results || [])) {
+              for (const assoc of (r.to || [])) {
+                allContactIds.push(String(assoc.toObjectId));
+              }
+            }
+            if (i + 100 < goldCompanyIds.length) await new Promise(r => setTimeout(r, 150));
+          }
         }
 
         // Deduplicate
@@ -4391,17 +4408,26 @@ export const handler = async (event, context) => {
         const contactData = await hsPost(user.userId, "/crm/v3/objects/contacts/batch/read", {
           inputs: batchIds.map(id => ({ id })),
           properties: ["assigned_bdr", "primary_outreach_rep", "hubspot_owner_id",
-                       "hs_calculated_merged_vids", "hs_email_optout"],
+                       "hs_email_optout", "existing_customer"],
         }).catch(() => ({ results: [] }));
 
         const contacts = contactData.results || [];
 
         // Step 4: For each contact, find the most recent engagement owner
         // Fetch engagements in parallel batches
+        // Skip contacts that already have primary_outreach_rep set (unless forceRefresh)
+        const contactMap = Object.fromEntries(contacts.map(c => [c.id, c]));
+        const contactsNeedingEngagements = forceRefresh
+          ? batchIds
+          : batchIds.filter(id => {
+              const p = contactMap[id]?.properties || {};
+              return !p.primary_outreach_rep; // skip if already set
+            });
+
         const engagementOwners = {};
         const ENGAGEMENT_TYPES = ["emails", "calls", "meetings", "notes"];
 
-        await Promise.all(batchIds.map(async contactId => {
+        await Promise.all(contactsNeedingEngagements.map(async contactId => {
           let mostRecentTs   = 0;
           let mostRecentOwner = null;
 
@@ -4444,8 +4470,14 @@ export const handler = async (event, context) => {
         for (const contact of contacts) {
           const p = contact.properties || {};
 
-          // Skip Do Not Contact
+          // Skip Do Not Contact (email opt-out)
           if (p.hs_email_optout === "true" || p.hs_email_optout === true) {
+            skipped++; continue;
+          }
+
+          // Skip existing customers / DNC segment (List 391)
+          const DNC_VALUES = ["yes", "contract discussion", "org yes - but not this market"];
+          if (p.existing_customer && DNC_VALUES.includes(p.existing_customer.toLowerCase())) {
             skipped++; continue;
           }
 
