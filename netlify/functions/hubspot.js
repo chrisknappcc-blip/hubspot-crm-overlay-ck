@@ -839,7 +839,14 @@ export const handler = async (event, context) => {
           }
         }
 
-        return ok({ contacts, total: contacts.length });
+        // Get accurate total count from HubSpot (not capped by our 500 fetch limit)
+        let hsTotal = contacts.length;
+        try {
+          const countBody = { filterGroups: filterGroups.length > 0 && filterGroups[0].filters.length > 0 ? filterGroups : [{ filters: [] }], properties: ["hs_object_id"], limit: 1 };
+          const countData = await hsPost(user.userId, "/crm/v3/objects/contacts/search", countBody);
+          hsTotal = countData.total || contacts.length;
+        } catch { /* fall through to contacts.length */ }
+        return ok({ contacts, total: hsTotal });
       } catch (err) {
         console.error("[contacts] Error:", err.message);
         return error(500, `Contacts error: ${err.message}`);
@@ -3496,6 +3503,16 @@ export const handler = async (event, context) => {
                 ? { propertyName: "hs_latest_sequence_enrolled_date", operator: "GTE", value: sinceISO }
                 : null);
 
+          // Get accurate total count first (limit:1 + total — not capped)
+          const seqCountData = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
+            filterGroups: seqContactGroups,
+            properties: ["assigned_bdr"],
+            limit: 1,
+          }).catch(() => ({ total: 0 }));
+          const enrolled = seqCountData.total || 0;
+
+          // Fetch up to 500 for breakdown detail (byRep, bySequence, opens/clicks/replies)
+          // The KPI total uses the accurate count above
           const allSeqContacts = await fetchC(
             seqContactGroups,
             ["assigned_bdr","hubspot_owner_id","hs_latest_sequence_enrolled",
@@ -3506,12 +3523,17 @@ export const handler = async (event, context) => {
             500
           );
 
-          const enrolled   = allSeqContacts.length;
-          const seqOpened  = allSeqContacts.filter(c => c.properties?.hs_email_last_open_date).length;
-          const seqClicked = allSeqContacts.filter(c => c.properties?.hs_email_last_click_date).length;
-          const seqReplied = allSeqContacts.filter(c =>
+          // Opens/clicks/replies are ratios from the sample — scale to full enrolled count
+          const sampleSize = allSeqContacts.length || 1;
+          const sampleOpened  = allSeqContacts.filter(c => c.properties?.hs_email_last_open_date).length;
+          const sampleClicked = allSeqContacts.filter(c => c.properties?.hs_email_last_click_date).length;
+          const sampleReplied = allSeqContacts.filter(c =>
             c.properties?.hs_email_last_reply_date || c.properties?.hs_sales_email_last_replied
           ).length;
+          // Scale to full population
+          const seqOpened  = Math.round((sampleOpened  / sampleSize) * enrolled);
+          const seqClicked = Math.round((sampleClicked / sampleSize) * enrolled);
+          const seqReplied = Math.round((sampleReplied / sampleSize) * enrolled);
 
           const replyRate = enrolled > 0 ? +((seqReplied / enrolled) * 100).toFixed(1) : 0;
           const openRate  = enrolled > 0 ? +((seqOpened  / enrolled) * 100).toFixed(1) : 0;
@@ -3908,31 +3930,35 @@ export const handler = async (event, context) => {
           // Build per-rep counts using engagement object for email sent AND replies
           // Replies via INCOMING_EMAIL engagement — correctly scoped per rep, no cross-rep bleed
           const repEmailCounts = {};
-          for (const repName of targetReps) {
+          // Run all rep email counts in parallel to save time (avoid Netlify 26s timeout)
+          await Promise.all(targetReps.map(async repName => {
             const ownerId     = REP_OWNER_ID_MAP[repName];
             const assignedBdr = !ownerId ? repName : null;
-            const seqEmails   = await countEmailsByType(ownerId, assignedBdr, true);
-            await new Promise(r => setTimeout(r, 150));
-            const indivEmails = await countEmailsByType(ownerId, assignedBdr, false);
-            await new Promise(r => setTimeout(r, 150));
-            // Replies = incoming emails directed to this rep
+
+            // Run seq, indiv, and reply counts in parallel per rep
             const replyFilters = [
               { propertyName: "hs_email_direction", operator: "EQ",  value: "INCOMING_EMAIL" },
               { propertyName: "hs_timestamp",       operator: "GTE", value: sinceISO },
             ];
             if (untilISO) replyFilters.push({ propertyName: "hs_timestamp", operator: "LTE", value: untilISO });
             if (ownerId)  replyFilters.push({ propertyName: "hubspot_owner_id", operator: "EQ", value: ownerId });
-            const replyData = await hsPost(user.userId, "/crm/v3/objects/emails/search", {
-              filterGroups: [{ filters: replyFilters }],
-              properties: ["hs_timestamp"], limit: 1,
-            }).catch(() => ({ total: 0 }));
-            await new Promise(r => setTimeout(r, 150));
+
+            const [seqEmails, indivEmails, replyData] = await Promise.all([
+              countEmailsByType(ownerId, assignedBdr, true),
+              countEmailsByType(ownerId, assignedBdr, false),
+              hsPost(user.userId, "/crm/v3/objects/emails/search", {
+                filterGroups: [{ filters: replyFilters }],
+                properties: ["hs_timestamp"], limit: 1,
+              }).catch(() => ({ total: 0 })),
+            ]);
+
+            console.log(`[weekly_recap] ${repName}: seq=${seqEmails} indiv=${indivEmails} replies=${replyData.total||0}`);
             repEmailCounts[repName] = {
               seqEmails, indivEmails,
               total:   seqEmails + indivEmails,
               replies: replyData.total || 0,
             };
-          }
+          }));
 
           const byRep = targetReps.map(repName => ({
             rep:         repName,
