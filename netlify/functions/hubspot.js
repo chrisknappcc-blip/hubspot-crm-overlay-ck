@@ -3746,19 +3746,53 @@ export const handler = async (event, context) => {
         }
 
         // ── TEAM ACTIVITY ─────────────────────────────────────────────────────
-        // All activity across the team with optional rep filter + manual log entries
         if (section === "team_activity") {
-          // Fetch HubSpot activity counts -- sequential with gaps to avoid 429s
-          // (each countAllRepsForMetric fires 8 parallel queries; 5 in parallel = 40 simultaneous)
-          const sentCounts  = await countAllRepsForMetric("hs_email_last_send_date");
-          await new Promise(r => setTimeout(r, 300));
+          // Email counts via engagement object (accurate, not contact-level dates)
+          async function countEmailsTA(ownerId, assignedBdr, sequenceOnly) {
+            const filters = [
+              { propertyName: "hs_email_direction", operator: "EQ",  value: "EMAIL" },
+              { propertyName: "hs_timestamp",       operator: "GTE", value: sinceISO },
+              { propertyName: "hs_sequence_id",     operator: sequenceOnly ? "HAS_PROPERTY" : "NOT_HAS_PROPERTY" },
+            ];
+            if (ownerId) filters.push({ propertyName: "hubspot_owner_id", operator: "EQ", value: ownerId });
+            try {
+              const d = await hsPost(user.userId, "/crm/v3/objects/emails/search", {
+                filterGroups: [{ filters }], properties: ["hs_timestamp"], limit: 1,
+              });
+              return d.total || 0;
+            } catch { return 0; }
+          }
+
+          // Opens/clicks still via contact-level (no per-email tracking on engagements)
           const openCounts  = await countAllRepsForMetric("hs_email_last_open_date");
           await new Promise(r => setTimeout(r, 300));
           const clickCounts = await countAllRepsForMetric("hs_email_last_click_date");
           await new Promise(r => setTimeout(r, 300));
-          const replyCounts = await countAllRepsForMetric("hs_email_last_reply_date");
-          await new Promise(r => setTimeout(r, 300));
           const seqCounts   = await countAllRepsForMetric("hs_latest_sequence_enrolled_date");
+
+          // Per-rep email + reply counts in parallel
+          const repCounts = {};
+          await Promise.all(targetReps.map(async repName => {
+            const ownerId = REP_OWNER_ID_MAP[repName];
+            const bdr     = !ownerId ? repName : null;
+            const replyFilters = [
+              { propertyName: "hs_email_direction", operator: "EQ",  value: "INCOMING_EMAIL" },
+              { propertyName: "hs_timestamp",       operator: "GTE", value: sinceISO },
+            ];
+            if (ownerId) replyFilters.push({ propertyName: "hubspot_owner_id", operator: "EQ", value: ownerId });
+            const [seqEmails, indivEmails, replyData] = await Promise.all([
+              countEmailsTA(ownerId, bdr, true),
+              countEmailsTA(ownerId, bdr, false),
+              hsPost(user.userId, "/crm/v3/objects/emails/search", {
+                filterGroups: [{ filters: replyFilters }], properties: ["hs_timestamp"], limit: 1,
+              }).catch(() => ({ total: 0 })),
+            ]);
+            repCounts[repName] = {
+              seqEmails, indivEmails,
+              sent:    seqEmails + indivEmails,
+              replies: replyData.total || 0,
+            };
+          }));
 
           // Fetch completed To-Do items and manual activity log entries
           const todos = await getTodos(user.userId);
@@ -3771,34 +3805,44 @@ export const handler = async (event, context) => {
           });
 
           const repData = targetReps.map(repName => {
-            const sent    = sentCounts[repName]  || 0;
+            const c       = repCounts[repName] || {};
+            const sent    = c.sent    || 0;
+            const seqE    = c.seqEmails   || 0;
+            const indivE  = c.indivEmails || 0;
             const opens   = openCounts[repName]  || 0;
             const clicks  = clickCounts[repName] || 0;
-            const replies = replyCounts[repName] || 0;
+            const replies = c.replies || 0;
             const seqs    = seqCounts[repName]   || 0;
             return {
-              rep: repName, sent, opens, clicks, replies, sequences: seqs,
+              rep: repName, sent, seqEmails: seqE, indivEmails: indivE,
+              opens, clicks, replies, sequences: seqs,
               openRate:  sent > 0 ? +((opens   / sent) * 100).toFixed(1) : 0,
               clickRate: sent > 0 ? +((clicks  / sent) * 100).toFixed(1) : 0,
               replyRate: sent > 0 ? +((replies / sent) * 100).toFixed(1) : 0,
+              seqOpenRate:  seqs > 0 ? +((opens   / seqs) * 100).toFixed(1) : 0,
+              seqReplyRate: seqs > 0 ? +((replies / seqs) * 100).toFixed(1) : 0,
             };
           });
 
           const totals = repData.reduce((acc, r) => ({
-            sent:      acc.sent      + r.sent,
-            opens:     acc.opens     + r.opens,
-            clicks:    acc.clicks    + r.clicks,
-            replies:   acc.replies   + r.replies,
-            sequences: acc.sequences + r.sequences,
-          }), { sent:0, opens:0, clicks:0, replies:0, sequences:0 });
+            sent:        acc.sent        + r.sent,
+            seqEmails:   acc.seqEmails   + r.seqEmails,
+            indivEmails: acc.indivEmails + r.indivEmails,
+            opens:       acc.opens       + r.opens,
+            clicks:      acc.clicks      + r.clicks,
+            replies:     acc.replies     + r.replies,
+            sequences:   acc.sequences   + r.sequences,
+          }), { sent:0, seqEmails:0, indivEmails:0, opens:0, clicks:0, replies:0, sequences:0 });
 
           return ok({
             section: "team_activity", period,
             totals: {
               ...totals,
-              openRate:  totals.sent > 0 ? +((totals.opens   / totals.sent) * 100).toFixed(1) : 0,
-              clickRate: totals.sent > 0 ? +((totals.clicks  / totals.sent) * 100).toFixed(1) : 0,
-              replyRate: totals.sent > 0 ? +((totals.replies / totals.sent) * 100).toFixed(1) : 0,
+              openRate:     totals.sent  > 0 ? +((totals.opens   / totals.sent)  * 100).toFixed(1) : 0,
+              clickRate:    totals.sent  > 0 ? +((totals.clicks  / totals.sent)  * 100).toFixed(1) : 0,
+              replyRate:    totals.sent  > 0 ? +((totals.replies / totals.sent)  * 100).toFixed(1) : 0,
+              seqOpenRate:  totals.sequences > 0 ? +((totals.opens   / totals.sequences) * 100).toFixed(1) : 0,
+              seqReplyRate: totals.sequences > 0 ? +((totals.replies / totals.sequences) * 100).toFixed(1) : 0,
               completedTodos: completedTodos.length,
               manualEntries:  logEntries.length,
             },
