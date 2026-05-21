@@ -3096,8 +3096,11 @@ export const handler = async (event, context) => {
 
         const KNOWN_BDRS = ["Chris Knapp", "Chiara Pate", "Matt Valin", "Joseph Haine", "Tim Grisham", "Irene Wong", "Cole Hooper", "John Hansel"];
 
-        // Owner ID map for non-BDR members (filter by hubspot_owner_id instead of assigned_bdr)
+        // Owner ID map — ALL reps including BDRs
+        // Email engagement objects use hubspot_owner_id not assigned_bdr
         const REP_OWNER_ID_MAP = {
+          "Chris Knapp":  "78304576",
+          "Chiara Pate":  "87806380",
           "Matt Valin":   "76104455",
           "Joseph Haine": "55217954",
           "Tim Grisham":  "83862037",
@@ -4050,7 +4053,7 @@ export const handler = async (event, context) => {
           // indiv emails: hs_sequence_id NOT_HAS_PROPERTY + outgoing + timestamp >= since
           async function countEmailsByType(ownerId, assignedBdr, sequenceOnly) {
             const ownerFilter  = ownerId   ? { propertyName: "hubspot_owner_id", operator: "EQ", value: ownerId } : null;
-            const bdrFilter    = assignedBdr ? { propertyName: "hs_body_preview",  operator: "EQ", value: assignedBdr } : null;
+            
             const baseFilters  = [
               { propertyName: "hs_email_direction", operator: "EQ",  value: "EMAIL" },
               { propertyName: "hs_timestamp",       operator: "GTE", value: sinceISO },
