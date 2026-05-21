@@ -1119,20 +1119,20 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                   Admin tools
                 </button>
                 {adminOpen && (() => {
-                  const runRepSync = async () => {
+                  const runRepSync = async (fullCrm = false, forceRefresh = false) => {
                     setRepSyncState({ running:true, done:false, updated:0, skipped:0, total:0, progress:'Starting…' })
                     let totalUpdated = 0, totalSkipped = 0, grandTotal = 0
                     let batchStart = 0
                     try {
                       while (true) {
                         setRepSyncState(s => ({ ...s, progress: grandTotal > 0
-                          ? `Processing ${Math.min(batchStart+50, grandTotal)} of ${grandTotal} contacts…`
-                          : 'Fetching Gold contacts…'
+                          ? `Processing ${Math.min(batchStart+50, grandTotal).toLocaleString()} of ${grandTotal.toLocaleString()} contacts…`
+                          : fullCrm ? 'Fetching all CRM contacts…' : 'Fetching Gold contacts…'
                         }))
                         const res = await safeFetch(`/api/hubspot/sync-primary-rep`, {
                           method: 'POST',
                           headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({ batchStart, batchSize: 50 }),
+                          body: JSON.stringify({ batchStart, batchSize: 50, fullCrm, forceRefresh }),
                         })
                         totalUpdated += res.updated || 0
                         totalSkipped += res.skipped || 0
@@ -1168,13 +1168,23 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                           {s.total > 0 ? `${Math.round(((s.updated+s.skipped)/s.total)*100)}%` : '…'}
                         </div>
                       )}
-                      <button onClick={runRepSync} disabled={s.running}
-                        style={{ padding:'6px 14px', background: s.running ? 'var(--bg)' : 'var(--accent)',
-                          color: s.running ? 'var(--text-tertiary)' : '#fff',
-                          border:'none', borderRadius:'var(--radius)', fontSize:12,
-                          fontWeight:600, cursor: s.running ? 'not-allowed' : 'pointer', flexShrink:0 }}>
-                        {s.running ? '⟳ Running…' : s.done ? 'Re-sync' : 'Run Sync'}
-                      </button>
+                      <div style={{ display:'flex', gap:6, flexShrink:0 }}>
+                        {s.done && (
+                          <button onClick={() => runRepSync(false, true)}
+                            style={{ padding:'6px 10px', background:'none', border:'1px solid var(--border)',
+                              color:'var(--text-secondary)', borderRadius:'var(--radius)', fontSize:11,
+                              cursor:'pointer' }}>
+                            Force re-run
+                          </button>
+                        )}
+                        <button onClick={() => runRepSync(false)} disabled={s.running}
+                          style={{ padding:'6px 14px', background: s.running ? 'var(--bg)' : 'var(--accent)',
+                            color: s.running ? 'var(--text-tertiary)' : '#fff',
+                            border:'none', borderRadius:'var(--radius)', fontSize:12,
+                            fontWeight:600, cursor: s.running ? 'not-allowed' : 'pointer' }}>
+                          {s.running ? `⟳ ${s.total > 0 ? Math.round(((s.updated+s.skipped)/s.total)*100)+'%' : '…'}` : s.done ? 'Run Full CRM' : 'Run Sync (Gold)'}
+                        </button>
+                      </div>
                     </div>
                   )
                 })()}
