@@ -4352,24 +4352,13 @@ export const handler = async (event, context) => {
           "GOLD - 51-60","GOLD - 61-70","GOLD - 71-80","GOLD - 81-90","GOLD - 91-100",
         ];
 
-        // Step 1: Fetch Gold company IDs
-        const goldCompanyData = await hsPost(user.userId, "/crm/v3/objects/companies/search", {
-          filterGroups: [{ filters: [{ propertyName: "priority_tier__bdr", operator: "IN", values: GOLD_TIERS }] }],
-          properties: ["name", "priority_tier__bdr"],
-          limit: 100,
-        });
-        const goldCompanyIds = (goldCompanyData.results || []).map(c => c.id);
-
-        if (goldCompanyIds.length === 0) {
-          return ok({ done: true, updated: 0, skipped: 0, total: 0, message: "No Gold companies found" });
-        }
-
-        // Step 2: Fetch contacts — Gold only or full CRM
+        // Step 1: Fetch contact IDs — full CRM or Gold only
         let allContactIds = [];
+        let goldCompanyIds = [];
 
         if (fullCrm) {
-          // Full CRM: paginate through all contacts
-          // Only fetch IDs for efficiency — we get properties in the batch read below
+          // Full CRM: paginate through ALL contacts in HubSpot
+          console.log("[sync-primary-rep] fullCrm mode — fetching all contacts");
           let after = undefined;
           while (true) {
             const params = { limit: 100, properties: "hs_object_id" };
@@ -4380,8 +4369,20 @@ export const handler = async (event, context) => {
             after = data.paging.next.after;
             await new Promise(r => setTimeout(r, 100));
           }
+          console.log(`[sync-primary-rep] fullCrm: fetched ${allContactIds.length} contacts`);
         } else {
-          // Gold only: get contacts via company associations
+          // Gold only: fetch via company associations
+          const goldCompanyData = await hsPost(user.userId, "/crm/v3/objects/companies/search", {
+            filterGroups: [{ filters: [{ propertyName: "priority_tier__bdr", operator: "IN", values: GOLD_TIERS }] }],
+            properties: ["name", "priority_tier__bdr"],
+            limit: 100,
+          });
+          goldCompanyIds = (goldCompanyData.results || []).map(c => c.id);
+
+          if (goldCompanyIds.length === 0) {
+            return ok({ done: true, updated: 0, skipped: 0, total: 0, message: "No Gold companies found" });
+          }
+
           for (let i = 0; i < goldCompanyIds.length; i += 100) {
             const batch = goldCompanyIds.slice(i, i + 100);
             const assocData = await hsPost(user.userId, "/crm/v4/associations/companies/contacts/batch/read", {
