@@ -4304,6 +4304,215 @@ export const handler = async (event, context) => {
       }
     }
 
+    // ── Primary Outreach Rep Sync ─────────────────────────────────────────────
+    // POST /hubspot/sync-primary-rep
+    // Determines who last logged an activity on each Gold contact and writes
+    // primary_outreach_rep to HubSpot directly via API. No CSV needed.
+    //
+    // Logic:
+    //   1. Most recent engagement owner wins (email, call, meeting, note)
+    //   2. AEs/VPs can take over from BDRs — BDRs cannot take over each other
+    //   3. Do Not Contact contacts are skipped
+    //   4. Default (no logged activity) = assigned_bdr
+    //
+    // Runs in batches of 50 contacts, returns progress so frontend can poll.
+    if (method === "POST" && path === "/sync-primary-rep") {
+      try {
+        const body         = await event.json().catch(() => ({}));
+        const batchStart   = body.batchStart   || 0;
+        const batchSize    = body.batchSize    || 50;
+        const forceRefresh = body.forceRefresh || false;
+
+        // All reps and their owner IDs
+        const BDR_OWNER_IDS = {
+          "Chris Knapp":  "78304576",
+          "Chiara Pate":  "87806380",
+        };
+        const AE_OWNER_IDS = {
+          "Matt Valin":   "76104455",
+          "Joseph Haine": "55217954",
+          "Tim Grisham":  "83862037",
+          "Irene Wong":   "289209454",
+          "Cole Hooper":  "85819247",
+          "John Hansel":  "743772047",
+        };
+        const ALL_OWNER_ID_TO_NAME = {
+          ...Object.fromEntries(Object.entries(BDR_OWNER_IDS).map(([n,id]) => [id, n])),
+          ...Object.fromEntries(Object.entries(AE_OWNER_IDS).map(([n,id]) => [id, n])),
+        };
+        const BDR_OWNER_ID_SET = new Set(Object.values(BDR_OWNER_IDS));
+        const AE_OWNER_ID_SET  = new Set(Object.values(AE_OWNER_IDS));
+
+        const GOLD_TIERS = [
+          "GOLD - 1-10","GOLD - 11-20","GOLD - 21-30","GOLD - 31-40","GOLD - 41-50",
+          "GOLD - 51-60","GOLD - 61-70","GOLD - 71-80","GOLD - 81-90","GOLD - 91-100",
+        ];
+
+        // Step 1: Fetch Gold company IDs
+        const goldCompanyData = await hsPost(user.userId, "/crm/v3/objects/companies/search", {
+          filterGroups: [{ filters: [{ propertyName: "priority_tier__bdr", operator: "IN", values: GOLD_TIERS }] }],
+          properties: ["name", "priority_tier__bdr"],
+          limit: 100,
+        });
+        const goldCompanyIds = (goldCompanyData.results || []).map(c => c.id);
+
+        if (goldCompanyIds.length === 0) {
+          return ok({ done: true, updated: 0, skipped: 0, total: 0, message: "No Gold companies found" });
+        }
+
+        // Step 2: Fetch Gold contacts (paginated, this batch)
+        // Get all contacts associated with Gold companies
+        let allContactIds = [];
+        for (let i = 0; i < goldCompanyIds.length; i += 100) {
+          const batch = goldCompanyIds.slice(i, i + 100);
+          const assocData = await hsPost(user.userId, "/crm/v4/associations/companies/contacts/batch/read", {
+            inputs: batch.map(id => ({ id })),
+          }).catch(() => ({ results: [] }));
+          for (const r of (assocData.results || [])) {
+            for (const assoc of (r.to || [])) {
+              allContactIds.push(String(assoc.toObjectId));
+            }
+          }
+          if (i + 100 < goldCompanyIds.length) await new Promise(r => setTimeout(r, 150));
+        }
+
+        // Deduplicate
+        allContactIds = [...new Set(allContactIds)];
+        const total     = allContactIds.length;
+        const batchIds  = allContactIds.slice(batchStart, batchStart + batchSize);
+        const hasMore   = batchStart + batchSize < total;
+        const nextBatch = hasMore ? batchStart + batchSize : null;
+
+        if (batchIds.length === 0) {
+          return ok({ done: true, updated: 0, skipped: 0, total, batchStart, nextBatch: null, message: "Batch empty" });
+        }
+
+        // Step 3: Fetch contact properties for this batch
+        const contactData = await hsPost(user.userId, "/crm/v3/objects/contacts/batch/read", {
+          inputs: batchIds.map(id => ({ id })),
+          properties: ["assigned_bdr", "primary_outreach_rep", "hubspot_owner_id",
+                       "hs_calculated_merged_vids", "hs_email_optout"],
+        }).catch(() => ({ results: [] }));
+
+        const contacts = contactData.results || [];
+
+        // Step 4: For each contact, find the most recent engagement owner
+        // Fetch engagements in parallel batches
+        const engagementOwners = {};
+        const ENGAGEMENT_TYPES = ["emails", "calls", "meetings", "notes"];
+
+        await Promise.all(batchIds.map(async contactId => {
+          let mostRecentTs   = 0;
+          let mostRecentOwner = null;
+
+          for (const engType of ENGAGEMENT_TYPES) {
+            try {
+              // Get most recent engagement of this type for this contact
+              const assocData = await hsGet(user.userId,
+                `/crm/v3/objects/contacts/${contactId}/associations/${engType}`,
+                { limit: 10 }
+              ).catch(() => ({ results: [] }));
+
+              const engIds = (assocData.results || []).map(r => r.id);
+              if (engIds.length === 0) continue;
+
+              // Fetch engagement details
+              const engDetails = await hsPost(user.userId, `/crm/v3/objects/${engType}/batch/read`, {
+                inputs: engIds.slice(0, 10).map(id => ({ id })),
+                properties: ["hubspot_owner_id", "hs_timestamp", "createdate"],
+              }).catch(() => ({ results: [] }));
+
+              for (const eng of (engDetails.results || [])) {
+                const ts       = new Date(eng.properties?.hs_timestamp || eng.properties?.createdate || 0).getTime();
+                const ownerId  = String(eng.properties?.hubspot_owner_id || "");
+                if (ts > mostRecentTs && ownerId) {
+                  mostRecentTs    = ts;
+                  mostRecentOwner = ownerId;
+                }
+              }
+            } catch { /* skip this engagement type */ }
+          }
+
+          engagementOwners[contactId] = { ownerId: mostRecentOwner, ts: mostRecentTs };
+          await new Promise(r => setTimeout(r, 50)); // small gap per contact
+        }));
+
+        // Step 5: Determine new primary_outreach_rep for each contact
+        const updates = [];
+        let skipped   = 0;
+
+        for (const contact of contacts) {
+          const p = contact.properties || {};
+
+          // Skip Do Not Contact
+          if (p.hs_email_optout === "true" || p.hs_email_optout === true) {
+            skipped++; continue;
+          }
+
+          const assignedBdr = p.assigned_bdr || null;
+          const currentRep  = p.primary_outreach_rep || null;
+          const eng         = engagementOwners[contact.id];
+          const lastOwnerId = eng?.ownerId || null;
+          const lastOwnerName = lastOwnerId ? (ALL_OWNER_ID_TO_NAME[lastOwnerId] || null) : null;
+
+          let newRep = assignedBdr; // default
+
+          if (lastOwnerName) {
+            const lastOwnerIsBdr = BDR_OWNER_ID_SET.has(lastOwnerId);
+            const lastOwnerIsAe  = AE_OWNER_ID_SET.has(lastOwnerId);
+
+            if (lastOwnerIsAe) {
+              // AE/VP took over — set to them
+              newRep = lastOwnerName;
+            } else if (lastOwnerIsBdr) {
+              // BDR logged most recent activity
+              // Only update if it's THEIR contact (assigned_bdr matches) — BDRs can't take over each other
+              const bdrIsAssigned = assignedBdr === lastOwnerName;
+              newRep = bdrIsAssigned ? lastOwnerName : (assignedBdr || currentRep);
+            }
+          }
+
+          // Only write if value is actually changing
+          if (newRep && newRep !== currentRep) {
+            updates.push({ id: contact.id, properties: { primary_outreach_rep: newRep } });
+          } else {
+            skipped++;
+          }
+        }
+
+        // Step 6: Write updates to HubSpot in batch
+        let updated = 0;
+        if (updates.length > 0) {
+          // HubSpot batch update accepts up to 100 at a time
+          for (let i = 0; i < updates.length; i += 100) {
+            const chunk = updates.slice(i, i + 100);
+            await hsPost(user.userId, "/crm/v3/objects/contacts/batch/update", {
+              inputs: chunk,
+            });
+            updated += chunk.length;
+            if (i + 100 < updates.length) await new Promise(r => setTimeout(r, 200));
+          }
+        }
+
+        console.log(`[sync-primary-rep] batch ${batchStart}-${batchStart+batchSize}: ${updated} updated, ${skipped} skipped, ${total} total`);
+
+        return ok({
+          done:      !hasMore,
+          updated,
+          skipped,
+          total,
+          batchStart,
+          batchEnd:  batchStart + batchIds.length,
+          nextBatch,
+          hasMore,
+        });
+
+      } catch (err) {
+        console.error("[sync-primary-rep] error:", err.message);
+        return error(500, `Sync error: ${err.message}`);
+      }
+    }
+
     return error(404, "Route not found");
 
   })(event, context);
