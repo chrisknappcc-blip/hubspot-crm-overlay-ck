@@ -441,6 +441,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
   const [contactsTotal, setContactsTotal] = useState(0)
   const [repSyncState, setRepSyncState]   = useState({ running:false, done:false, updated:0, skipped:0, total:0, progress:'' })
   const [adminOpen, setAdminOpen]           = useState(false)
+  const [syncMode, setSyncMode]             = useState('gold') // 'gold' | 'fullcrm'
   const [feed, setFeed]               = useState([])
   const [loading, setLoading]         = useState(true)
   const [signalsHasMore, setSignalsHasMore] = useState(false)
@@ -1157,10 +1158,10 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                         </div>
                         <div style={{ fontSize:11, color:'var(--text-tertiary)' }}>
                           {s.done
-                            ? `✓ Complete — ${s.updated.toLocaleString()} updated · ${s.skipped.toLocaleString()} unchanged · ${s.total.toLocaleString()} Gold contacts`
+                            ? `✓ Complete — ${s.updated.toLocaleString()} updated · ${s.skipped.toLocaleString()} unchanged · ${s.total.toLocaleString()} ${syncMode === 'fullcrm' ? 'CRM' : 'Gold'} contacts`
                             : s.running
                             ? s.progress
-                            : 'Sets primary_outreach_rep based on most recent engagement owner. AE activity overrides BDR. Do Not Contact skipped.'}
+                            : 'Sets primary_outreach_rep based on most recent engagement owner. AE activity overrides BDR. Existing customers and Do Not Contact skipped.'}
                         </div>
                       </div>
                       {s.running && (
@@ -1170,20 +1171,32 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                       )}
                       <div style={{ display:'flex', gap:6, flexShrink:0 }}>
                         {s.done && (
-                          <button onClick={() => runRepSync(false, true)}
-                            style={{ padding:'6px 10px', background:'none', border:'1px solid var(--border)',
-                              color:'var(--text-secondary)', borderRadius:'var(--radius)', fontSize:11,
-                              cursor:'pointer' }}>
-                            Force re-run
+                          <>
+                            <button onClick={() => { setSyncMode('gold'); runRepSync(false, true); }}
+                              style={{ padding:'6px 10px', background:'none', border:'1px solid var(--border)',
+                                color:'var(--text-secondary)', borderRadius:'var(--radius)', fontSize:11,
+                                cursor:'pointer' }}>
+                              Re-run Gold
+                            </button>
+                            <button onClick={() => { setSyncMode('fullcrm'); runRepSync(true, false); }}
+                              style={{ padding:'6px 14px', background:'var(--accent)', color:'#fff',
+                                border:'none', borderRadius:'var(--radius)', fontSize:12,
+                                fontWeight:600, cursor:'pointer' }}>
+                              Run Full CRM
+                            </button>
+                          </>
+                        )}
+                        {!s.done && (
+                          <button onClick={() => { setSyncMode('gold'); runRepSync(false); }} disabled={s.running}
+                            style={{ padding:'6px 14px', background: s.running ? 'var(--bg)' : 'var(--accent)',
+                              color: s.running ? 'var(--text-tertiary)' : '#fff',
+                              border:'none', borderRadius:'var(--radius)', fontSize:12,
+                              fontWeight:600, cursor: s.running ? 'not-allowed' : 'pointer' }}>
+                            {s.running
+                              ? `⟳ ${syncMode === 'fullcrm' ? 'Full CRM' : 'Gold'} ${s.total > 0 ? Math.round(((s.updated+s.skipped)/s.total)*100)+'%' : '…'}`
+                              : 'Run Sync (Gold)'}
                           </button>
                         )}
-                        <button onClick={() => runRepSync(false)} disabled={s.running}
-                          style={{ padding:'6px 14px', background: s.running ? 'var(--bg)' : 'var(--accent)',
-                            color: s.running ? 'var(--text-tertiary)' : '#fff',
-                            border:'none', borderRadius:'var(--radius)', fontSize:12,
-                            fontWeight:600, cursor: s.running ? 'not-allowed' : 'pointer' }}>
-                          {s.running ? `⟳ ${s.total > 0 ? Math.round(((s.updated+s.skipped)/s.total)*100)+'%' : '…'}` : s.done ? 'Run Full CRM' : 'Run Sync (Gold)'}
-                        </button>
                       </div>
                     </div>
                   )
