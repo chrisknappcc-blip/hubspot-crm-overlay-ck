@@ -4318,7 +4318,7 @@ export const handler = async (event, context) => {
     // Runs in batches of 50 contacts, returns progress so frontend can poll.
     if (method === "POST" && path === "/sync-primary-rep") {
       try {
-        const body         = await event.json().catch(() => ({}));
+        const body         = JSON.parse(event.body || "{}");
         const batchStart   = body.batchStart   || 0;
         const batchSize    = body.batchSize    || 50;
         const forceRefresh = body.forceRefresh || false;
