@@ -1735,6 +1735,12 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                             )}
                             <EmailSourcePill source={s.emailSource} />
                           </div>
+                          {/* Bug fix: show title and org on card face */}
+                          {(s.contact?.title || s.contact?.company) && (
+                            <div style={{ fontSize:11, color:'var(--text-secondary)', marginBottom:2 }}>
+                              {[s.contact?.title, s.contact?.company].filter(Boolean).join(' · ')}
+                            </div>
+                          )}
                           <div style={{ fontSize:11, color:'var(--text-tertiary)', marginBottom:4 }}>{cleanSubject(s.subject, s.campaignId)}</div>
                           <TimestampChain sentAt={sentAt} openedAt={openedAt} clickedAt={clickedAt} repliedAt={repliedAt} ts={s.timestamp} />
                         </div>
