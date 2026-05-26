@@ -439,9 +439,25 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
   const [botSignals, setBotSignals]   = useState([])
   const [contacts, setContacts]           = useState([])
   const [contactsTotal, setContactsTotal] = useState(0)
-  const [repSyncState, setRepSyncState]   = useState({ running:false, done:false, updated:0, skipped:0, total:0, progress:'' })
+  const [repSyncState, setRepSyncState]   = useState(() => {
+    try {
+      const saved = sessionStorage.getItem('repSyncState')
+      if (saved) { const s = JSON.parse(saved); return { ...s, running:false, progress:'' } }
+    } catch {}
+    return { running:false, done:false, updated:0, skipped:0, total:0, progress:'' }
+  })
   const [adminOpen, setAdminOpen]           = useState(false)
-  const [syncMode, setSyncMode]             = useState('gold') // 'gold' | 'fullcrm'
+  const saveRepSyncState = (s) => {
+    setRepSyncState(s)
+    try { sessionStorage.setItem('repSyncState', JSON.stringify(s)) } catch {}
+  }
+  const saveSyncMode = (m) => {
+    setSyncMode(m)
+    try { sessionStorage.setItem('syncMode', m) } catch {}
+  }
+  const [syncMode, setSyncMode]             = useState(() => {
+    try { return sessionStorage.getItem('syncMode') || 'gold' } catch { return 'gold' }
+  })
   const [feed, setFeed]               = useState([])
   const [loading, setLoading]         = useState(true)
   const [signalsHasMore, setSignalsHasMore] = useState(false)
@@ -1121,12 +1137,12 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                 </button>
                 {adminOpen && (() => {
                   const runRepSync = async (fullCrm = false, forceRefresh = false) => {
-                    setRepSyncState({ running:true, done:false, updated:0, skipped:0, total:0, progress:'Starting…' })
+                    saveRepSyncState({ running:true, done:false, updated:0, skipped:0, total:0, progress:'Starting…' })
                     let totalUpdated = 0, totalSkipped = 0, grandTotal = 0
                     let batchStart = 0
                     try {
                       while (true) {
-                        setRepSyncState(s => ({ ...s, progress: grandTotal > 0
+                        saveRepSyncState({ ...repSyncState, running:true, progress: grandTotal > 0
                           ? `Processing ${Math.min(batchStart+50, grandTotal).toLocaleString()} of ${grandTotal.toLocaleString()} contacts…`
                           : fullCrm ? 'Fetching all CRM contacts…' : 'Fetching Gold contacts…'
                         }))
@@ -1142,9 +1158,9 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                         batchStart = res.nextBatch
                         await new Promise(r => setTimeout(r, 300))
                       }
-                      setRepSyncState({ running:false, done:true, updated:totalUpdated, skipped:totalSkipped, total:grandTotal, progress:'' })
+                      saveRepSyncState({ running:false, done:true, updated:totalUpdated, skipped:totalSkipped, total:grandTotal, progress:'' })
                     } catch(e) {
-                      setRepSyncState(s => ({ ...s, running:false, progress:`Error: ${e.message}` }))
+                      saveRepSyncState({ ...repSyncState, running:false, progress:`Error: ${e.message}` })
                     }
                   }
                   const s = repSyncState
@@ -1172,7 +1188,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                       <div style={{ display:'flex', gap:6, flexShrink:0 }}>
                         {s.done && (
                           <>
-                            <button onClick={() => { setSyncMode('gold'); runRepSync(false, true); }}
+                            <button onClick={() => { saveSyncMode('gold'); runRepSync(false, true); }}
                               style={{ padding:'6px 10px', background:'none', border:'1px solid var(--border)',
                                 color:'var(--text-secondary)', borderRadius:'var(--radius)', fontSize:11,
                                 cursor:'pointer' }}>
@@ -1187,7 +1203,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                           </>
                         )}
                         {!s.done && (
-                          <button onClick={() => { setSyncMode('gold'); runRepSync(false); }} disabled={s.running}
+                          <button onClick={() => { saveSyncMode('gold'); runRepSync(false); }} disabled={s.running}
                             style={{ padding:'6px 14px', background: s.running ? 'var(--bg)' : 'var(--accent)',
                               color: s.running ? 'var(--text-tertiary)' : '#fff',
                               border:'none', borderRadius:'var(--radius)', fontSize:12,
