@@ -271,17 +271,7 @@ function normalizeContact(c) {
     id:           c.id,
     name:         `${p.firstname || ""} ${p.lastname || ""}`.trim(),
     email:        p.email || "",
-    company:      p.company || (() => {
-      // Fallback: derive org hint from email domain when company field is blank
-      // e.g. cknapp@uchealth.org → "uchealth.org"
-      if (!p.company && p.email) {
-        const domain = p.email.split('@')[1];
-        if (domain && !domain.match(/gmail|yahoo|outlook|hotmail|aol|icloud/i)) {
-          return domain;
-        }
-      }
-      return "";
-    })(),
+    company:      p.company || "",
     title:        p.jobtitle || "",
     phone:        p.phone || "",
     leadStatus:   p.hs_lead_status || "",
@@ -2334,7 +2324,7 @@ export const handler = async (event, context) => {
 
       // Enrich company names for signals where contact.company is blank
       // Use associatedcompanyid to batch-fetch company names
-      const missingCompany = contactSignals.filter(s => !s.contact?.company && s.contact?.id);
+      const missingCompany = contactSignals.filter(s => !s.contact?.company?.trim() && s.contactId);
       if (missingCompany.length > 0) {
         try {
           // Get unique company IDs from associatedcompanyid property
@@ -2364,10 +2354,10 @@ export const handler = async (event, context) => {
 
             // Apply company names back to signals
             for (const sig of contactSignals) {
-              if (!sig.contact?.company && sig.contactId) {
-                const companyId = contactToCompany[sig.contactId];
-                if (companyId && companyNames[companyId]) {
-                  sig.contact = { ...sig.contact, company: companyNames[companyId] };
+              if (!sig.contact?.company?.trim() && sig.contactId) {
+                const companyId = contactToCompany[String(sig.contactId)];
+                if (companyId && companyNames[String(companyId)]) {
+                  sig.contact = { ...sig.contact, company: companyNames[String(companyId)] };
                 }
               }
             }
