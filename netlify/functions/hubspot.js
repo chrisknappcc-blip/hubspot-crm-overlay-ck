@@ -68,7 +68,7 @@ const CUSTOM_PROPS = [
 
 // Standard contact properties always fetched
 const BASE_CONTACT_PROPS = [
-  "firstname", "lastname", "email", "company", "jobtitle", "phone",
+  "firstname", "lastname", "email", "company", "jobtitle", "phone", "associatedcompanyid",
   "hs_lead_status", "lifecyclestage", "hubspot_owner_id",
   "notes_last_contacted", "num_contacted_notes",
   "hs_last_sales_activity_timestamp",
@@ -271,7 +271,17 @@ function normalizeContact(c) {
     id:           c.id,
     name:         `${p.firstname || ""} ${p.lastname || ""}`.trim(),
     email:        p.email || "",
-    company:      p.company || "",
+    company:      p.company || (() => {
+      // Fallback: derive org hint from email domain when company field is blank
+      // e.g. cknapp@uchealth.org → "uchealth.org"
+      if (!p.company && p.email) {
+        const domain = p.email.split('@')[1];
+        if (domain && !domain.match(/gmail|yahoo|outlook|hotmail|aol|icloud/i)) {
+          return domain;
+        }
+      }
+      return "";
+    })(),
     title:        p.jobtitle || "",
     phone:        p.phone || "",
     leadStatus:   p.hs_lead_status || "",
@@ -2321,6 +2331,49 @@ export const handler = async (event, context) => {
           repliedAt:   primaryTs && eventType === "REPLY"  ? primaryTs : null,
         };
       }).filter(Boolean);
+
+      // Enrich company names for signals where contact.company is blank
+      // Use associatedcompanyid to batch-fetch company names
+      const missingCompany = contactSignals.filter(s => !s.contact?.company && s.contact?.id);
+      if (missingCompany.length > 0) {
+        try {
+          // Get unique company IDs from associatedcompanyid property
+          const contactIds = missingCompany.map(s => s.contactId).filter(Boolean);
+          const assocData  = await hsPost(user.userId, "/crm/v4/associations/contacts/companies/batch/read", {
+            inputs: contactIds.slice(0, 100).map(id => ({ id })),
+          }).catch(() => ({ results: [] }));
+
+          // Build map: contactId → companyId
+          const contactToCompany = {};
+          for (const r of (assocData.results || [])) {
+            if (r.to?.length > 0) contactToCompany[r.from?.id] = r.to[0].toObjectId;
+          }
+
+          // Batch fetch company names
+          const companyIds = [...new Set(Object.values(contactToCompany))];
+          if (companyIds.length > 0) {
+            const companyData = await hsPost(user.userId, "/crm/v3/objects/companies/batch/read", {
+              inputs:     companyIds.slice(0, 100).map(id => ({ id })),
+              properties: ["name"],
+            }).catch(() => ({ results: [] }));
+
+            const companyNames = {};
+            for (const c of (companyData.results || [])) {
+              companyNames[c.id] = c.properties?.name || "";
+            }
+
+            // Apply company names back to signals
+            for (const sig of contactSignals) {
+              if (!sig.contact?.company && sig.contactId) {
+                const companyId = contactToCompany[sig.contactId];
+                if (companyId && companyNames[companyId]) {
+                  sig.contact = { ...sig.contact, company: companyNames[companyId] };
+                }
+              }
+            }
+          }
+        } catch { /* non-critical — signals still show without company name */ }
+      }
 
       // Supplement with engagements not already covered by contact search
       // (e.g. calls, meetings, notes which don't affect hs_last_sales_activity_timestamp)
