@@ -3747,22 +3747,25 @@ export const handler = async (event, context) => {
           const seqNames = {};
           if (seqIds.length > 0) {
             try {
-              const seqBatch = await hsPost(user.userId, "/crm/v3/objects/sequences/batch/read", {
-                properties: ["hs_name"],
-                inputs: seqIds.slice(0, 50).map(id => ({ id })),
+              // sequence_enrollments has hs_sequence_name — use it to resolve IDs to names
+              // Search for one enrollment per sequence ID to get the name
+              const enrollSearch = await hsPost(user.userId, "/crm/v3/objects/sequence_enrollments/search", {
+                filterGroups: seqIds.slice(0, 50).map(id => ({
+                  filters: [{ propertyName: "hs_sequence_id", operator: "EQ", value: id }]
+                })),
+                properties: ["hs_sequence_id", "hs_sequence_name"],
+                limit: 50,
               });
-              for (const s of (seqBatch.results || [])) {
-                seqNames[s.id] = s.properties?.hs_name || null;
+              for (const enr of (enrollSearch.results || [])) {
+                const seqId   = enr.properties?.hs_sequence_id;
+                const seqName = enr.properties?.hs_sequence_name;
+                if (seqId && seqName && !seqNames[seqId]) {
+                  seqNames[seqId] = seqName;
+                }
               }
+              console.log(`[sequences] resolved ${Object.keys(seqNames).length}/${seqIds.length} sequence names`);
             } catch (e) {
-              console.log("[reports] sequences batch/read not available:", e.message);
-              for (const id of seqIds.slice(0, 10)) {
-                try {
-                  const s = await hsGet(user.userId, `/crm/v3/objects/sequences/${id}`, { properties: "hs_name" });
-                  if (s.properties?.hs_name) seqNames[id] = s.properties.hs_name;
-                } catch { /* not available */ }
-                await new Promise(r => setTimeout(r, 100));
-              }
+              console.log("[reports] sequence name lookup failed:", e.message);
             }
           }
 
