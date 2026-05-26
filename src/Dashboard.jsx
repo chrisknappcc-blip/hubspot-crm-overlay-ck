@@ -1133,7 +1133,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                         const res = await safeFetch(`/api/hubspot/sync-primary-rep`, {
                           method: 'POST',
                           headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({ batchStart, batchSize: 50, fullCrm, forceRefresh }),
+                          body: JSON.stringify({ batchStart, batchSize: 100, fullCrm, forceRefresh }),
                         })
                         totalUpdated += res.updated || 0
                         totalSkipped += res.skipped || 0
