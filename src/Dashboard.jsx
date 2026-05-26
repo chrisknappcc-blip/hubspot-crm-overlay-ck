@@ -4475,7 +4475,9 @@ function GoldCommandTab({ accounts, loading, onRefresh, safeFetch, filterBdr, se
   const [selected, setSelected] = useState(null)
   const [sortBy, setSortBy]     = useState('tier')
   const [view, setView]         = useState('workspace') // 'workspace' | 'reporting'
-  const [gapState, setGapState] = useState({}) // keyed by "companyId:persona"
+  const [gapState, setGapState]     = useState({}) // keyed by "companyId:persona"
+  const [gapRunning, setGapRunning] = useState(false)
+  const [gapProgress, setGapProgress] = useState('')
   const filtered = useGoldSort(accounts, search, sortBy)
   const sel = selected || filtered[0] || null
 
@@ -4498,10 +4500,17 @@ function GoldCommandTab({ accounts, loading, onRefresh, safeFetch, filterBdr, se
   const searchAllGaps = async (account) => {
     if (!account?.personaCoverage) return
     const missing = account.personaCoverage.filter(p => !p.covered).map(p => p.persona)
-    for (const persona of missing) {
+    if (!missing.length) return
+    setGapRunning(true)
+    setGapProgress(`Searching ${missing.length} missing personas...`)
+    for (let i = 0; i < missing.length; i++) {
+      const persona = missing[i]
+      setGapProgress(`Searching ${i+1}/${missing.length}: ${persona}...`)
       await searchGap(account.id, account.name, account.domain, persona)
-      await new Promise(r => setTimeout(r, 500))
+      await new Promise(r => setTimeout(r, 3000)) // 3s gap to avoid rate limit
     }
+    setGapProgress(`✓ Done — searched ${missing.length} personas`)
+    setGapRunning(false)
   }
 
   return (
@@ -4608,11 +4617,18 @@ function GoldCommandTab({ accounts, loading, onRefresh, safeFetch, filterBdr, se
                     <div style={{ fontSize:11, color:'var(--text-tertiary)' }}>
                       {sel.personaCoverage?.filter(p=>p.covered).length||0}/22 personas covered
                     </div>
-                    <button onClick={() => searchAllGaps(sel)}
-                      style={{ fontSize:11, padding:'4px 10px', background:'var(--accent)', color:'#fff',
-                        border:'none', borderRadius:'var(--radius)', cursor:'pointer', fontWeight:600 }}>
-                      ⬡ Find All Missing Contacts
-                    </button>
+                    <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+                      <button onClick={() => searchAllGaps(sel)} disabled={gapRunning}
+                        style={{ fontSize:11, padding:'4px 10px', background: gapRunning ? 'var(--bg)' : 'var(--accent)',
+                          color: gapRunning ? 'var(--text-tertiary)' : '#fff',
+                          border:'none', borderRadius:'var(--radius)',
+                          cursor: gapRunning ? 'not-allowed' : 'pointer', fontWeight:600 }}>
+                        {gapRunning ? '⟳ Searching...' : '⬡ Find All Missing Contacts'}
+                      </button>
+                      {gapProgress && (
+                        <span style={{ fontSize:11, color:'var(--text-tertiary)' }}>{gapProgress}</span>
+                      )}
+                    </div>
                   </div>
                   <OrgChart account={sel} gapState={gapState} searchGap={searchGap} />
                   </div>
