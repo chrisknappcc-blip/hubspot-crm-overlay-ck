@@ -1145,7 +1145,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                         saveRepSyncState({ ...repSyncState, running:true, progress: grandTotal > 0
                           ? `Processing ${Math.min(batchStart+50, grandTotal).toLocaleString()} of ${grandTotal.toLocaleString()} contacts…`
                           : fullCrm ? 'Fetching all CRM contacts…' : 'Fetching Gold contacts…'
-                        }))
+                        })
                         const res = await safeFetch(`/api/hubspot/sync-primary-rep`, {
                           method: 'POST',
                           headers: { 'Content-Type': 'application/json' },
