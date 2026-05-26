@@ -4554,6 +4554,110 @@ export const handler = async (event, context) => {
       }
     }
 
+    // ── Gold Account Persona Gaps ────────────────────────────────────────────────
+    // GET /hubspot/gold-gaps?companyId=123       — single account
+    // GET /hubspot/gold-gaps?batch=true          — all Gold accounts
+    if (method === "GET" && path === "/gold-gaps") {
+      try {
+        const ALL_PERSONAS = [
+          "Access/Patient Access","Ambulatory/Urgent Care","Business Development",
+          "Case Management","Clinical Operations","Emergency Department",
+          "Executive/Leadership","Finance","Innovation","Medical Group",
+          "Medical Information","Chief Clinical Officer","Medical Officer",
+          "Nursing Officer","Operating Officer","Patient Experience",
+          "Physician Executive","Population Health","Quality Officer",
+          "Service Line","Strategy","Value Based Care",
+        ];
+
+        const GOLD_TIERS = [
+          "GOLD - 1-10","GOLD - 11-20","GOLD - 21-30","GOLD - 31-40","GOLD - 41-50",
+          "GOLD - 51-60","GOLD - 61-70","GOLD - 71-80","GOLD - 81-90","GOLD - 91-100",
+        ];
+
+        const companyId = qp.companyId || null;
+        const batch     = qp.batch === "true";
+
+        // Fetch companies to check
+        let companies = [];
+        if (companyId) {
+          const c = await hsGet(user.userId, `/crm/v3/objects/companies/${companyId}`, {
+            properties: "name,priority_tier__bdr,assigned_bdr,domain",
+          });
+          companies = [c];
+        } else if (batch) {
+          const data = await hsPost(user.userId, "/crm/v3/objects/companies/search", {
+            filterGroups: [{ filters: [{ propertyName: "priority_tier__bdr", operator: "IN", values: GOLD_TIERS }] }],
+            properties:   ["name", "priority_tier__bdr", "assigned_bdr", "domain"],
+            sorts:        [{ propertyName: "priority_tier__bdr", direction: "ASCENDING" }],
+            limit:        100,
+          });
+          companies = data.results || [];
+        } else {
+          return error(400, "Provide companyId or batch=true");
+        }
+
+        // For each company, get contacts + their personas
+        const results = [];
+        for (const company of companies) {
+          const p = company.properties || {};
+
+          // Get all contacts for this company
+          const assocData = await hsPost(user.userId, "/crm/v4/associations/companies/contacts/batch/read", {
+            inputs: [{ id: company.id }],
+          }).catch(() => ({ results: [] }));
+
+          const contactIds = (assocData.results?.[0]?.to || []).map(r => String(r.toObjectId));
+
+          let coveredPersonas = new Set();
+          let contacts = [];
+
+          if (contactIds.length > 0) {
+            const contactData = await hsPost(user.userId, "/crm/v3/objects/contacts/batch/read", {
+              inputs:     contactIds.slice(0, 100).map(id => ({ id })),
+              properties: ["firstname", "lastname", "jobtitle", "target_persona", "email"],
+            }).catch(() => ({ results: [] }));
+
+            contacts = (contactData.results || []).map(c => ({
+              id:       c.id,
+              name:     `${c.properties?.firstname || ""} ${c.properties?.lastname || ""}`.trim(),
+              title:    c.properties?.jobtitle     || "",
+              persona:  c.properties?.target_persona || null,
+              email:    c.properties?.email        || "",
+            }));
+
+            coveredPersonas = new Set(contacts.filter(c => c.persona).map(c => c.persona));
+          }
+
+          const missingPersonas = ALL_PERSONAS.filter(p => !coveredPersonas.has(p));
+          const coveredList     = ALL_PERSONAS.filter(p =>  coveredPersonas.has(p));
+
+          results.push({
+            companyId:       company.id,
+            companyName:     p.name || "",
+            domain:          p.domain || "",
+            tier:            p.priority_tier__bdr || "",
+            assignedBdr:     p.assigned_bdr || "",
+            totalContacts:   contacts.length,
+            coveredPersonas: coveredList,
+            missingPersonas,
+            coveragePercent: Math.round((coveredList.length / ALL_PERSONAS.length) * 100),
+            contacts,
+          });
+
+          await new Promise(r => setTimeout(r, 100));
+        }
+
+        // Sort by most gaps first
+        results.sort((a, b) => b.missingPersonas.length - a.missingPersonas.length);
+
+        return ok({ results, totalCompanies: results.length });
+
+      } catch (err) {
+        console.error("[gold-gaps] error:", err.message);
+        return error(500, `Gold gaps error: ${err.message}`);
+      }
+    }
+
     return error(404, "Route not found");
 
   })(event, context);
