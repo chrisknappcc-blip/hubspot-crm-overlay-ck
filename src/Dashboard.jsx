@@ -620,6 +620,11 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
   // Gold tab-specific filters (independent of main filter bar)
   const [goldTabBdr, setGoldTabBdr]       = useState('')
   const [goldTabTier, setGoldTabTier]     = useState('')
+  const [gapResults, setGapResults]       = useState({}) // keyed by companyId
+  const [gapSearching, setGapSearching]   = useState({}) // keyed by companyId
+  const [gapBatchRunning, setGapBatchRunning] = useState(false)
+  const [gapBatchProgress, setGapBatchProgress] = useState('')
+  const [expandedGaps, setExpandedGaps]   = useState({}) // keyed by companyId
   const [goldSelectedAccount, setGoldSelectedAccount] = useState(null)
 
   // ── Persisted report filter state ─────────────────────────────────────────
@@ -866,6 +871,62 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
       setGoldLoading(false)
     }
   }, [expandedBdrs, expandedOwnerIds, goldTabTier])
+
+  // ── Gap analysis functions ────────────────────────────────────────────────
+  const fetchGapsForAccount = async (companyId, companyName, domain) => {
+    setGapSearching(s => ({ ...s, [companyId]: 'loading' }))
+    try {
+      const gapData = await safeFetch(`/api/hubspot/gold-gaps?companyId=${companyId}`)
+      const result  = gapData.results?.[0]
+      if (!result) { setGapSearching(s => ({ ...s, [companyId]: null })); return }
+      // Store gap data without search results yet
+      setGapResults(r => ({ ...r, [companyId]: { ...result, searchResults: [], searchDone: false } }))
+      setGapSearching(s => ({ ...s, [companyId]: 'searching' }))
+      setExpandedGaps(e => ({ ...e, [companyId]: true }))
+      // Now search for missing personas in batches of 3
+      const missing = result.missingPersonas || []
+      let allFound = []
+      for (let i = 0; i < missing.length; i += 3) {
+        const batch = missing.slice(i, i + 3)
+        try {
+          const searchData = await safeFetch('/api/hubspot-gap-search', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ companyName, domain, missingPersonas: batch, batchSize: 3 }),
+          })
+          allFound = [...allFound, ...(searchData.found || [])]
+          setGapResults(r => ({ ...r, [companyId]: { ...r[companyId], searchResults: allFound } }))
+        } catch { /* continue with other batches */ }
+        await new Promise(r => setTimeout(r, 500))
+      }
+      setGapResults(r => ({ ...r, [companyId]: { ...r[companyId], searchDone: true } }))
+      setGapSearching(s => ({ ...s, [companyId]: null }))
+    } catch (e) {
+      setGapSearching(s => ({ ...s, [companyId]: null }))
+    }
+  }
+
+  const runGapBatchScan = async () => {
+    setGapBatchRunning(true)
+    setGapBatchProgress('Fetching Gold account gaps...')
+    try {
+      const gapData = await safeFetch('/api/hubspot/gold-gaps?batch=true')
+      const results = gapData.results || []
+      setGapBatchProgress(`Found ${results.length} accounts — searching for missing contacts...`)
+      for (let i = 0; i < results.length; i++) {
+        const r = results[i]
+        setGapBatchProgress(`Searching ${r.companyName} (${i+1}/${results.length})...`)
+        setGapResults(g => ({ ...g, [r.companyId]: { ...r, searchResults: [], searchDone: false } }))
+        // Quick gap-only scan without AI search for batch — just coverage data
+        setGapResults(g => ({ ...g, [r.companyId]: { ...r, searchDone: true, searchResults: [] } }))
+        await new Promise(r => setTimeout(r, 100))
+      }
+      setGapBatchProgress(`Complete — ${results.length} accounts scanned`)
+    } catch (e) {
+      setGapBatchProgress(`Error: ${e.message}`)
+    }
+    setGapBatchRunning(false)
+  }
 
   // ── Activity summary fetch ────────────────────────────────────────────────
   const fetchActivity = useCallback(async () => {
@@ -1709,6 +1770,19 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                 </div>
               </div>
 
+              {/* Gap batch scan */}
+              <div style={{ marginBottom:12, display:'flex', alignItems:'center', gap:10 }}>
+                <button onClick={runGapBatchScan} disabled={gapBatchRunning}
+                  style={{ fontSize:11, padding:'5px 12px', background: gapBatchRunning ? 'var(--bg)' : 'var(--accent)',
+                    color: gapBatchRunning ? 'var(--text-tertiary)' : '#fff', border:'none',
+                    borderRadius:'var(--radius)', cursor: gapBatchRunning ? 'not-allowed' : 'pointer', fontWeight:600 }}>
+                  {gapBatchRunning ? '⟳ Scanning...' : '⬡ Scan All for Persona Gaps'}
+                </button>
+                {gapBatchProgress && (
+                  <span style={{ fontSize:11, color:'var(--text-tertiary)' }}>{gapBatchProgress}</span>
+                )}
+              </div>
+
               {goldLoading && <div style={{ color:'var(--text-tertiary)', fontSize:13 }}>Loading...</div>}
               {!goldLoading && filteredGold.length === 0 && (
                 <div style={{ color:'var(--text-tertiary)', fontSize:13 }}>No Gold accounts found{filterBdr ? ` for ${filterBdr}` : ''}.</div>
@@ -1732,8 +1806,84 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                               style={{ fontWeight:500, color:'var(--accent)', textDecoration:'none' }}>
                               {a.name || '—'}
                             </a>
+                            {/* Gap analysis button */}
+                            {gapSearching[a.companyId] ? (
+                              <span style={{ fontSize:10, color:'var(--accent)', opacity:.7 }}>
+                                {gapSearching[a.companyId] === 'loading' ? '⟳ loading...' : '⟳ searching...'}
+                              </span>
+                            ) : (
+                              <button onClick={() => fetchGapsForAccount(a.companyId, a.name, a.domain)}
+                                title="Find missing persona contacts"
+                                style={{ fontSize:10, padding:'2px 6px', background:'none',
+                                  border:'1px solid var(--border)', borderRadius:4,
+                                  color:'var(--text-tertiary)', cursor:'pointer' }}>
+                                {gapResults[a.companyId] ? `${gapResults[a.companyId].missingPersonas?.length || 0} gaps` : '⬡ gaps'}
+                              </button>
+                            )}
                           </div>
                           {a.territory && <div style={{ fontSize:11, color:'var(--text-tertiary)' }}>{a.territory}</div>}
+                          {/* Gap results inline */}
+                          {gapResults[a.companyId] && expandedGaps[a.companyId] && (() => {
+                            const gap = gapResults[a.companyId]
+                            const pct = gap.coveragePercent || 0
+                            return (
+                              <div style={{ marginTop:8, padding:'8px 10px', background:'var(--bg)',
+                                border:'1px solid var(--border)', borderRadius:6, fontSize:11 }}>
+                                <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:6 }}>
+                                  <span style={{ fontWeight:600, color: pct >= 75 ? '#4ade80' : pct >= 50 ? '#fbbf24' : '#f87171' }}>
+                                    {pct}% covered ({gap.coveredPersonas?.length || 0}/22 personas)
+                                  </span>
+                                  <button onClick={() => setExpandedGaps(e => ({ ...e, [a.companyId]: false }))}
+                                    style={{ fontSize:10, background:'none', border:'none', cursor:'pointer', color:'var(--text-tertiary)' }}>✕</button>
+                                </div>
+                                {gap.missingPersonas?.length > 0 && (
+                                  <div style={{ marginBottom:6 }}>
+                                    <div style={{ color:'var(--text-tertiary)', marginBottom:4, fontWeight:500 }}>Missing personas:</div>
+                                    <div style={{ display:'flex', flexWrap:'wrap', gap:4 }}>
+                                      {gap.missingPersonas.map(p => {
+                                        const found = (gap.searchResults || []).find(r => r.persona === p)
+                                        return (
+                                          <div key={p} style={{ padding:'2px 8px', borderRadius:10, fontSize:10,
+                                            background: found?.name ? '#dcfce7' : '#fee2e2',
+                                            color:      found?.name ? '#166534' : '#991b1b',
+                                            border:     `1px solid ${found?.name ? '#86efac' : '#fca5a5'}` }}>
+                                            {p}
+                                            {found?.name && ` → ${found.name}`}
+                                          </div>
+                                        )
+                                      })}
+                                    </div>
+                                  </div>
+                                )}
+                                {gap.searchResults?.filter(r => r.name).length > 0 && (
+                                  <div style={{ marginTop:8, borderTop:'1px solid var(--border)', paddingTop:6 }}>
+                                    <div style={{ color:'var(--text-tertiary)', marginBottom:4, fontWeight:500 }}>Found candidates:</div>
+                                    {gap.searchResults.filter(r => r.name).map((r, ri) => (
+                                      <div key={ri} style={{ marginBottom:4, display:'flex', alignItems:'center', gap:6 }}>
+                                        <span style={{ fontSize:10, padding:'1px 6px', borderRadius:8,
+                                          background: r.confidence === 'high' ? '#dcfce7' : r.confidence === 'medium' ? '#fef3c7' : '#f3f4f6',
+                                          color:      r.confidence === 'high' ? '#166534' : r.confidence === 'medium' ? '#92400e' : '#6b7280' }}>
+                                          {r.confidence}
+                                        </span>
+                                        <span style={{ fontWeight:500, color:'var(--text)' }}>{r.name}</span>
+                                        <span style={{ color:'var(--text-tertiary)' }}>{r.title}</span>
+                                        {r.linkedinUrl && (
+                                          <a href={r.linkedinUrl} target="_blank" rel="noopener noreferrer"
+                                            style={{ color:'var(--accent)', fontSize:10 }}>LinkedIn ↗</a>
+                                        )}
+                                        <span style={{ color:'var(--text-tertiary)', fontSize:10 }}>({r.persona})</span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                                {!gap.searchDone && gap.missingPersonas?.length > 0 && (
+                                  <div style={{ marginTop:6, color:'var(--accent)', fontSize:10 }}>
+                                    ⟳ Searching for missing contacts... Click "⬡ gaps" to trigger AI search
+                                  </div>
+                                )}
+                              </div>
+                            )
+                          })()}
                         </td>
                         <td style={{ padding:'9px 8px 9px 0' }}>
                           {(a.contacts || []).length === 0 && <span style={{ color:'var(--text-tertiary)', fontSize:12 }}>None</span>}
