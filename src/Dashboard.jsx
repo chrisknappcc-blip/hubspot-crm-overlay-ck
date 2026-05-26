@@ -455,6 +455,34 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
     setSyncMode(m)
     try { sessionStorage.setItem('syncMode', m) } catch {}
   }
+  const runRepSync = async (fullCrm = false, forceRefresh = false) => {
+    saveSyncMode(fullCrm ? 'fullcrm' : 'gold')
+    saveRepSyncState({ running:true, done:false, updated:0, skipped:0, total:0, progress:'Starting…' })
+    let totalUpdated = 0, totalSkipped = 0, grandTotal = 0, batchStart = 0
+    try {
+      while (true) {
+        saveRepSyncState({ running:true, done:false, updated:totalUpdated, skipped:totalSkipped,
+          total:grandTotal, progress: grandTotal > 0
+            ? `Processing ${Math.min(batchStart+100, grandTotal).toLocaleString()} of ${grandTotal.toLocaleString()} contacts…`
+            : fullCrm ? 'Fetching all CRM contacts…' : 'Fetching Gold contacts…'
+        })
+        const res = await safeFetch(`/api/hubspot/sync-primary-rep`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ batchStart, batchSize: 100, fullCrm, forceRefresh }),
+        })
+        totalUpdated += res.updated || 0
+        totalSkipped += res.skipped || 0
+        grandTotal    = res.total   || grandTotal
+        if (res.done || !res.hasMore) break
+        batchStart = res.nextBatch
+        await new Promise(r => setTimeout(r, 300))
+      }
+      saveRepSyncState({ running:false, done:true, updated:totalUpdated, skipped:totalSkipped, total:grandTotal, progress:'' })
+    } catch(e) {
+      saveRepSyncState({ running:false, done:false, updated:totalUpdated, skipped:totalSkipped, total:grandTotal, progress:`Error: ${e.message}` })
+    }
+  }
   const [syncMode, setSyncMode]             = useState(() => {
     try { return sessionStorage.getItem('syncMode') || 'gold' } catch { return 'gold' }
   })
@@ -1135,36 +1163,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                   <span style={{ fontSize:10 }}>{adminOpen ? '▼' : '▶'}</span>
                   Admin tools
                 </button>
-                {adminOpen && (() => {
-                  const runRepSync = async (fullCrm = false, forceRefresh = false) => {
-                    saveRepSyncState({ running:true, done:false, updated:0, skipped:0, total:0, progress:'Starting…' })
-                    let totalUpdated = 0, totalSkipped = 0, grandTotal = 0
-                    let batchStart = 0
-                    try {
-                      while (true) {
-                        saveRepSyncState({ ...repSyncState, running:true, progress: grandTotal > 0
-                          ? `Processing ${Math.min(batchStart+50, grandTotal).toLocaleString()} of ${grandTotal.toLocaleString()} contacts…`
-                          : fullCrm ? 'Fetching all CRM contacts…' : 'Fetching Gold contacts…'
-                        })
-                        const res = await safeFetch(`/api/hubspot/sync-primary-rep`, {
-                          method: 'POST',
-                          headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({ batchStart, batchSize: 100, fullCrm, forceRefresh }),
-                        })
-                        totalUpdated += res.updated || 0
-                        totalSkipped += res.skipped || 0
-                        grandTotal    = res.total   || grandTotal
-                        if (res.done || !res.hasMore) break
-                        batchStart = res.nextBatch
-                        await new Promise(r => setTimeout(r, 300))
-                      }
-                      saveRepSyncState({ running:false, done:true, updated:totalUpdated, skipped:totalSkipped, total:grandTotal, progress:'' })
-                    } catch(e) {
-                      saveRepSyncState({ ...repSyncState, running:false, progress:`Error: ${e.message}` })
-                    }
-                  }
-                  const s = repSyncState
-                  return (
+                {adminOpen && (
                     <div style={{ marginTop:8, padding:'10px 14px', background:'var(--bg-panel)',
                       border:'1px solid var(--border)', borderRadius:'var(--radius-lg)',
                       display:'flex', alignItems:'center', gap:14, flexWrap:'wrap' }}>
@@ -1173,28 +1172,28 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                           Primary Outreach Rep Sync
                         </div>
                         <div style={{ fontSize:11, color:'var(--text-tertiary)' }}>
-                          {s.done
-                            ? `✓ Complete — ${s.updated.toLocaleString()} updated · ${s.skipped.toLocaleString()} unchanged · ${s.total.toLocaleString()} ${syncMode === 'fullcrm' ? 'CRM' : 'Gold'} contacts`
-                            : s.running
-                            ? s.progress
+                          {repSyncState.done
+                            ? `✓ Complete — ${repSyncState.updated.toLocaleString()} updated · ${repSyncState.skipped.toLocaleString()} unchanged · ${repSyncState.total.toLocaleString()} ${syncMode === 'fullcrm' ? 'CRM' : 'Gold'} contacts`
+                            : repSyncState.running
+                            ? repSyncState.progress
                             : 'Sets primary_outreach_rep based on most recent engagement owner. AE activity overrides BDR. Existing customers and Do Not Contact skipped.'}
                         </div>
                       </div>
-                      {s.running && (
+                      {repSyncState.running && (
                         <div style={{ fontSize:11, color:'var(--accent)' }}>
-                          {s.total > 0 ? `${Math.round(((s.updated+s.skipped)/s.total)*100)}%` : '…'}
+                          {repSyncState.total > 0 ? `${Math.round(((repSyncState.updated+repSyncState.skipped)/repSyncState.total)*100)}%` : '…'}
                         </div>
                       )}
                       <div style={{ display:'flex', gap:6, flexShrink:0 }}>
-                        {s.done && (
+                        {repSyncState.done && (
                           <>
-                            <button onClick={() => { saveSyncMode('gold'); runRepSync(false, true); }}
+                            <button onClick={() => runRepSync(false, true)}
                               style={{ padding:'6px 10px', background:'none', border:'1px solid var(--border)',
                                 color:'var(--text-secondary)', borderRadius:'var(--radius)', fontSize:11,
                                 cursor:'pointer' }}>
                               Re-run Gold
                             </button>
-                            <button onClick={() => { setSyncMode('fullcrm'); runRepSync(true, false); }}
+                            <button onClick={() => runRepSync(true, false)}
                               style={{ padding:'6px 14px', background:'var(--accent)', color:'#fff',
                                 border:'none', borderRadius:'var(--radius)', fontSize:12,
                                 fontWeight:600, cursor:'pointer' }}>
@@ -1202,21 +1201,20 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                             </button>
                           </>
                         )}
-                        {!s.done && (
-                          <button onClick={() => { saveSyncMode('gold'); runRepSync(false); }} disabled={s.running}
-                            style={{ padding:'6px 14px', background: s.running ? 'var(--bg)' : 'var(--accent)',
-                              color: s.running ? 'var(--text-tertiary)' : '#fff',
+                        {!repSyncState.done && (
+                          <button onClick={() => runRepSync(false)} disabled={repSyncState.running}
+                            style={{ padding:'6px 14px', background: repSyncState.running ? 'var(--bg)' : 'var(--accent)',
+                              color: repSyncState.running ? 'var(--text-tertiary)' : '#fff',
                               border:'none', borderRadius:'var(--radius)', fontSize:12,
-                              fontWeight:600, cursor: s.running ? 'not-allowed' : 'pointer' }}>
-                            {s.running
-                              ? `⟳ ${syncMode === 'fullcrm' ? 'Full CRM' : 'Gold'} ${s.total > 0 ? Math.round(((s.updated+s.skipped)/s.total)*100)+'%' : '…'}`
+                              fontWeight:600, cursor: repSyncState.running ? 'not-allowed' : 'pointer' }}>
+                            {repSyncState.running
+                              ? `⟳ ${syncMode === 'fullcrm' ? 'Full CRM' : 'Gold'} ${repSyncState.total > 0 ? Math.round(((repSyncState.updated+repSyncState.skipped)/repSyncState.total)*100)+'%' : '…'}`
                               : 'Run Sync (Gold)'}
                           </button>
                         )}
                       </div>
                     </div>
-                  )
-                })()}
+                )}
               </div>
             )}
 
