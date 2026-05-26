@@ -1702,9 +1702,9 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                 {sortedSignals.slice(signalPage * PAGE_SIZE, (signalPage + 1) * PAGE_SIZE).map((s, i) => {
                   const isReply   = s.score >= 100
                   const isClick   = s.score >= 60 && s.score < 100
-                  const isOpen    = !isReply && !isClick
                   const accentCol = isReply ? 'var(--accent)' : isClick ? 'var(--amber)' : 'var(--blue)'
                   const accentBg  = isReply ? 'var(--accent-light)' : isClick ? 'var(--amber-light)' : 'var(--blue-light)'
+                  const actionLabel = isReply ? 'Replied' : isClick ? 'Clicked' : 'Opened'
 
                   const chain     = s.eventChain || []
                   const chainTs   = (type) => chain.find(e => e.type === type)?.timestamp || null
@@ -1712,23 +1712,34 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                   const openedAt  = s.openedAt  || chainTs('OPENED')  || (s.eventType === 'OPEN'  ? s.timestamp : null)
                   const clickedAt = s.clickedAt || chainTs('CLICKED') || (s.eventType === 'CLICK' ? s.timestamp : null)
                   const repliedAt = s.repliedAt || chainTs('REPLIED') || null
+                  const emailName = cleanSubject(s.subject, s.campaignId)
+                  const isLast    = i >= Math.min(sortedSignals.slice(signalPage * PAGE_SIZE, (signalPage+1)*PAGE_SIZE).length, PAGE_SIZE) - 1
 
-                  // Action label — clear and specific
-                  const actionLabel = isReply ? 'Replied' : isClick ? 'Clicked link' : 'Opened'
-                  const sourceType  = s.emailSource === 'sales' ? '1:1' : 'Sequence'
-                  const emailName   = cleanSubject(s.subject, s.campaignId)
-                  const triggerTs   = repliedAt || clickedAt || openedAt || s.timestamp
-                  const timeToAct   = sentAt && triggerTs ? timeToOpen(sentAt, triggerTs) : null
-
-                  const isLast = i >= Math.min(sortedSignals.slice(signalPage * PAGE_SIZE, (signalPage+1)*PAGE_SIZE).length, PAGE_SIZE) - 1
+                  // Timestamp row helper: date + time lapse from send
+                  const TsRow = ({ label, ts, base }) => {
+                    if (!ts) return null
+                    const lapse = base && ts !== base ? timeToOpen(base, ts) : null
+                    return (
+                      <div style={{ display:'flex', gap:6, alignItems:'center' }}>
+                        <span style={{ fontSize:11, fontWeight:600, color:'var(--text)', minWidth:52 }}>{label}</span>
+                        <span style={{ fontSize:11, color:'var(--text-secondary)' }}>{exactTs(ts)}</span>
+                        {lapse && (
+                          <span style={{ fontSize:10, padding:'1px 6px', borderRadius:10,
+                            background:accentBg, color:accentCol, fontWeight:500, whiteSpace:'nowrap' }}>
+                            {lapse} after send
+                          </span>
+                        )}
+                      </div>
+                    )
+                  }
 
                   return (
-                    <div key={i} style={{ padding:'12px 0', borderBottom: !isLast ? '1px solid var(--border)' : 'none' }}>
+                    <div key={i} style={{ padding:'11px 0', borderBottom: !isLast ? '1px solid var(--border)' : 'none' }}>
                       <div style={{ display:'flex', gap:10 }}>
 
-                        {/* Action icon */}
-                        <div style={{ width:30, height:30, borderRadius:'var(--radius)', background:accentBg,
-                          display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0, marginTop:1 }}>
+                        {/* Icon */}
+                        <div style={{ width:28, height:28, borderRadius:'var(--radius)', background:accentBg,
+                          display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0, marginTop:2 }}>
                           {isReply
                             ? <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={accentCol} strokeWidth="2.5" strokeLinecap="round"><path d="M9 17H5a2 2 0 01-2-2V5a2 2 0 012-2h14a2 2 0 012 2v5"/><polyline points="17 11 12 16 7 11"/></svg>
                             : isClick
@@ -1739,71 +1750,54 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
 
                         <div style={{ flex:1, minWidth:0 }}>
 
-                          {/* Row 1: Action type + timestamp */}
-                          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:3 }}>
-                            <div style={{ display:'flex', alignItems:'center', gap:6 }}>
-                              <span style={{ fontSize:11, fontWeight:700, color:accentCol, textTransform:'uppercase', letterSpacing:'.04em' }}>
-                                {actionLabel}
-                              </span>
-                              <span style={{ fontSize:10, padding:'1px 6px', borderRadius:10,
-                                background: s.emailSource === 'sales' ? 'var(--blue-light)' : 'var(--bg-secondary)',
-                                color:      s.emailSource === 'sales' ? 'var(--blue)' : 'var(--text-tertiary)',
-                                fontWeight:500 }}>
-                                {sourceType}
-                              </span>
-                              {timeToAct && sentAt && (
-                                <span style={{ fontSize:10, padding:'1px 6px', borderRadius:10,
-                                  background:'rgba(var(--accent-rgb),.1)', color:'var(--accent)', fontWeight:500 }}>
-                                  {timeToAct} after send
-                                </span>
-                              )}
-                            </div>
-                            <span style={{ fontSize:11, color:'var(--text-tertiary)', flexShrink:0, marginLeft:8 }}>
-                              {triggerTs ? exactTs(triggerTs) : ''}
+                          {/* Action label — color coded */}
+                          <div style={{ fontSize:11, fontWeight:700, color:accentCol,
+                            textTransform:'uppercase', letterSpacing:'.05em', marginBottom:3 }}>
+                            {actionLabel}
+                            <span style={{ fontSize:10, fontWeight:500, marginLeft:6, textTransform:'none',
+                              letterSpacing:0, color: s.emailSource === 'sales' ? 'var(--blue)' : 'var(--text-tertiary)' }}>
+                              {s.emailSource === 'sales' ? '1:1' : 'Sequence'}
                             </span>
                           </div>
 
-                          {/* Row 2: Who — Name (clickable) */}
-                          <div style={{ display:'flex', alignItems:'center', gap:6, marginBottom:2 }}>
+                          {/* Name */}
+                          <div style={{ display:'flex', alignItems:'center', gap:5, marginBottom:2 }}>
                             <span onClick={s.contactId ? () => openHubSpotContact(s.contactId) : undefined}
-                              style={{ fontSize:13, fontWeight:600,
-                                color: s.contactId ? 'var(--accent)' : 'var(--text)',
+                              style={{ fontSize:13, fontWeight:700, color: s.contactId ? 'var(--accent)' : '#fff',
                                 cursor: s.contactId ? 'pointer' : 'default' }}>
                               {s.contact?.name || s.recipientEmail || 'Unknown'}
                             </span>
                             {s.contactId && (
                               <button onClick={e => openHubSpotContact(s.contactId, e)} title="Open in HubSpot"
                                 style={{ background:'none', border:'none', cursor:'pointer', padding:0,
-                                  color:'var(--text-tertiary)', lineHeight:1, flexShrink:0 }}>
+                                  color:'var(--text-tertiary)', lineHeight:1 }}>
                                 <HsIcon />
                               </button>
                             )}
                           </div>
 
-                          {/* Row 3: Title · Company */}
+                          {/* Title · Org */}
                           {(s.contact?.title || s.contact?.company) && (
-                            <div style={{ fontSize:11, color:'var(--text-secondary)', marginBottom:4 }}>
+                            <div style={{ fontSize:11, fontWeight:500, color:'rgba(255,255,255,.75)', marginBottom:4 }}>
                               {[s.contact?.title, s.contact?.company].filter(Boolean).join(' · ')}
                             </div>
                           )}
 
-                          {/* Row 4: Email name (source) */}
+                          {/* Email/Sequence name */}
                           {emailName && (
-                            <div style={{ display:'flex', alignItems:'center', gap:5, marginBottom:3 }}>
-                              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="var(--text-tertiary)" strokeWidth="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
-                              <span style={{ fontSize:11, color:'var(--text-tertiary)', fontStyle:'italic',
-                                overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', maxWidth:280 }}>
-                                {emailName}
-                              </span>
+                            <div style={{ fontSize:11, color:'var(--text-tertiary)', marginBottom:5,
+                              overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', maxWidth:320 }}>
+                              {emailName}
                             </div>
                           )}
 
-                          {/* Row 5: Sent date (context only, if available) */}
-                          {sentAt && (
-                            <div style={{ fontSize:10, color:'var(--text-tertiary)' }}>
-                              Sent {exactTs(sentAt)}
-                            </div>
-                          )}
+                          {/* Timestamps */}
+                          <div style={{ display:'flex', flexDirection:'column', gap:2 }}>
+                            <TsRow label="Sent"     ts={sentAt}    base={null} />
+                            <TsRow label="Opened"   ts={openedAt}  base={sentAt} />
+                            <TsRow label="Clicked"  ts={clickedAt} base={sentAt} />
+                            <TsRow label="Replied"  ts={repliedAt} base={sentAt} />
+                          </div>
 
                         </div>
                       </div>
