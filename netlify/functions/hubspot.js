@@ -4323,6 +4323,7 @@ export const handler = async (event, context) => {
         const batchSize    = body.batchSize    || 100;
         const forceRefresh = body.forceRefresh || false;
         const fullCrm      = body.fullCrm      || false;
+        const crmCursor    = body.crmCursor    || null; // pagination cursor for full CRM mode
 
         // All reps and their owner IDs
         const BDR_OWNER_IDS = {
@@ -4355,21 +4356,29 @@ export const handler = async (event, context) => {
         // Step 1: Fetch contact IDs — full CRM or Gold only
         let allContactIds = [];
         let goldCompanyIds = [];
+        let nextCrmCursor = null;
+        let fullCrmTotal  = 0;
 
         if (fullCrm) {
-          // Full CRM: paginate through ALL contacts in HubSpot
-          console.log("[sync-primary-rep] fullCrm mode — fetching all contacts");
-          let after = undefined;
-          while (true) {
-            const params = { limit: 100, properties: "hs_object_id" };
-            if (after) params.after = after;
-            const data = await hsGet(user.userId, "/crm/v3/objects/contacts", params).catch(() => ({ results: [] }));
-            allContactIds.push(...(data.results || []).map(c => String(c.id)));
-            if (!data.paging?.next?.after || allContactIds.length >= 100000) break;
-            after = data.paging.next.after;
-            await new Promise(r => setTimeout(r, 100));
+          // Full CRM: fetch ONE page of contacts per invocation using cursor
+          // Frontend passes crmCursor from previous response to paginate
+          console.log(`[sync-primary-rep] fullCrm batch, cursor=${crmCursor}`);
+          const params = { limit: batchSize, properties: "hs_object_id" };
+          if (crmCursor) params.after = crmCursor;
+          const data = await hsGet(user.userId, "/crm/v3/objects/contacts", params).catch(() => ({ results: [], paging: null }));
+          allContactIds = (data.results || []).map(c => String(c.id));
+          // Store next cursor in response so frontend can pass it back
+          nextCrmCursor = data.paging?.next?.after || null;
+          console.log(`[sync-primary-rep] fullCrm: fetched ${allContactIds.length} contacts, nextCursor=${nextCrmCursor}`);
+          // Get approximate total for progress display
+          if (!crmCursor) {
+            try {
+              const countData = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
+                filterGroups: [], properties: ["hs_object_id"], limit: 1
+              });
+              fullCrmTotal = countData.total || 0;
+            } catch { fullCrmTotal = 38000; } // fallback estimate
           }
-          console.log(`[sync-primary-rep] fullCrm: fetched ${allContactIds.length} contacts`);
         } else {
           // Gold only: fetch via company associations
           const goldCompanyData = await hsPost(user.userId, "/crm/v3/objects/companies/search", {
@@ -4524,15 +4533,19 @@ export const handler = async (event, context) => {
 
         console.log(`[sync-primary-rep] batch ${batchStart}-${batchStart+batchSize}: ${updated} updated, ${skipped} skipped, ${total} total`);
 
+        // For full CRM: hasMore is true if there are more contact pages OR more batches
+        const moreContactPages = fullCrm && nextCrmCursor !== null;
         return ok({
-          done:      !hasMore,
+          done:          !hasMore && !moreContactPages,
           updated,
           skipped,
-          total,
+          total:         fullCrm ? (fullCrmTotal || total) : total,
           batchStart,
-          batchEnd:  batchStart + batchIds.length,
+          batchEnd:      batchStart + batchIds.length,
           nextBatch,
-          hasMore,
+          hasMore:       hasMore || moreContactPages,
+          nextCrmCursor: moreContactPages ? nextCrmCursor : null,
+          fullCrm,
         });
 
       } catch (err) {
