@@ -4497,6 +4497,62 @@ function GoldCommandTab({ accounts, loading, onRefresh, safeFetch, filterBdr, se
     }
   }
 
+  const exportGapResults = (account) => {
+    const key = account?.id
+    if (!key) return
+
+    const assignedBdr = account.assignedBdr || account.bdr || ''
+    const slug = (account.name||'account').replace(/[^a-z0-9]+/gi,'-')
+    const date = new Date().toISOString().slice(0,10)
+    const toCSV = rows => rows.map(r =>
+      r.map(c => `"${String(c||'').replace(/"/g,'""')}"`).join(',')
+    ).join('\n')
+
+    // ── File 1: HubSpot import (new contacts to create) ───────────────────────
+    const importRows = [['First Name','Last Name','Email','Job Title','Company Name',
+      'Target Persona','Assigned BDR','LinkedIn URL']]
+    Object.entries(gapState)
+      .filter(([k]) => k.startsWith(key+':'))
+      .forEach(([k, v]) => {
+        const persona = k.replace(key+':', '')
+        const r = v.result
+        if (!r?.name) return
+        const parts = r.name.trim().split(' ')
+        importRows.push([parts[0]||'', parts.slice(1).join(' ')||'',
+          r.email||'', r.title||'', account.name||'',
+          persona, assignedBdr, r.linkedinUrl||''])
+      })
+
+    // ── File 2: Full review file ───────────────────────────────────────────────
+    const reviewRows = [['Status','Persona','Name','Title','Email','LinkedIn','Source','Confidence','Notes']]
+    ;(account.personaCoverage||[]).filter(p => p.covered).forEach(p => {
+      const c = p.contacts?.[0]
+      reviewRows.push(['In CRM', p.persona, c?.name||'', c?.title||'', '', '', 'HubSpot', 'confirmed', ''])
+    })
+    Object.entries(gapState).filter(([k]) => k.startsWith(key+':')).forEach(([k, v]) => {
+      const persona = k.replace(key+':', '')
+      const r = v.result
+      reviewRows.push([
+        r?.name ? 'Found - needs import' : 'Not found',
+        persona, r?.name||'', r?.title||'', r?.email||'',
+        r?.linkedinUrl||'', r?.source||'', r?.confidence||'', r?.notes||''
+      ])
+    })
+
+    if (importRows.length > 1) {
+      const a = document.createElement('a')
+      a.href = URL.createObjectURL(new Blob([toCSV(importRows)], { type: 'text/csv' }))
+      a.download = `UPLOAD-TO-HUBSPOT-gap-contacts-${slug}-${date}.csv`
+      a.click()
+    }
+    setTimeout(() => {
+      const a = document.createElement('a')
+      a.href = URL.createObjectURL(new Blob([toCSV(reviewRows)], { type: 'text/csv' }))
+      a.download = `REVIEW-gap-analysis-${slug}-${date}.csv`
+      a.click()
+    }, 500)
+  }
+
   const searchAllGaps = async (account) => {
     if (!account?.personaCoverage) return
     const missing = account.personaCoverage.filter(p => !p.covered).map(p => p.persona)
@@ -4617,7 +4673,7 @@ function GoldCommandTab({ accounts, loading, onRefresh, safeFetch, filterBdr, se
                     <div style={{ fontSize:11, color:'var(--text-tertiary)' }}>
                       {sel.personaCoverage?.filter(p=>p.covered).length||0}/22 personas covered
                     </div>
-                    <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+                    <div style={{ display:'flex', alignItems:'center', gap:8, flexWrap:'wrap' }}>
                       <button onClick={() => searchAllGaps(sel)} disabled={gapRunning}
                         style={{ fontSize:11, padding:'4px 10px', background: gapRunning ? 'var(--bg)' : 'var(--accent)',
                           color: gapRunning ? 'var(--text-tertiary)' : '#fff',
@@ -4625,6 +4681,14 @@ function GoldCommandTab({ accounts, loading, onRefresh, safeFetch, filterBdr, se
                           cursor: gapRunning ? 'not-allowed' : 'pointer', fontWeight:600 }}>
                         {gapRunning ? '⟳ Searching...' : '⬡ Find All Missing Contacts'}
                       </button>
+                      {Object.keys(gapState).some(k => k.startsWith((sel?.id||'')+ ':')) && (
+                        <button onClick={() => exportGapResults(sel)}
+                          style={{ fontSize:11, padding:'4px 10px', background:'none',
+                            color:'var(--accent)', border:'1px solid var(--accent)',
+                            borderRadius:'var(--radius)', cursor:'pointer', fontWeight:600 }}>
+                          ⬇ Export Results
+                        </button>
+                      )}
                       {gapProgress && (
                         <span style={{ fontSize:11, color:'var(--text-tertiary)' }}>{gapProgress}</span>
                       )}
