@@ -1185,33 +1185,22 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                         </div>
                       )}
                       <div style={{ display:'flex', gap:6, flexShrink:0 }}>
-                        {repSyncState.done && (
-                          <>
-                            <button onClick={() => runRepSync(false, true)}
-                              style={{ padding:'6px 10px', background:'none', border:'1px solid var(--border)',
-                                color:'var(--text-secondary)', borderRadius:'var(--radius)', fontSize:11,
-                                cursor:'pointer' }}>
-                              Re-run Gold
-                            </button>
-                            <button onClick={() => runRepSync(true, false)}
-                              style={{ padding:'6px 14px', background:'var(--accent)', color:'#fff',
-                                border:'none', borderRadius:'var(--radius)', fontSize:12,
-                                fontWeight:600, cursor:'pointer' }}>
-                              Run Full CRM
-                            </button>
-                          </>
-                        )}
-                        {!repSyncState.done && (
-                          <button onClick={() => runRepSync(false)} disabled={repSyncState.running}
-                            style={{ padding:'6px 14px', background: repSyncState.running ? 'var(--bg)' : 'var(--accent)',
-                              color: repSyncState.running ? 'var(--text-tertiary)' : '#fff',
-                              border:'none', borderRadius:'var(--radius)', fontSize:12,
-                              fontWeight:600, cursor: repSyncState.running ? 'not-allowed' : 'pointer' }}>
-                            {repSyncState.running
-                              ? `⟳ ${syncMode === 'fullcrm' ? 'Full CRM' : 'Gold'} ${repSyncState.total > 0 ? Math.round(((repSyncState.updated+repSyncState.skipped)/repSyncState.total)*100)+'%' : '…'}`
-                              : 'Run Sync (Gold)'}
-                          </button>
-                        )}
+                        <button onClick={() => runRepSync(false)} disabled={repSyncState.running}
+                          style={{ padding:'6px 10px', background:'none', border:'1px solid var(--border)',
+                            color: repSyncState.running ? 'var(--text-tertiary)' : 'var(--text-secondary)',
+                            borderRadius:'var(--radius)', fontSize:11,
+                            cursor: repSyncState.running ? 'not-allowed' : 'pointer' }}>
+                          {repSyncState.running && syncMode === 'gold' ? '⟳ Gold…' : 'Run Gold'}
+                        </button>
+                        <button onClick={() => runRepSync(true, false)} disabled={repSyncState.running}
+                          style={{ padding:'6px 14px', background: repSyncState.running ? 'var(--bg)' : 'var(--accent)',
+                            color: repSyncState.running ? 'var(--text-tertiary)' : '#fff',
+                            border:'none', borderRadius:'var(--radius)', fontSize:12,
+                            fontWeight:600, cursor: repSyncState.running ? 'not-allowed' : 'pointer' }}>
+                          {repSyncState.running && syncMode === 'fullcrm'
+                            ? `⟳ Full CRM ${repSyncState.total > 0 ? Math.round(((repSyncState.updated+repSyncState.skipped)/repSyncState.total)*100)+'%' : '…'}`
+                            : 'Run Full CRM'}
+                        </button>
                       </div>
                     </div>
                 )}
