@@ -458,24 +458,30 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
   const runRepSync = async (fullCrm = false, forceRefresh = false) => {
     saveSyncMode(fullCrm ? 'fullcrm' : 'gold')
     saveRepSyncState({ running:true, done:false, updated:0, skipped:0, total:0, progress:'Starting…' })
-    let totalUpdated = 0, totalSkipped = 0, grandTotal = 0, batchStart = 0
+    let totalUpdated = 0, totalSkipped = 0, grandTotal = 0, batchStart = 0, crmCursor = null
     try {
       while (true) {
         saveRepSyncState({ running:true, done:false, updated:totalUpdated, skipped:totalSkipped,
           total:grandTotal, progress: grandTotal > 0
-            ? `Processing ${Math.min(batchStart+100, grandTotal).toLocaleString()} of ${grandTotal.toLocaleString()} contacts…`
-            : fullCrm ? 'Fetching all CRM contacts…' : 'Fetching Gold contacts…'
+            ? `Processing ${(totalUpdated+totalSkipped).toLocaleString()} of ${grandTotal.toLocaleString()} contacts…`
+            : fullCrm ? 'Fetching CRM contacts…' : 'Fetching Gold contacts…'
         })
         const res = await safeFetch(`/api/hubspot/sync-primary-rep`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ batchStart, batchSize: 100, fullCrm, forceRefresh }),
+          body: JSON.stringify({ batchStart, batchSize: 100, fullCrm, forceRefresh, crmCursor }),
         })
         totalUpdated += res.updated || 0
         totalSkipped += res.skipped || 0
         grandTotal    = res.total   || grandTotal
         if (res.done || !res.hasMore) break
-        batchStart = res.nextBatch
+        // For full CRM: use cursor for next contact page; batchStart resets to 0 each page
+        if (fullCrm && res.nextCrmCursor) {
+          crmCursor  = res.nextCrmCursor
+          batchStart = 0
+        } else {
+          batchStart = res.nextBatch
+        }
         await new Promise(r => setTimeout(r, 300))
       }
       saveRepSyncState({ running:false, done:true, updated:totalUpdated, skipped:totalSkipped, total:grandTotal, progress:'' })
