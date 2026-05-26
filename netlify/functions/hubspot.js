@@ -2249,6 +2249,14 @@ export const handler = async (event, context) => {
         if (salesClickTs > 0) eventChain.push({ type:"CLICKED",    timestamp: p.hs_sales_email_last_clicked,  label:"Clicked (sales)",    source:"sales" });
         if (salesReplyTs > 0) eventChain.push({ type:"REPLIED",    timestamp: p.hs_sales_email_last_replied,  label:"Replied (sales)",    source:"sales" });
         eventChain.sort((a,b) => new Date(a.timestamp) - new Date(b.timestamp));
+        // Bug fix: filter eventChain to only show events within the signals window
+        // This prevents year-old clicks/opens appearing in the chain
+        const sinceISO2 = new Date(since).toISOString();
+        const recentChain = eventChain.filter(e => !e.timestamp || e.timestamp >= sinceISO2);
+        // Keep at minimum the primary triggering event even if chain is empty
+        if (recentChain.length === 0 && primaryTs) {
+          recentChain.push({ type: eventType, timestamp: primaryTs, label: label, source: emailSource });
+        }
 
         // Use whichever open/send timestamps are available for bot detection
         const botOpenTs = openSource === "sales" ? salesOpenTs : mktOpenTs;
@@ -2280,8 +2288,10 @@ export const handler = async (event, context) => {
 
         // Sequence subject: hs_sequence_name does not exist on contacts.
         // Show the email name for marketing sends; sequence ID is a fallback only.
-        const subjectLabel = p.hs_email_last_email_name
-          || (p.hs_latest_sequence_enrolled ? `Sequence #${p.hs_latest_sequence_enrolled}` : null);
+        // Bug fix: never show raw sequence ID as subject
+        // hs_email_last_email_name is the best we have — it captures the email name
+        // for both marketing and sales emails. Sequence ID fallback is removed.
+        const subjectLabel = p.hs_email_last_email_name || null;
 
         return {
           source:      "contact_activity",
@@ -2291,13 +2301,21 @@ export const handler = async (event, context) => {
           timestamp:   primaryTs,
           score,
           label,
-          eventChain,
+          eventChain:  recentChain,
           contactId:   c.id,
           contact:     info,
           botCheck,
           isBot:       isBotSignal,
           subject:     subjectLabel,
-          sentAt:      p.hs_email_last_send_date        || null,
+          // Bug fix: sentAt = most recent send at or before the triggering event
+          // hs_email_last_send_date can be stale — use the send closest to the event
+          sentAt: (() => {
+            const eventMs = new Date(primaryTs || 0).getTime()
+            const sendMs  = new Date(p.hs_email_last_send_date || 0).getTime()
+            // If send is after the event it's from a different email — don't show it
+            if (sendMs > eventMs) return null
+            return p.hs_email_last_send_date || null
+          })(),
           openedAt:    primaryTs && eventType === "OPEN"   ? primaryTs : null,
           clickedAt:   primaryTs && eventType === "CLICK"  ? primaryTs : null,
           repliedAt:   primaryTs && eventType === "REPLY"  ? primaryTs : null,
