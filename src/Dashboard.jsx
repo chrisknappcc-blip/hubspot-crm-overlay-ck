@@ -3641,7 +3641,7 @@ const PERSONA_TREE = [
   },
 ]
 
-function OrgChart({ account }) {
+function OrgChart({ account, gapState = {}, searchGap }) {
   const [tooltip, setTooltip] = useState(null)
   if (!account?.personaCoverage) return null
 
@@ -3685,9 +3685,42 @@ function OrgChart({ account }) {
                       {contacts[0].name.split(' ')[0]}{contacts.length > 1 ? ` +${contacts.length-1}` : ''}
                     </div>
                   )}
-                  {!covered && (
-                    <div style={{ fontSize:9, color:'var(--red)', marginTop:2 }}>⚠ No contact</div>
-                  )}
+                  {!covered && (() => {
+                    const key = `${account.id}:${node.value}`
+                    const gs  = gapState[key]
+                    return (
+                      <div style={{ marginTop:2 }}>
+                        {gs?.status === 'searching' && (
+                          <div style={{ fontSize:9, color:'var(--accent)' }}>⟳ searching...</div>
+                        )}
+                        {gs?.status === 'done' && gs.result?.name && (
+                          <div style={{ fontSize:9, color:'var(--green)', lineHeight:1.3 }}>
+                            ✓ {gs.result.name}
+                            {gs.result.linkedinUrl && (
+                              <a href={gs.result.linkedinUrl} target="_blank" rel="noopener noreferrer"
+                                style={{ marginLeft:3, color:'var(--accent)' }}>↗</a>
+                            )}
+                          </div>
+                        )}
+                        {gs?.status === 'done' && !gs.result?.name && (
+                          <div style={{ fontSize:9, color:'var(--red)' }}>⚠ Not found</div>
+                        )}
+                        {!gs && (
+                          <div style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:2 }}>
+                            <div style={{ fontSize:9, color:'var(--red)' }}>⚠ No contact</div>
+                            {searchGap && (
+                              <button
+                                onClick={e => { e.stopPropagation(); searchGap(account.id, account.name, account.domain, node.value) }}
+                                style={{ fontSize:8, padding:'1px 5px', background:'var(--accent)', color:'#fff',
+                                  border:'none', borderRadius:3, cursor:'pointer', marginTop:1 }}>
+                                Find
+                              </button>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })()}
                   {/* Tooltip */}
                   {tooltip?.node?.value === node.value && (
                     <div style={{ position:'absolute', top:'calc(100% + 6px)', left:'50%', transform:'translateX(-50%)',
@@ -4438,12 +4471,38 @@ function GoldAccountTodo({ account, safeFetch }) {
 }
 
 function GoldCommandTab({ accounts, loading, onRefresh, safeFetch, filterBdr, setFilterBdr, BDR_OPTIONS, goldTabTier, setGoldTabTier }) {
-  const [search, setSearch]   = useState('')
+  const [search, setSearch]     = useState('')
   const [selected, setSelected] = useState(null)
-  const [sortBy, setSortBy]   = useState('tier')
-  const [view, setView]       = useState('workspace') // 'workspace' | 'reporting'
+  const [sortBy, setSortBy]     = useState('tier')
+  const [view, setView]         = useState('workspace') // 'workspace' | 'reporting'
+  const [gapState, setGapState] = useState({}) // keyed by "companyId:persona"
   const filtered = useGoldSort(accounts, search, sortBy)
   const sel = selected || filtered[0] || null
+
+  const searchGap = async (companyId, companyName, domain, persona) => {
+    const key = `${companyId}:${persona}`
+    setGapState(s => ({ ...s, [key]: { status: 'searching', result: null } }))
+    try {
+      const data = await safeFetch('/api/hubspot-gap-search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ companyName, domain, missingPersonas: [persona], batchSize: 1 }),
+      })
+      const found = (data.found || []).find(f => f.persona === persona) || null
+      setGapState(s => ({ ...s, [key]: { status: 'done', result: found } }))
+    } catch(e) {
+      setGapState(s => ({ ...s, [key]: { status: 'error', result: null, error: e.message } }))
+    }
+  }
+
+  const searchAllGaps = async (account) => {
+    if (!account?.personaCoverage) return
+    const missing = account.personaCoverage.filter(p => !p.covered).map(p => p.persona)
+    for (const persona of missing) {
+      await searchGap(account.id, account.name, account.domain, persona)
+      await new Promise(r => setTimeout(r, 500))
+    }
+  }
 
   return (
     <div style={{ display:'flex', flexDirection:'column', gap:12 }}>
@@ -4545,7 +4604,17 @@ function GoldCommandTab({ accounts, loading, onRefresh, safeFetch, filterBdr, se
                     <span style={{ fontSize:10, color:'var(--text-tertiary)' }}>{sel.coveredPersonaCount||0}/22 personas covered</span>
                   </div>
                   <div style={{ padding:'12px 13px' }}>
-                    <OrgChart account={sel} />
+                    <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:6 }}>
+                    <div style={{ fontSize:11, color:'var(--text-tertiary)' }}>
+                      {sel.personaCoverage?.filter(p=>p.covered).length||0}/22 personas covered
+                    </div>
+                    <button onClick={() => searchAllGaps(sel)}
+                      style={{ fontSize:11, padding:'4px 10px', background:'var(--accent)', color:'#fff',
+                        border:'none', borderRadius:'var(--radius)', cursor:'pointer', fontWeight:600 }}>
+                      ⬡ Find All Missing Contacts
+                    </button>
+                  </div>
+                  <OrgChart account={sel} gapState={gapState} searchGap={searchGap} />
                   </div>
                 </div>
 
