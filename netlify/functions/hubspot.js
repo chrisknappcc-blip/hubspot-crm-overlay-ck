@@ -4320,7 +4320,7 @@ export const handler = async (event, context) => {
       try {
         const body         = JSON.parse(event.body || "{}");
         const batchStart   = body.batchStart   || 0;
-        const batchSize    = body.batchSize    || 50;
+        const batchSize    = body.batchSize    || 100;
         const forceRefresh = body.forceRefresh || false;
         const fullCrm      = body.fullCrm      || false;
 
@@ -4418,53 +4418,43 @@ export const handler = async (event, context) => {
         const contacts = contactData.results || [];
 
         // Step 4: For each contact, find the most recent engagement owner
-        // Fetch engagements in parallel batches
-        // Skip contacts that already have primary_outreach_rep set (unless forceRefresh)
+        // Fetch engagements using the v1 engagements endpoint — one call per contact
+        // returns all engagement types (email, call, meeting, note) with owner + timestamp
+        // 4x fewer API calls vs querying each type separately
         const contactMap = Object.fromEntries(contacts.map(c => [c.id, c]));
         const contactsNeedingEngagements = forceRefresh
           ? batchIds
           : batchIds.filter(id => {
               const p = contactMap[id]?.properties || {};
-              return !p.primary_outreach_rep; // skip if already set
+              return !p.primary_outreach_rep;
             });
 
         const engagementOwners = {};
-        const ENGAGEMENT_TYPES = ["emails", "calls", "meetings", "notes"];
 
         await Promise.all(contactsNeedingEngagements.map(async contactId => {
-          let mostRecentTs   = 0;
-          let mostRecentOwner = null;
+          try {
+            // Single call returns all engagement types sorted by most recent
+            const data = await hsGet(user.userId,
+              `/engagements/v1/engagements/associated/contact/${contactId}/paged`,
+              { limit: 5, count: 5 }
+            ).catch(() => ({ results: [] }));
 
-          for (const engType of ENGAGEMENT_TYPES) {
-            try {
-              // Get most recent engagement of this type for this contact
-              const assocData = await hsGet(user.userId,
-                `/crm/v3/objects/contacts/${contactId}/associations/${engType}`,
-                { limit: 10 }
-              ).catch(() => ({ results: [] }));
+            let mostRecentTs    = 0;
+            let mostRecentOwner = null;
 
-              const engIds = (assocData.results || []).map(r => r.id);
-              if (engIds.length === 0) continue;
-
-              // Fetch engagement details
-              const engDetails = await hsPost(user.userId, `/crm/v3/objects/${engType}/batch/read`, {
-                inputs: engIds.slice(0, 10).map(id => ({ id })),
-                properties: ["hubspot_owner_id", "hs_timestamp", "createdate"],
-              }).catch(() => ({ results: [] }));
-
-              for (const eng of (engDetails.results || [])) {
-                const ts       = new Date(eng.properties?.hs_timestamp || eng.properties?.createdate || 0).getTime();
-                const ownerId  = String(eng.properties?.hubspot_owner_id || "");
-                if (ts > mostRecentTs && ownerId) {
-                  mostRecentTs    = ts;
-                  mostRecentOwner = ownerId;
-                }
+            for (const eng of (data.results || [])) {
+              const ts      = eng.engagement?.lastUpdated || eng.engagement?.timestamp || 0;
+              const ownerId = String(eng.engagement?.ownerId || "");
+              if (ts > mostRecentTs && ownerId) {
+                mostRecentTs    = ts;
+                mostRecentOwner = ownerId;
               }
-            } catch { /* skip this engagement type */ }
-          }
+            }
 
-          engagementOwners[contactId] = { ownerId: mostRecentOwner, ts: mostRecentTs };
-          await new Promise(r => setTimeout(r, 50)); // small gap per contact
+            engagementOwners[contactId] = { ownerId: mostRecentOwner, ts: mostRecentTs };
+          } catch {
+            engagementOwners[contactId] = { ownerId: null, ts: 0 };
+          }
         }));
 
         // Step 5: Determine new primary_outreach_rep for each contact
