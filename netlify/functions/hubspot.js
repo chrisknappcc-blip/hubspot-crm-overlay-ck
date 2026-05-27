@@ -2387,13 +2387,14 @@ export const handler = async (event, context) => {
             if (!eventMs) return;
 
             if (sig.emailSource === 'sales') {
-              // ── Sales/1:1 email: find the email engagement sent just before this event
-              const emailAssoc = await hsGet(user.userId,
-                `/crm/v3/objects/contacts/${sig.contactId}/associations/emails`,
-                { limit: 20 }
+              // ── Sales/1:1 email: use v4 associations to get email engagement IDs
+              const emailAssocData = await hsPost(user.userId,
+                `/crm/v4/associations/contacts/emails/batch/read`,
+                { inputs: [{ id: String(sig.contactId) }] }
               ).catch(() => ({ results: [] }));
 
-              const emailIds = (emailAssoc.results || []).map(r => r.id);
+              const emailIds = (emailAssocData.results?.[0]?.to || [])
+                .map(r => String(r.toObjectId));
               if (!emailIds.length) return;
 
               const emailDetails = await hsPost(user.userId, '/crm/v3/objects/emails/batch/read', {
