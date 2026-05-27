@@ -2318,10 +2318,11 @@ export const handler = async (event, context) => {
             const eventMs = new Date(primaryTs).getTime();
             return sendMs <= eventMs ? sendDate : null;
           })(),
-          openedAt:    eventType === "OPEN"  ? primaryTs
-                       : (p.hs_sales_email_last_opened || p.hs_email_last_open_date || null),
-          clickedAt:   eventType === "CLICK" ? primaryTs
-                       : (p.hs_sales_email_last_clicked || p.hs_email_last_click_date || null),
+          // Only set open/click/reply timestamps from the actual triggering event
+          // Contact-level all-time properties (hs_sales_email_last_opened etc) are
+          // unpaired and would show stale dates — never use them here
+          openedAt:    eventType === "OPEN"  ? primaryTs : null,
+          clickedAt:   eventType === "CLICK" ? primaryTs : null,
           repliedAt:   eventType === "REPLY" ? primaryTs : null,
         };
       }).filter(Boolean);
@@ -2380,9 +2381,9 @@ export const handler = async (event, context) => {
       if (signalsNeedingSentAt.length > 0) {
         await Promise.all(signalsNeedingSentAt.map(async sig => {
           try {
-            const eventMs = new Date(
-              sig.openedAt || sig.clickedAt || sig.repliedAt || sig.timestamp || 0
-            ).getTime();
+            // Use the actual triggering event timestamp for lookup
+            // sig.timestamp is always the primary event that caused this signal
+            const eventMs = new Date(sig.timestamp || 0).getTime();
             if (!eventMs) return;
 
             if (sig.emailSource === 'sales') {
