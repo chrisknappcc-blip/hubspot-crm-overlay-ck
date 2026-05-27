@@ -2326,14 +2326,6 @@ export const handler = async (event, context) => {
         };
       }).filter(Boolean);
 
-      // Apply fallback sentAt for signals where enrichment didn't find a better date
-      for (const sig of contactSignals) {
-        if (!sig.sentAt && sig._fallbackSentAt) {
-          sig.sentAt = sig._fallbackSentAt;
-        }
-        delete sig._fallbackSentAt;
-      }
-
       // Enrich company names for signals where contact.company is blank
       // Use associatedcompanyid to batch-fetch company names
       const missingCompany = contactSignals.filter(s => !s.contact?.company?.trim() && s.contactId);
@@ -2423,6 +2415,7 @@ export const handler = async (event, context) => {
                 .filter(e => e.ts > 0 && e.ts <= eventMs)
                 .sort((a, b) => b.ts - a.ts); // most recent before event first
 
+              console.log(`[sentAt] contact ${sig.contactId} source=sales found ${sent.length} emails, best=${sent[0]?.iso || 'none'}, eventMs=${new Date(eventMs).toISOString()}`);
               if (sent.length > 0) {
                 sig.sentAt = sent[0].iso;
               }
@@ -2461,6 +2454,14 @@ export const handler = async (event, context) => {
             }
           } catch { /* non-critical — fall back to contact property sentAt */ }
         }));
+      }
+
+      // Apply fallback sentAt for signals where enrichment didn't find a better date
+      for (const sig of contactSignals) {
+        if (!sig.sentAt && sig._fallbackSentAt) {
+          sig.sentAt = sig._fallbackSentAt;
+        }
+        delete sig._fallbackSentAt;
       }
 
       // Supplement with engagements not already covered by contact search
