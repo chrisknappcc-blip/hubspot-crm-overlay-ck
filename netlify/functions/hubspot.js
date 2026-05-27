@@ -2370,92 +2370,47 @@ export const handler = async (event, context) => {
         } catch { /* non-critical — signals still show without company name */ }
       }
 
-      // ── Accurate sentAt: source-aware send time lookup ───────────────────────────
-      // Marketing signals: use events API (SENT event matched by emailCampaignId)
-      // Sales/1:1 signals: fetch the email engagement object directly for its send time
-      // Contact-level properties are NOT reliable for pairing — they track latest per type
+      // ── Accurate sentAt via v1 engagements API ───────────────────────────────────
+      // v1 engagements is proven to work (already used in rep sync).
+      // For sales signals: find most recent outbound EMAIL engagement before the event.
+      // Only process sales signals — marketing sentAt comes from _fallbackSentAt.
       const signalsNeedingSentAt = contactSignals.filter(s =>
-        s.contactId && (s.eventType === 'OPEN' || s.eventType === 'CLICK' || s.eventType === 'REPLY')
+        s.contactId && s.emailSource === 'sales' &&
+        (s.eventType === 'OPEN' || s.eventType === 'CLICK' || s.eventType === 'REPLY')
       );
 
       if (signalsNeedingSentAt.length > 0) {
-        await Promise.all(signalsNeedingSentAt.map(async sig => {
-          try {
-            // Use the actual triggering event timestamp for lookup
-            // sig.timestamp is always the primary event that caused this signal
-            const eventMs = new Date(sig.timestamp || 0).getTime();
-            if (!eventMs) return;
+        const BATCH = 10;
+        for (let i = 0; i < signalsNeedingSentAt.length; i += BATCH) {
+          const batch = signalsNeedingSentAt.slice(i, i + BATCH);
+          await Promise.all(batch.map(async sig => {
+            try {
+              const eventMs = new Date(sig.timestamp || 0).getTime();
+              if (!eventMs) return;
 
-            if (sig.emailSource === 'sales') {
-              // ── Sales/1:1 email: use v4 associations to get email engagement IDs
-              const emailAssocData = await hsPost(user.userId,
-                `/crm/v4/associations/contacts/emails/batch/read`,
-                { inputs: [{ id: String(sig.contactId) }] }
+              const engData = await hsGet(user.userId,
+                `/engagements/v1/engagements/associated/contact/${sig.contactId}/paged`,
+                { limit: 10, count: 10 }
               ).catch(() => ({ results: [] }));
 
-              const emailIds = (emailAssocData.results?.[0]?.to || [])
-                .map(r => String(r.toObjectId));
-              if (!emailIds.length) return;
-
-              const emailDetails = await hsPost(user.userId, '/crm/v3/objects/emails/batch/read', {
-                inputs:     emailIds.slice(0, 20).map(id => ({ id })),
-                properties: ['hs_timestamp', 'hs_email_direction', 'hs_email_open_count',
-                             'hs_email_status', 'hubspot_owner_id'],
-              }).catch(() => ({ results: [] }));
-
-              // Find the outbound email sent closest to but BEFORE the event
-              const sent = (emailDetails.results || [])
-                .filter(e => {
-                  const dir = e.properties?.hs_email_direction || '';
-                  const status = e.properties?.hs_email_status || '';
-                  return dir !== 'INCOMING_EMAIL' && status === 'SENT';
-                })
-                .map(e => ({
-                  ts:  new Date(e.properties?.hs_timestamp || 0).getTime(),
-                  iso: e.properties?.hs_timestamp,
-                }))
-                .filter(e => e.ts > 0 && e.ts <= eventMs)
-                .sort((a, b) => b.ts - a.ts); // most recent before event first
-
-              console.log(`[sentAt] contact ${sig.contactId} source=sales found ${sent.length} emails, best=${sent[0]?.iso || 'none'}, eventMs=${new Date(eventMs).toISOString()}`);
-              if (sent.length > 0) {
-                sig.sentAt = sent[0].iso;
+              let bestTs = 0, bestIso = null;
+              for (const eng of (engData.results || [])) {
+                if (eng.engagement?.type !== 'EMAIL') continue;
+                if (eng.metadata?.incoming) continue; // skip incoming emails
+                const ts = eng.engagement?.timestamp || eng.engagement?.lastUpdated || 0;
+                if (ts > 0 && ts <= eventMs && ts > bestTs) {
+                  bestTs  = ts;
+                  bestIso = new Date(ts).toISOString();
+                }
               }
 
-            } else {
-              // ── Marketing/sequence email: use events API SENT event
-              const contactEmail = sig.contact?.email || sig.recipientEmail;
-              if (!contactEmail) return;
-
-              // Get OPEN events to find the emailCampaignId
-              const openEvents = await hsGet(user.userId, `/email/public/v1/events`, {
-                recipient: contactEmail,
-                eventType: 'OPEN',
-                limit:     10,
-              }).catch(() => ({ events: [] }));
-
-              const fiveMin = 5 * 60 * 1000;
-              const matchingOpen = (openEvents.events || []).find(ev =>
-                Math.abs((ev.created || 0) - eventMs) <= fiveMin
-              ) || (openEvents.events || [])[0];
-
-              if (!matchingOpen?.emailCampaignId) return;
-
-              // Get the SENT event with matching campaignId
-              const sentEvents = await hsGet(user.userId, `/email/public/v1/events`, {
-                recipient:       contactEmail,
-                eventType:       'SENT',
-                emailCampaignId: matchingOpen.emailCampaignId,
-                limit:           1,
-              }).catch(() => ({ events: [] }));
-
-              const sentEvent = (sentEvents.events || [])[0];
-              if (sentEvent?.created && sentEvent.created <= eventMs) {
-                sig.sentAt = new Date(sentEvent.created).toISOString();
-              }
-            }
-          } catch { /* non-critical — fall back to contact property sentAt */ }
-        }));
+              if (bestIso) sig.sentAt = bestIso;
+            } catch { /* non-critical */ }
+          }));
+          if (i + BATCH < signalsNeedingSentAt.length) {
+            await new Promise(r => setTimeout(r, 150));
+          }
+        }
       }
 
       // Apply fallback sentAt for signals where enrichment didn't find a better date
