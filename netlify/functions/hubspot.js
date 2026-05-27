@@ -2307,14 +2307,30 @@ export const handler = async (event, context) => {
           botCheck,
           isBot:       isBotSignal,
           subject:     subjectLabel,
-          // Bug fix: sentAt = most recent send at or before the triggering event
-          // hs_email_last_send_date can be stale — use the send closest to the event
+          // sentAt: find the most recent send that is <= the open/click/reply timestamp
+          // This ensures we show the send that actually caused this engagement,
+          // not a different email sent on a different day
           sentAt: (() => {
-            const eventMs = new Date(primaryTs || 0).getTime()
-            const sendMs  = new Date(p.hs_email_last_send_date || 0).getTime()
-            // If send is after the event it's from a different email — don't show it
-            if (sendMs > eventMs) return null
-            return p.hs_email_last_send_date || null
+            const eventMs  = new Date(primaryTs || 0).getTime();
+            if (!eventMs) return null;
+            // Candidate sends: marketing send date and any sales send dates
+            const candidates = [
+              p.hs_email_last_send_date,
+              p.hs_sales_email_last_sent,
+            ].filter(Boolean).map(d => new Date(d).getTime());
+            // Find the most recent send that is AT or BEFORE the event
+            // A send that is within 7 days before the event is a valid candidate
+            const sevenDays = 7 * 24 * 60 * 60 * 1000;
+            const valid = candidates
+              .filter(ms => ms <= eventMs && (eventMs - ms) <= sevenDays)
+              .sort((a, b) => b - a); // most recent first
+            if (valid.length === 0) return null;
+            // Return the ISO string of the best matching send
+            const allDates = [
+              p.hs_email_last_send_date,
+              p.hs_sales_email_last_sent,
+            ].filter(Boolean);
+            return allDates.find(d => new Date(d).getTime() === valid[0]) || null;
           })(),
           openedAt:    primaryTs && eventType === "OPEN"   ? primaryTs : null,
           clickedAt:   primaryTs && eventType === "CLICK"  ? primaryTs : null,
