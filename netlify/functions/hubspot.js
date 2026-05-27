@@ -2370,52 +2370,11 @@ export const handler = async (event, context) => {
         } catch { /* non-critical — signals still show without company name */ }
       }
 
-      // ── Accurate sentAt via v1 engagements API ───────────────────────────────────
-      // v1 engagements is proven to work (already used in rep sync).
-      // For sales signals: find most recent outbound EMAIL engagement before the event.
-      // Only process sales signals — marketing sentAt comes from _fallbackSentAt.
-      const signalsNeedingSentAt = contactSignals.filter(s =>
-        s.contactId && s.emailSource === 'sales' &&
-        (s.eventType === 'OPEN' || s.eventType === 'CLICK' || s.eventType === 'REPLY')
-      );
-
-      if (signalsNeedingSentAt.length > 0) {
-        const BATCH = 10;
-        for (let i = 0; i < signalsNeedingSentAt.length; i += BATCH) {
-          const batch = signalsNeedingSentAt.slice(i, i + BATCH);
-          await Promise.all(batch.map(async sig => {
-            try {
-              const eventMs = new Date(sig.timestamp || 0).getTime();
-              if (!eventMs) return;
-
-              const engData = await hsGet(user.userId,
-                `/engagements/v1/engagements/associated/contact/${sig.contactId}/paged`,
-                { limit: 10, count: 10 }
-              ).catch(() => ({ results: [] }));
-
-              let bestTs = 0, bestIso = null;
-              for (const eng of (engData.results || [])) {
-                if (eng.engagement?.type !== 'EMAIL') continue;
-                if (eng.metadata?.incoming) continue; // skip incoming emails
-                const ts = eng.engagement?.timestamp || eng.engagement?.lastUpdated || 0;
-                if (ts > 0 && ts <= eventMs && ts > bestTs) {
-                  bestTs  = ts;
-                  bestIso = new Date(ts).toISOString();
-                }
-              }
-
-              if (bestIso) sig.sentAt = bestIso;
-            } catch { /* non-critical */ }
-          }));
-          if (i + BATCH < signalsNeedingSentAt.length) {
-            await new Promise(r => setTimeout(r, 150));
-          }
-        }
-      }
-
-      // Apply fallback sentAt for signals where enrichment didn't find a better date
+      // Apply sentAt from contact property — only for marketing signals
+      // For sales/1:1 signals the contact-level send date is unreliable
+      // (it could be from a different email entirely)
       for (const sig of contactSignals) {
-        if (!sig.sentAt && sig._fallbackSentAt) {
+        if (!sig.sentAt && sig._fallbackSentAt && sig.emailSource !== 'sales') {
           sig.sentAt = sig._fallbackSentAt;
         }
         delete sig._fallbackSentAt;
