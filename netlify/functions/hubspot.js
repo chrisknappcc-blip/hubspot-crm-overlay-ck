@@ -2366,11 +2366,10 @@ export const handler = async (event, context) => {
         } catch { /* non-critical — signals still show without company name */ }
       }
 
-      // ── Accurate sentAt: use marketing email events API ──────────────────────────
-      // Contact-level properties are unpaired — hs_email_last_send_date has no
-      // relationship to hs_email_last_open_date.
-      // The events API returns individual OPEN/SENT events with emailCampaignId,
-      // letting us find the exact send that corresponds to each open.
+      // ── Accurate sentAt: source-aware send time lookup ───────────────────────────
+      // Marketing signals: use events API (SENT event matched by emailCampaignId)
+      // Sales/1:1 signals: fetch the email engagement object directly for its send time
+      // Contact-level properties are NOT reliable for pairing — they track latest per type
       const signalsNeedingSentAt = contactSignals.filter(s =>
         s.contactId && (s.eventType === 'OPEN' || s.eventType === 'CLICK' || s.eventType === 'REPLY')
       );
@@ -2378,53 +2377,75 @@ export const handler = async (event, context) => {
       if (signalsNeedingSentAt.length > 0) {
         await Promise.all(signalsNeedingSentAt.map(async sig => {
           try {
-            const contactEmail = sig.contact?.email || sig.recipientEmail;
-            if (!contactEmail) return;
+            const eventMs = new Date(
+              sig.openedAt || sig.clickedAt || sig.repliedAt || sig.timestamp || 0
+            ).getTime();
+            if (!eventMs) return;
 
-            const openEventTs = new Date(sig.openedAt || sig.clickedAt || sig.repliedAt || sig.timestamp || 0).getTime();
-            if (!openEventTs) return;
+            if (sig.emailSource === 'sales') {
+              // ── Sales/1:1 email: find the email engagement sent just before this event
+              const emailAssoc = await hsGet(user.userId,
+                `/crm/v3/objects/contacts/${sig.contactId}/associations/emails`,
+                { limit: 20 }
+              ).catch(() => ({ results: [] }));
 
-            // Fetch OPEN events for this contact from the events API
-            // Returns events with emailCampaignId that we can match to a SENT event
-            const openEvents = await hsGet(user.userId,
-              `/email/public/v1/events`,
-              {
-                recipient:  contactEmail,
-                eventType:  'OPEN',
-                limit:      5,
+              const emailIds = (emailAssoc.results || []).map(r => r.id);
+              if (!emailIds.length) return;
+
+              const emailDetails = await hsPost(user.userId, '/crm/v3/objects/emails/batch/read', {
+                inputs:     emailIds.slice(0, 20).map(id => ({ id })),
+                properties: ['hs_timestamp', 'hs_email_direction', 'hs_email_open_count',
+                             'hs_email_status', 'hubspot_owner_id'],
+              }).catch(() => ({ results: [] }));
+
+              // Find the outbound email sent closest to but BEFORE the event
+              const sent = (emailDetails.results || [])
+                .filter(e => {
+                  const dir = e.properties?.hs_email_direction || '';
+                  const status = e.properties?.hs_email_status || '';
+                  return dir !== 'INCOMING_EMAIL' && status === 'SENT';
+                })
+                .map(e => ({
+                  ts:  new Date(e.properties?.hs_timestamp || 0).getTime(),
+                  iso: e.properties?.hs_timestamp,
+                }))
+                .filter(e => e.ts > 0 && e.ts <= eventMs)
+                .sort((a, b) => b.ts - a.ts); // most recent before event first
+
+              if (sent.length > 0) {
+                sig.sentAt = sent[0].iso;
               }
-            ).catch(() => ({ events: [] }));
 
-            const events = openEvents.events || [];
-            if (!events.length) return;
+            } else {
+              // ── Marketing/sequence email: use events API SENT event
+              const contactEmail = sig.contact?.email || sig.recipientEmail;
+              if (!contactEmail) return;
 
-            // Find the open event closest to our signal's open timestamp
-            // Match within 5 minutes to handle minor timestamp differences
-            const fiveMin = 5 * 60 * 1000;
-            const matchingOpen = events.find(ev => {
-              const evMs = ev.created || 0;
-              return Math.abs(evMs - openEventTs) <= fiveMin;
-            }) || events[0]; // fallback to most recent open
+              // Get OPEN events to find the emailCampaignId
+              const openEvents = await hsGet(user.userId, `/email/public/v1/events`, {
+                recipient: contactEmail,
+                eventType: 'OPEN',
+                limit:     10,
+              }).catch(() => ({ events: [] }));
 
-            if (!matchingOpen?.emailCampaignId) return;
+              const fiveMin = 5 * 60 * 1000;
+              const matchingOpen = (openEvents.events || []).find(ev =>
+                Math.abs((ev.created || 0) - eventMs) <= fiveMin
+              ) || (openEvents.events || [])[0];
 
-            // Now fetch the SENT event with the same campaignId to get send timestamp
-            const sentEvents = await hsGet(user.userId,
-              `/email/public/v1/events`,
-              {
+              if (!matchingOpen?.emailCampaignId) return;
+
+              // Get the SENT event with matching campaignId
+              const sentEvents = await hsGet(user.userId, `/email/public/v1/events`, {
                 recipient:       contactEmail,
                 eventType:       'SENT',
                 emailCampaignId: matchingOpen.emailCampaignId,
                 limit:           1,
-              }
-            ).catch(() => ({ events: [] }));
+              }).catch(() => ({ events: [] }));
 
-            const sentEvent = (sentEvents.events || [])[0];
-            if (sentEvent?.created) {
-              const sentMs = sentEvent.created;
-              // Only use if send is before the open (sanity check)
-              if (sentMs <= openEventTs) {
-                sig.sentAt = new Date(sentMs).toISOString();
+              const sentEvent = (sentEvents.events || [])[0];
+              if (sentEvent?.created && sentEvent.created <= eventMs) {
+                sig.sentAt = new Date(sentEvent.created).toISOString();
               }
             }
           } catch { /* non-critical — fall back to contact property sentAt */ }
