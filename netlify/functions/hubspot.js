@@ -2307,30 +2307,15 @@ export const handler = async (event, context) => {
           botCheck,
           isBot:       isBotSignal,
           subject:     subjectLabel,
-          // sentAt: find the most recent send that is <= the open/click/reply timestamp
-          // This ensures we show the send that actually caused this engagement,
-          // not a different email sent on a different day
+          // sentAt: only show send date if it is at or before the event timestamp
+          // Prevents showing a future send date that belongs to a different email
           sentAt: (() => {
-            const eventMs  = new Date(primaryTs || 0).getTime();
-            if (!eventMs) return null;
-            // Candidate sends: marketing send date and any sales send dates
-            const candidates = [
-              p.hs_email_last_send_date,
-              p.hs_sales_email_last_sent,
-            ].filter(Boolean).map(d => new Date(d).getTime());
-            // Find the most recent send that is AT or BEFORE the event
-            // A send that is within 7 days before the event is a valid candidate
-            const sevenDays = 7 * 24 * 60 * 60 * 1000;
-            const valid = candidates
-              .filter(ms => ms <= eventMs && (eventMs - ms) <= sevenDays)
-              .sort((a, b) => b - a); // most recent first
-            if (valid.length === 0) return null;
-            // Return the ISO string of the best matching send
-            const allDates = [
-              p.hs_email_last_send_date,
-              p.hs_sales_email_last_sent,
-            ].filter(Boolean);
-            return allDates.find(d => new Date(d).getTime() === valid[0]) || null;
+            const sendDate = p.hs_email_last_send_date || null;
+            if (!sendDate || !primaryTs) return sendDate;
+            const sendMs  = new Date(sendDate).getTime();
+            const eventMs = new Date(primaryTs).getTime();
+            // If send is after the event it belongs to a different email — hide it
+            return sendMs <= eventMs ? sendDate : null;
           })(),
           openedAt:    primaryTs && eventType === "OPEN"   ? primaryTs : null,
           clickedAt:   primaryTs && eventType === "CLICK"  ? primaryTs : null,
@@ -2379,6 +2364,67 @@ export const handler = async (event, context) => {
             }
           }
         } catch { /* non-critical — signals still show without company name */ }
+      }
+
+      // ── Accurate sentAt: fetch email engagement for each signal ─────────────────
+      // Contact-level hs_email_last_send_date is unpaired from the open event.
+      // Instead: for each signal contact, find the most recently sent email that
+      // was also opened — that email's send timestamp is the paired sentAt.
+      const signalsNeedingSentAt = contactSignals.filter(s =>
+        s.contactId && (s.eventType === 'OPEN' || s.eventType === 'CLICK' || s.eventType === 'REPLY')
+      );
+
+      if (signalsNeedingSentAt.length > 0) {
+        await Promise.all(signalsNeedingSentAt.map(async sig => {
+          try {
+            // Fetch recent sent emails for this contact that have opens
+            const emailAssoc = await hsGet(user.userId,
+              `/crm/v3/objects/contacts/${sig.contactId}/associations/emails`,
+              { limit: 10 }
+            ).catch(() => ({ results: [] }));
+
+            const emailIds = (emailAssoc.results || []).map(r => r.id);
+            if (!emailIds.length) return;
+
+            // Batch read email details
+            const emailDetails = await hsPost(user.userId, '/crm/v3/objects/emails/batch/read', {
+              inputs:     emailIds.slice(0, 10).map(id => ({ id })),
+              properties: ['hs_timestamp', 'hs_email_open_count', 'hs_email_direction',
+                           'hs_email_subject', 'hubspot_owner_id'],
+            }).catch(() => ({ results: [] }));
+
+            // Find emails that were opened, sorted by most recent send first
+            const openedEmails = (emailDetails.results || [])
+              .filter(e => {
+                const openCount = parseFloat(e.properties?.hs_email_open_count || '0');
+                const dir = e.properties?.hs_email_direction || '';
+                // Only outbound emails (not INCOMING_EMAIL replies from contacts)
+                return openCount > 0 && dir !== 'INCOMING_EMAIL';
+              })
+              .sort((a, b) =>
+                new Date(b.properties?.hs_timestamp || 0).getTime() -
+                new Date(a.properties?.hs_timestamp || 0).getTime()
+              );
+
+            if (openedEmails.length > 0) {
+              // Use the most recently sent email that has opens
+              const bestEmail    = openedEmails[0];
+              const emailSentAt  = bestEmail.properties?.hs_timestamp || null;
+              const emailSubject = bestEmail.properties?.hs_email_subject || null;
+
+              if (emailSentAt) {
+                const sentMs  = new Date(emailSentAt).getTime();
+                const eventMs = new Date(sig.timestamp || sig.openedAt || 0).getTime();
+                // Only use if send is before or at the event time
+                if (sentMs <= eventMs) {
+                  sig.sentAt  = emailSentAt;
+                  // Also update subject if we have a better one from the email object
+                  if (emailSubject && !sig.subject) sig.subject = emailSubject;
+                }
+              }
+            }
+          } catch { /* non-critical — fall back to contact property sentAt */ }
+        }));
       }
 
       // Supplement with engagements not already covered by contact search
