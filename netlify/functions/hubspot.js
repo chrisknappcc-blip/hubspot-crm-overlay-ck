@@ -2307,21 +2307,32 @@ export const handler = async (event, context) => {
           botCheck,
           isBot:       isBotSignal,
           subject:     subjectLabel,
-          // sentAt: only show send date if it is at or before the event timestamp
-          // Prevents showing a future send date that belongs to a different email
-          sentAt: (() => {
+          // sentAt: start null, will be enriched accurately by the email lookup below
+          // Using contact-level hs_email_last_send_date is unreliable — it's unpaired
+          sentAt: null,
+          _fallbackSentAt: (() => {
+            // Keep as fallback if enrichment fails
             const sendDate = p.hs_email_last_send_date || null;
-            if (!sendDate || !primaryTs) return sendDate;
+            if (!sendDate || !primaryTs) return null;
             const sendMs  = new Date(sendDate).getTime();
             const eventMs = new Date(primaryTs).getTime();
-            // If send is after the event it belongs to a different email — hide it
             return sendMs <= eventMs ? sendDate : null;
           })(),
-          openedAt:    primaryTs && eventType === "OPEN"   ? primaryTs : null,
-          clickedAt:   primaryTs && eventType === "CLICK"  ? primaryTs : null,
-          repliedAt:   primaryTs && eventType === "REPLY"  ? primaryTs : null,
+          openedAt:    eventType === "OPEN"  ? primaryTs
+                       : (p.hs_sales_email_last_opened || p.hs_email_last_open_date || null),
+          clickedAt:   eventType === "CLICK" ? primaryTs
+                       : (p.hs_sales_email_last_clicked || p.hs_email_last_click_date || null),
+          repliedAt:   eventType === "REPLY" ? primaryTs : null,
         };
       }).filter(Boolean);
+
+      // Apply fallback sentAt for signals where enrichment didn't find a better date
+      for (const sig of contactSignals) {
+        if (!sig.sentAt && sig._fallbackSentAt) {
+          sig.sentAt = sig._fallbackSentAt;
+        }
+        delete sig._fallbackSentAt;
+      }
 
       // Enrich company names for signals where contact.company is blank
       // Use associatedcompanyid to batch-fetch company names
