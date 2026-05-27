@@ -2366,10 +2366,11 @@ export const handler = async (event, context) => {
         } catch { /* non-critical — signals still show without company name */ }
       }
 
-      // ── Accurate sentAt: fetch email engagement for each signal ─────────────────
-      // Contact-level hs_email_last_send_date is unpaired from the open event.
-      // Instead: for each signal contact, find the most recently sent email that
-      // was also opened — that email's send timestamp is the paired sentAt.
+      // ── Accurate sentAt: use marketing email events API ──────────────────────────
+      // Contact-level properties are unpaired — hs_email_last_send_date has no
+      // relationship to hs_email_last_open_date.
+      // The events API returns individual OPEN/SENT events with emailCampaignId,
+      // letting us find the exact send that corresponds to each open.
       const signalsNeedingSentAt = contactSignals.filter(s =>
         s.contactId && (s.eventType === 'OPEN' || s.eventType === 'CLICK' || s.eventType === 'REPLY')
       );
@@ -2377,50 +2378,53 @@ export const handler = async (event, context) => {
       if (signalsNeedingSentAt.length > 0) {
         await Promise.all(signalsNeedingSentAt.map(async sig => {
           try {
-            // Fetch recent sent emails for this contact that have opens
-            const emailAssoc = await hsGet(user.userId,
-              `/crm/v3/objects/contacts/${sig.contactId}/associations/emails`,
-              { limit: 10 }
-            ).catch(() => ({ results: [] }));
+            const contactEmail = sig.contact?.email || sig.recipientEmail;
+            if (!contactEmail) return;
 
-            const emailIds = (emailAssoc.results || []).map(r => r.id);
-            if (!emailIds.length) return;
+            const openEventTs = new Date(sig.openedAt || sig.clickedAt || sig.repliedAt || sig.timestamp || 0).getTime();
+            if (!openEventTs) return;
 
-            // Batch read email details
-            const emailDetails = await hsPost(user.userId, '/crm/v3/objects/emails/batch/read', {
-              inputs:     emailIds.slice(0, 10).map(id => ({ id })),
-              properties: ['hs_timestamp', 'hs_email_open_count', 'hs_email_direction',
-                           'hs_email_subject', 'hubspot_owner_id'],
-            }).catch(() => ({ results: [] }));
+            // Fetch OPEN events for this contact from the events API
+            // Returns events with emailCampaignId that we can match to a SENT event
+            const openEvents = await hsGet(user.userId,
+              `/email/public/v1/events`,
+              {
+                recipient:  contactEmail,
+                eventType:  'OPEN',
+                limit:      5,
+              }
+            ).catch(() => ({ events: [] }));
 
-            // Find emails that were opened, sorted by most recent send first
-            const openedEmails = (emailDetails.results || [])
-              .filter(e => {
-                const openCount = parseFloat(e.properties?.hs_email_open_count || '0');
-                const dir = e.properties?.hs_email_direction || '';
-                // Only outbound emails (not INCOMING_EMAIL replies from contacts)
-                return openCount > 0 && dir !== 'INCOMING_EMAIL';
-              })
-              .sort((a, b) =>
-                new Date(b.properties?.hs_timestamp || 0).getTime() -
-                new Date(a.properties?.hs_timestamp || 0).getTime()
-              );
+            const events = openEvents.events || [];
+            if (!events.length) return;
 
-            if (openedEmails.length > 0) {
-              // Use the most recently sent email that has opens
-              const bestEmail    = openedEmails[0];
-              const emailSentAt  = bestEmail.properties?.hs_timestamp || null;
-              const emailSubject = bestEmail.properties?.hs_email_subject || null;
+            // Find the open event closest to our signal's open timestamp
+            // Match within 5 minutes to handle minor timestamp differences
+            const fiveMin = 5 * 60 * 1000;
+            const matchingOpen = events.find(ev => {
+              const evMs = ev.created || 0;
+              return Math.abs(evMs - openEventTs) <= fiveMin;
+            }) || events[0]; // fallback to most recent open
 
-              if (emailSentAt) {
-                const sentMs  = new Date(emailSentAt).getTime();
-                const eventMs = new Date(sig.timestamp || sig.openedAt || 0).getTime();
-                // Only use if send is before or at the event time
-                if (sentMs <= eventMs) {
-                  sig.sentAt  = emailSentAt;
-                  // Also update subject if we have a better one from the email object
-                  if (emailSubject && !sig.subject) sig.subject = emailSubject;
-                }
+            if (!matchingOpen?.emailCampaignId) return;
+
+            // Now fetch the SENT event with the same campaignId to get send timestamp
+            const sentEvents = await hsGet(user.userId,
+              `/email/public/v1/events`,
+              {
+                recipient:       contactEmail,
+                eventType:       'SENT',
+                emailCampaignId: matchingOpen.emailCampaignId,
+                limit:           1,
+              }
+            ).catch(() => ({ events: [] }));
+
+            const sentEvent = (sentEvents.events || [])[0];
+            if (sentEvent?.created) {
+              const sentMs = sentEvent.created;
+              // Only use if send is before the open (sanity check)
+              if (sentMs <= openEventTs) {
+                sig.sentAt = new Date(sentMs).toISOString();
               }
             }
           } catch { /* non-critical — fall back to contact property sentAt */ }
