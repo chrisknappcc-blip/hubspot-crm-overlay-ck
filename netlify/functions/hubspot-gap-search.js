@@ -148,12 +148,17 @@ export default async function handler(req) {
 
 ## Research Instructions
 
-Search thoroughly using multiple approaches:
-1. Search LinkedIn for "${companyName} ${titles.split(",")[0]}" and similar variations
-2. Search the organization's official website (${domain || companyName + " website"}) for leadership/executive team pages
-3. Search recent press releases, news articles, and announcements about ${companyName} executive appointments
-4. Search industry directories (Modern Healthcare, Becker's Hospital Review, Health Leaders, etc.)
-5. Cross-reference multiple sources to confirm the current person — NOT someone who left
+Search exhaustively using ALL of the following approaches before concluding not found:
+1. Search LinkedIn: "${companyName} ${titles.split(",")[0].trim()}" — try each title variant
+2. Search the org website: "${domain || companyName}" + "leadership" OR "executive team" OR "our team" OR "physicians"
+3. Search: site:${domain || "organization.org"} leadership OR executives OR physicians
+4. Search press releases: "${companyName} names" OR "${companyName} appoints" + the role title
+5. Search industry publications: Becker's, Modern Healthcare, Health Leaders, Fierce Healthcare — "${companyName} ${hints.split(" ")[0]}"
+6. Search conference speaker bios: "${companyName}" + role title + site:ache.org OR site:healthcarefinancenews.com OR site:himss.org
+7. Search "${companyName} medical staff" OR "${companyName} physician directory" OR "${companyName} provider directory"
+8. If domain known, try: "${domain}" + role title to find bio pages
+9. Search Google: "${companyName}" "${titles.split(",")[0].trim()}" -site:linkedin.com for non-LinkedIn sources
+10. If all else fails, search for the department head: "${companyName} ${hints.split(" ").slice(0,3).join(" ")}"
 
 ## Critical Requirements
 - Find who is IN THIS ROLE **RIGHT NOW** — verify they are currently employed at ${companyName}
@@ -188,7 +193,7 @@ If you cannot find anyone currently in this role after thorough searching, retur
       },
       body: JSON.stringify({
         model:      "claude-sonnet-4-5", // Sonnet for best search quality
-        max_tokens: 1500,
+        max_tokens: 2000,
         tools: [{
           type: "web_search_20250305",
           name: "web_search",
