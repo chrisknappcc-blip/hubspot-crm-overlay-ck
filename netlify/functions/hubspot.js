@@ -1,3 +1,12 @@
+// Azure Blob for gap search cache persistence
+const AZURE_ACCOUNT   = process.env.AZURE_STORAGE_ACCOUNT_NAME;
+const AZURE_SAS_TOKEN = process.env.AZURE_STORAGE_SAS_TOKEN;
+const AZURE_CONTAINER = process.env.AZURE_STORAGE_CONTAINER || "crm-tokens";
+
+function gapCacheBlobUrl() {
+  const sas = (AZURE_SAS_TOKEN || "").startsWith("?") ? AZURE_SAS_TOKEN : `?${AZURE_SAS_TOKEN}`;
+  return `https://${AZURE_ACCOUNT}.blob.core.windows.net/${AZURE_CONTAINER}/gap-cache.json${sas}`;
+}
 // netlify/functions/hubspot.js
 // Routes:
 //   GET  /hubspot/auth/connect            -> redirect to HubSpot OAuth
@@ -1353,6 +1362,7 @@ export const handler = async (event, context) => {
         }
 
         // Fetch contacts via batch associations API.
+        // Cap at 500 contacts per company to prevent timeout with dedup-heavy accounts.
         // POST /crm/v3/associations/companies/contacts/batch/read takes up to 100 company IDs
         // and returns all associated contact IDs -- 1 call instead of 68.
         // Then one batch contact read for all contact IDs -- 2 total API calls.
@@ -1381,7 +1391,7 @@ export const handler = async (event, context) => {
           const companyContactIds = {};
           for (const result of (assocData.results || [])) {
             const companyId  = result.from?.id;
-            const contactIds = (result.to || []).map(t => t.id).slice(0, 5);
+            const contactIds = (result.to || []).map(t => t.id).slice(0, 100);
             if (companyId && contactIds.length > 0) {
               companyContactIds[companyId] = contactIds;
             }
@@ -4734,6 +4744,39 @@ export const handler = async (event, context) => {
       } catch (err) {
         console.error("[gold-gaps] error:", err.message);
         return error(500, `Gold gaps error: ${err.message}`);
+      }
+    }
+
+    // ── Gap Search Cache ──────────────────────────────────────────────────────────
+    // GET  /hubspot/gap-cache  — read cached gap results from Azure Blob
+    // POST /hubspot/gap-cache  — write gap results to Azure Blob
+    if (path === "/gap-cache") {
+      try {
+        if (method === "GET") {
+          if (!AZURE_ACCOUNT || !AZURE_SAS_TOKEN) return ok({ gapState: {}, gapLastRun: {} });
+          const res = await fetch(gapCacheBlobUrl());
+          if (res.status === 404) return ok({ gapState: {}, gapLastRun: {} });
+          if (!res.ok) return ok({ gapState: {}, gapLastRun: {} });
+          const data = await res.json();
+          return ok(data);
+        }
+        if (method === "POST") {
+          if (!AZURE_ACCOUNT || !AZURE_SAS_TOKEN) return ok({ saved: false });
+          const body = JSON.parse(event.body || "{}");
+          const payload = JSON.stringify({ gapState: body.gapState || {}, gapLastRun: body.gapLastRun || {} });
+          const res = await fetch(gapCacheBlobUrl(), {
+            method: "PUT",
+            headers: {
+              "Content-Type":    "application/json",
+              "x-ms-blob-type":  "BlockBlob",
+              "Content-Length":  String(Buffer.byteLength(payload)),
+            },
+            body: payload,
+          });
+          return ok({ saved: res.ok });
+        }
+      } catch (err) {
+        return ok({ gapState: {}, gapLastRun: {}, error: err.message });
       }
     }
 
