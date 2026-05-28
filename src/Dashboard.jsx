@@ -4544,7 +4544,7 @@ function GoldCommandTab({ accounts, loading, onRefresh, safeFetch, filterBdr, se
   const [gapCacheLoaded, setGapCacheLoaded] = useState(false)
 
   // Load cached gap results from Azure Blob on mount
-  React.useEffect(() => {
+  useEffect(() => {
     if (gapCacheLoaded) return
     setGapCacheLoaded(true)
     safeFetch('/api/hubspot/gap-cache').then(data => {
