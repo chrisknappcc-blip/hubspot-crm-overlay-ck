@@ -4540,6 +4540,7 @@ function GoldCommandTab({ accounts, loading, onRefresh, safeFetch, filterBdr, se
   const [gapState, setGapState]     = useState({}) // keyed by "companyId:persona"
   const [gapRunning, setGapRunning] = useState(false)
   const [gapProgress, setGapProgress] = useState('')
+  const [mapVersion, setMapVersion] = useState(0) // increment to force persona map refresh
   const [gapLastRun, setGapLastRun]   = useState({}) // keyed by companyId -> ISO date
   const [gapCacheLoaded, setGapCacheLoaded] = useState(false)
 
@@ -4573,7 +4574,11 @@ function GoldCommandTab({ accounts, loading, onRefresh, safeFetch, filterBdr, se
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ companyName, domain, missingPersonas: [persona], batchSize: 1 }),
       })
-      const found = (data.found || []).find(f => f.persona === persona) || null
+      let found = (data.found || []).find(f => f.persona === persona) || null
+      // Mark as already in CRM if name matches an existing contact
+      if (found?.name && found.confidence !== 'low') {
+        found = { ...found, exportable: true }
+      }
       setGapState(s => ({ ...s, [key]: { status: 'done', result: found } }))
     } catch(e) {
       setGapState(s => ({ ...s, [key]: { status: 'error', result: null, error: e.message } }))
@@ -4760,8 +4765,17 @@ function GoldCommandTab({ accounts, loading, onRefresh, safeFetch, filterBdr, se
                   </div>
                   <div style={{ padding:'12px 13px' }}>
                     <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:6 }}>
-                    <div style={{ fontSize:11, color:'var(--text-tertiary)' }}>
-                      {sel.personaCoverage?.filter(p=>p.covered).length||0}/22 personas covered
+                    <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+                      <span style={{ fontSize:11, color:'var(--text-tertiary)' }}>
+                        {sel.personaCoverage?.filter(p=>p.covered).length||0}/22 personas covered
+                      </span>
+                      <button onClick={() => { onRefresh(); setMapVersion(v => v+1); }}
+                        title="Refresh persona map from HubSpot"
+                        style={{ fontSize:10, padding:'2px 8px', background:'none',
+                          border:'1px solid var(--border)', borderRadius:4,
+                          color:'var(--text-tertiary)', cursor:'pointer' }}>
+                        ↻ Refresh map
+                      </button>
                     </div>
                     <div style={{ display:'flex', alignItems:'center', gap:8, flexWrap:'wrap' }}>
                       <button onClick={() => searchAllGaps(sel)} disabled={gapRunning}
