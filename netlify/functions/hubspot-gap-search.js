@@ -163,10 +163,23 @@ Search exhaustively using ALL of the following approaches before concluding not 
 ## Critical Requirements
 - Find who is IN THIS ROLE **RIGHT NOW** — verify they are currently employed at ${companyName}
 - If someone recently left or was replaced, find the CURRENT person
+- **IMPORTANT — Title Matching:** Do NOT require an exact title match. Use professional judgment to determine if someone's title FUNCTIONALLY fits the persona. Examples:
+  - "VP Ambulatory Chief Medical Officer, Multispecialty Services" → fits Ambulatory/Urgent Care ✓
+  - "Chief Nursing Executive" → fits Nursing Officer ✓  
+  - "SVP Patient Care & Chief Nursing Officer" → fits Nursing Officer ✓
+  - "EVP & CFO" → fits Finance ✓
+  - "President & CEO" → fits Executive/Leadership ✓
+  - Think about what the person ACTUALLY DOES, not just what their title says
 - Get their **work email** — try: firstname.lastname@${domain || "domain.com"}, f.lastname@${domain || "domain.com"}, firstnamelastname@${domain || "domain.com"}
 - Get their **exact current title** as listed on LinkedIn or the org website
 - Get their **LinkedIn URL** if available
 - Rate confidence: HIGH (confirmed on LinkedIn + org site), MEDIUM (one source), LOW (unverified)
+
+## Reasoning Step
+Before outputting JSON, think through:
+1. Who at ${companyName} most closely fills the functional role of ${persona}?
+2. Does their title functionally match even if not word-for-word?
+3. Are they currently in this role (not a past title)?
 
 ## Output Format
 Respond with ONLY a JSON object, no markdown, no explanation:
@@ -179,6 +192,7 @@ Respond with ONLY a JSON object, no markdown, no explanation:
   "source": "LinkedIn + Organization Website",
   "confidence": "high/medium/low",
   "currentEmployer": "${companyName}",
+  "titleFitReasoning": "Brief explanation of why this title fits the persona",
   "notes": "Brief note on how found and any caveats"
 }
 
