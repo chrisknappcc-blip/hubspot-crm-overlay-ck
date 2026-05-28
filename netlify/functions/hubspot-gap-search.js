@@ -187,7 +187,7 @@ If you cannot find anyone currently in this role after thorough searching, retur
         "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify({
-        model:      "claude-sonnet-4-20250514", // Sonnet for best search quality
+        model:      "claude-sonnet-4-5", // Sonnet for best search quality
         max_tokens: 1500,
         tools: [{
           type: "web_search_20250305",
