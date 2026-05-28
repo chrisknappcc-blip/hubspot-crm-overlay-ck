@@ -4593,7 +4593,7 @@ function GoldCommandTab({ accounts, loading, onRefresh, safeFetch, filterBdr, se
 
     // ── File 1: HubSpot import (new contacts to create) ───────────────────────
     const importRows = [['First Name','Last Name','Email','Job Title','Company Name',
-      'Company Domain Name','Target Persona','Assigned BDR','LinkedIn URL']]
+      'Email Domain','Target Persona','Assigned BDR','LinkedIn URL']]
     Object.entries(gapState)
       .filter(([k]) => k.startsWith(key+':'))
       .forEach(([k, v]) => {
@@ -4601,10 +4601,11 @@ function GoldCommandTab({ accounts, loading, onRefresh, safeFetch, filterBdr, se
         const r = v.result
         if (!r?.name) return
         const parts = r.name.trim().split(' ')
-        // Company Domain Name lets HubSpot auto-associate contact to the company on import
+        // Email Domain triggers HubSpot's auto-association to the matching company record
+        const emailDomain = r.email ? r.email.split('@')[1] : (account.domain||'')
         importRows.push([parts[0]||'', parts.slice(1).join(' ')||'',
           r.email||'', r.title||'', account.name||'',
-          account.domain||'', // e.g. parkview.com — HubSpot matches to existing company
+          emailDomain,
           persona, assignedBdr, r.linkedinUrl||''])
       })
 
