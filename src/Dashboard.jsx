@@ -4540,6 +4540,27 @@ function GoldCommandTab({ accounts, loading, onRefresh, safeFetch, filterBdr, se
   const [gapState, setGapState]     = useState({}) // keyed by "companyId:persona"
   const [gapRunning, setGapRunning] = useState(false)
   const [gapProgress, setGapProgress] = useState('')
+  const [gapLastRun, setGapLastRun]   = useState({}) // keyed by companyId -> ISO date
+  const [gapCacheLoaded, setGapCacheLoaded] = useState(false)
+
+  // Load cached gap results from Azure Blob on mount
+  React.useEffect(() => {
+    if (gapCacheLoaded) return
+    setGapCacheLoaded(true)
+    safeFetch('/api/hubspot/gap-cache').then(data => {
+      if (data?.gapState)   setGapState(data.gapState)
+      if (data?.gapLastRun) setGapLastRun(data.gapLastRun)
+    }).catch(() => {})
+  }, [])
+
+  // Save gap results to Azure Blob
+  const saveGapCache = async (newGapState, newLastRun) => {
+    safeFetch('/api/hubspot/gap-cache', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ gapState: newGapState, gapLastRun: newLastRun }),
+    }).catch(() => {})
+  }
   const filtered = useGoldSort(accounts, search, sortBy)
   const sel = selected || filtered[0] || null
 
@@ -4629,6 +4650,10 @@ function GoldCommandTab({ accounts, loading, onRefresh, safeFetch, filterBdr, se
     }
     setGapProgress(`✓ Done — searched ${missing.length} personas`)
     setGapRunning(false)
+    // Save results to Azure Blob for persistence
+    const newLastRun = { ...gapLastRun, [account.id]: new Date().toISOString() }
+    setGapLastRun(newLastRun)
+    saveGapCache(gapState, newLastRun)
   }
 
   return (
@@ -4750,6 +4775,11 @@ function GoldCommandTab({ accounts, loading, onRefresh, safeFetch, filterBdr, se
                             borderRadius:'var(--radius)', cursor:'pointer', fontWeight:600 }}>
                           ⬇ Export Results
                         </button>
+                      )}
+                      {gapLastRun[sel?.id] && (
+                        <span style={{ fontSize:10, color:'var(--text-tertiary)' }}>
+                          Last run: {new Date(gapLastRun[sel.id]).toLocaleDateString('en-US', { month:'short', day:'numeric', year:'numeric' })}
+                        </span>
                       )}
                       {gapProgress && (
                         <span style={{ fontSize:11, color:'var(--text-tertiary)' }}>{gapProgress}</span>
