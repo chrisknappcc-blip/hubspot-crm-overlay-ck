@@ -125,11 +125,11 @@ Return ONLY valid JSON with no markdown or explanation:
         "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify({
-        model:      "claude-sonnet-4-5",
-        max_tokens: 8000,
+        model:      "claude-haiku-4-5-20251001",
+        max_tokens: 4000,
         thinking: {
           type:          "enabled",
-          budget_tokens: 5000,
+          budget_tokens: 2000,
         },
         system: systemPrompt,
         tools: [{
