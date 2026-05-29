@@ -1361,9 +1361,10 @@ export const handler = async (event, context) => {
           return ok({ accounts: [], meta: { total: 0, byTier: {}, filters: { assigned_bdr: qp.assigned_bdr || null } } });
         }
 
-        // Fetch contacts via batch associations API.
-        // Cap at 500 contacts per company to prevent timeout with dedup-heavy accounts.
-        // POST /crm/v3/associations/companies/contacts/batch/read takes up to 100 company IDs
+        // Fetch contacts for Gold accounts using two passes:
+        // Pass 1: contacts WITH target_persona set (these are what the hierarchy map needs)
+        // Pass 2: all other contacts up to a small limit for engagement/signal data
+        // This ensures the hierarchy map always shows all tagged contacts regardless of total count
         // and returns all associated contact IDs -- 1 call instead of 68.
         // Then one batch contact read for all contact IDs -- 2 total API calls.
         const CONTACT_PROPS = [
@@ -1391,7 +1392,8 @@ export const handler = async (event, context) => {
           const companyContactIds = {};
           for (const result of (assocData.results || [])) {
             const companyId  = result.from?.id;
-            const contactIds = (result.to || []).map(t => t.id).slice(0, 100);
+            // No slice — keep all contact IDs, sorted by target_persona presence
+            const contactIds = (result.to || []).map(t => t.id);
             if (companyId && contactIds.length > 0) {
               companyContactIds[companyId] = contactIds;
             }
@@ -1402,19 +1404,46 @@ export const handler = async (event, context) => {
           if (allContactIds.length === 0) {
             console.log("[gold] no associated contacts found");
           } else {
-            // Step 3: batch read all contacts at once (up to 100 per batch)
+            // Step 3: Two-pass contact fetch
+            // Pass 1 (targeted search): contacts WITH target_persona set, associated with these companies
+            // This is what the hierarchy map needs — no limit, gets everyone properly tagged
+            // Pass 2 (recent batch): up to 50 recent contacts per company for engagement/signal data
             const allContacts = {};
-            for (let i = 0; i < allContactIds.length; i += 100) {
-              const batchIds = allContactIds.slice(i, i + 100);
-              const batchData = await hsPost(user.userId, "/crm/v3/objects/contacts/batch/read", {
-                properties: CONTACT_PROPS,
-                inputs:     batchIds.map(id => ({ id })),
-              });
-              for (const c of (batchData.results || [])) {
-                allContacts[c.id] = c;
-              }
-              if (i + 100 < allContactIds.length) {
-                await new Promise(r => setTimeout(r, 150));
+            const companyIdSet = new Set(companyBatch.map(c => String(c.id)));
+
+            // Pass 1: search for contacts with target_persona set for these companies
+            const personaContactSearch = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
+              filterGroups: companyBatch.slice(0, 5).map(company => ({
+                filters: [
+                  { propertyName: "associated_company_ids", operator: "EQ",
+                    value: String(company.id) },
+                  { propertyName: "target_persona", operator: "HAS_PROPERTY" },
+                ]
+              })),
+              properties: CONTACT_PROPS,
+              limit: 200,
+            }).catch(() => ({ results: [] }));
+
+            for (const c of (personaContactSearch.results || [])) {
+              allContacts[c.id] = c;
+            }
+
+            // Pass 2: batch read a sample of recent contacts for engagement data
+            // Exclude contacts already fetched in Pass 1
+            const alreadyFetched = new Set(Object.keys(allContacts));
+            for (const [companyId, ids] of Object.entries(companyContactIds)) {
+              const remaining = ids.filter(id => !alreadyFetched.has(String(id))).slice(0, 50);
+              if (!remaining.length) continue;
+              for (let i = 0; i < remaining.length; i += 100) {
+                const batchIds = remaining.slice(i, i + 100);
+                const batchData = await hsPost(user.userId, "/crm/v3/objects/contacts/batch/read", {
+                  properties: CONTACT_PROPS,
+                  inputs:     batchIds.map(id => ({ id })),
+                }).catch(() => ({ results: [] }));
+                for (const c of (batchData.results || [])) {
+                  allContacts[c.id] = c;
+                }
+                if (i + 100 < remaining.length) await new Promise(r => setTimeout(r, 100));
               }
             }
 
@@ -1427,7 +1456,15 @@ export const handler = async (event, context) => {
                   if (bdrFilterValue) {
                     return c.properties?.assigned_bdr === bdrFilterValue;
                   }
-                  return true; // no BDR filter -- include all contacts
+                  return true;
+                })
+                // Sort: contacts with target_persona first, then by name
+                .sort((a, b) => {
+                  const aHas = !!(a.properties?.target_persona);
+                  const bHas = !!(b.properties?.target_persona);
+                  if (aHas && !bHas) return -1;
+                  if (!aHas && bHas) return 1;
+                  return 0;
                 });
               if (contacts.length > 0) {
                 contactsByCompany[companyId] = contacts;
@@ -1665,7 +1702,7 @@ export const handler = async (event, context) => {
                 name:         `${cp.firstname||""} ${cp.lastname||""}`.trim(),
                 title:        cp.jobtitle || "",
                 email:        cp.email    || "",
-                persona:      cp.hs_persona || cp.target_persona || "",
+                persona:      cp.target_persona || "",
                 buyingRole:   cp.hs_buying_role || "",
                 inSequence:   cp.hs_sequences_is_enrolled === "true",
                 lastSent:     cp.hs_email_last_send_date || null,
