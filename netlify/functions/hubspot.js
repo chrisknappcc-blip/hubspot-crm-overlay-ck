@@ -1392,8 +1392,10 @@ export const handler = async (event, context) => {
           const companyContactIds = {};
           for (const result of (assocData.results || [])) {
             const companyId  = result.from?.id;
-            // No slice — keep all contact IDs, sorted by target_persona presence
-            const contactIds = (result.to || []).map(t => t.id);
+            // Keep all contact IDs — no arbitrary limit
+            // Accounts with excessive contacts (e.g. from duplicate imports) will
+            // batch-read up to 500 contacts; the sort below puts persona-tagged ones first
+            const contactIds = (result.to || []).map(t => t.id).slice(0, 500);
             if (companyId && contactIds.length > 0) {
               companyContactIds[companyId] = contactIds;
             }
@@ -1404,46 +1406,19 @@ export const handler = async (event, context) => {
           if (allContactIds.length === 0) {
             console.log("[gold] no associated contacts found");
           } else {
-            // Step 3: Two-pass contact fetch
-            // Pass 1 (targeted search): contacts WITH target_persona set, associated with these companies
-            // This is what the hierarchy map needs — no limit, gets everyone properly tagged
-            // Pass 2 (recent batch): up to 50 recent contacts per company for engagement/signal data
+            // Step 3: Batch read all contacts for this company batch
             const allContacts = {};
-            const companyIdSet = new Set(companyBatch.map(c => String(c.id)));
-
-            // Pass 1: search for contacts with target_persona set for these companies
-            const personaContactSearch = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
-              filterGroups: companyBatch.slice(0, 5).map(company => ({
-                filters: [
-                  { propertyName: "associated_company_ids", operator: "EQ",
-                    value: String(company.id) },
-                  { propertyName: "target_persona", operator: "HAS_PROPERTY" },
-                ]
-              })),
-              properties: CONTACT_PROPS,
-              limit: 200,
-            }).catch(() => ({ results: [] }));
-
-            for (const c of (personaContactSearch.results || [])) {
-              allContacts[c.id] = c;
-            }
-
-            // Pass 2: batch read a sample of recent contacts for engagement data
-            // Exclude contacts already fetched in Pass 1
-            const alreadyFetched = new Set(Object.keys(allContacts));
-            for (const [companyId, ids] of Object.entries(companyContactIds)) {
-              const remaining = ids.filter(id => !alreadyFetched.has(String(id))).slice(0, 50);
-              if (!remaining.length) continue;
-              for (let i = 0; i < remaining.length; i += 100) {
-                const batchIds = remaining.slice(i, i + 100);
-                const batchData = await hsPost(user.userId, "/crm/v3/objects/contacts/batch/read", {
-                  properties: CONTACT_PROPS,
-                  inputs:     batchIds.map(id => ({ id })),
-                }).catch(() => ({ results: [] }));
-                for (const c of (batchData.results || [])) {
-                  allContacts[c.id] = c;
-                }
-                if (i + 100 < remaining.length) await new Promise(r => setTimeout(r, 100));
+            for (let i = 0; i < allContactIds.length; i += 100) {
+              const batchIds = allContactIds.slice(i, i + 100);
+              const batchData = await hsPost(user.userId, "/crm/v3/objects/contacts/batch/read", {
+                properties: CONTACT_PROPS,
+                inputs:     batchIds.map(id => ({ id })),
+              }).catch(() => ({ results: [] }));
+              for (const c of (batchData.results || [])) {
+                allContacts[c.id] = c;
+              }
+              if (i + 100 < allContactIds.length) {
+                await new Promise(r => setTimeout(r, 150));
               }
             }
 
