@@ -1,7 +1,7 @@
-// ─── Cipher — Gold Account Gap Search (Claude + Web Search) ──────────────────
-// Uses Claude Sonnet with web_search to find the BEST possible candidate for
-// each missing persona at a Gold account. Prioritizes accuracy, verified emails,
-// and cross-source confirmation. Built to the highest standard.
+// ─── Cipher — Gold Account Gap Search ────────────────────────────────────────
+// Claude Sonnet + web_search + direct org website fetch
+// Priority: org website first → LinkedIn → news → fallback search
+// Recency: 2023-2026 only, explicitly reject stale sources
 
 const CORS = {
   "Access-Control-Allow-Origin":  "*",
@@ -11,95 +11,94 @@ const CORS = {
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 
-// Comprehensive role definitions per persona — titles, common aliases, search strategies
 const PERSONA_DEFINITIONS = {
   "Access/Patient Access": {
-    titles:    ["Chief Access Officer", "VP Patient Access", "Vice President Patient Access", "Director Patient Access", "Director of Access Services", "VP of Patient Access & Scheduling"],
-    searchHints: "patient access scheduling registration admissions",
+    titles: ["Chief Access Officer", "VP Patient Access", "Vice President Patient Access", "Director Patient Access", "VP Access Services", "VP Patient Access & Scheduling"],
+    keywords: "patient access scheduling registration admissions",
   },
   "Ambulatory/Urgent Care": {
-    titles:    ["Chief Ambulatory Officer", "VP Ambulatory Care", "VP Ambulatory Services", "Chief of Ambulatory Medicine", "VP Ambulatory Operations", "SVP Ambulatory"],
-    searchHints: "ambulatory care outpatient urgent care clinic operations",
+    titles: ["Chief Ambulatory Officer", "VP Ambulatory", "VP Ambulatory Care", "VP Ambulatory Services", "Ambulatory Chief Medical Officer", "VP Ambulatory Operations", "SVP Ambulatory", "Medical Director Ambulatory", "VP Multispecialty", "Chief Medical Officer Ambulatory"],
+    keywords: "ambulatory care outpatient urgent care clinic multispecialty",
   },
   "Business Development": {
-    titles:    ["Chief Business Development Officer", "VP Business Development", "SVP Business Development", "VP of Growth", "Chief Growth Officer", "VP Strategic Partnerships"],
-    searchHints: "business development partnerships growth strategy expansion",
+    titles: ["Chief Business Development Officer", "VP Business Development", "SVP Business Development", "VP Growth", "Chief Growth Officer", "VP Strategic Partnerships", "VP Corporate Development"],
+    keywords: "business development partnerships growth strategy expansion",
   },
   "Case Management": {
-    titles:    ["VP Case Management", "Chief Care Management Officer", "Director Case Management", "VP Care Management", "Director of Care Coordination", "VP Care Transitions"],
-    searchHints: "case management care coordination transitions utilization",
+    titles: ["VP Case Management", "Chief Care Management Officer", "Director Case Management", "VP Care Management", "VP Care Transitions", "VP Care Coordination", "Chief Care Coordination Officer"],
+    keywords: "case management care coordination transitions utilization discharge",
   },
   "Clinical Operations": {
-    titles:    ["VP Clinical Operations", "Chief Clinical Operations Officer", "SVP Clinical Operations", "COO Clinical Division", "VP Clinical Services"],
-    searchHints: "clinical operations hospital operations patient care services",
+    titles: ["VP Clinical Operations", "Chief Clinical Operations Officer", "SVP Clinical Operations", "VP Clinical Services", "Chief Operating Officer Clinical"],
+    keywords: "clinical operations hospital operations patient care services",
   },
   "Emergency Department": {
-    titles:    ["Chief of Emergency Medicine", "Medical Director Emergency Department", "VP Emergency Services", "Chair Emergency Medicine", "Chief Emergency Services"],
-    searchHints: "emergency department emergency medicine emergency services ED",
+    titles: ["Chief of Emergency Medicine", "Medical Director Emergency", "VP Emergency Services", "Chair Emergency Medicine", "Chief Emergency Services", "Emergency Medicine Chair"],
+    keywords: "emergency department emergency medicine ED urgent emergency services",
   },
   "Executive/Leadership": {
-    titles:    ["CEO", "President", "President & CEO", "Chief Executive Officer", "Executive Director", "System President"],
-    searchHints: "chief executive president hospital health system leadership",
+    titles: ["CEO", "President", "President & CEO", "Chief Executive Officer", "Executive Director", "System President", "President and Chief Executive Officer"],
+    keywords: "chief executive president hospital health system leadership top executive",
   },
   "Finance": {
-    titles:    ["CFO", "Chief Financial Officer", "SVP Finance", "EVP & CFO", "VP Finance", "Senior Vice President Finance"],
-    searchHints: "chief financial officer CFO finance revenue cycle",
+    titles: ["CFO", "Chief Financial Officer", "SVP Finance", "EVP & CFO", "VP Finance", "Senior Vice President Finance", "Executive VP Finance"],
+    keywords: "chief financial officer CFO finance revenue cycle budget",
   },
   "Innovation": {
-    titles:    ["Chief Innovation Officer", "Chief Digital Officer", "Chief Transformation Officer", "VP Innovation", "Chief Information & Innovation Officer", "CDO"],
-    searchHints: "innovation digital transformation technology health IT",
+    titles: ["Chief Innovation Officer", "Chief Digital Officer", "Chief Transformation Officer", "VP Innovation", "Chief Information & Innovation Officer", "CDO", "Chief Technology & Innovation Officer"],
+    keywords: "innovation digital transformation technology health IT digital strategy",
   },
   "Medical Group": {
-    titles:    ["President Medical Group", "CEO Medical Group", "Chief Medical Group Officer", "VP Medical Group", "Executive Director Medical Group", "Medical Group CEO"],
-    searchHints: "medical group physician group practice management employed physicians",
+    titles: ["President Medical Group", "CEO Medical Group", "Chief Medical Group Officer", "VP Medical Group", "Executive Director Medical Group", "Medical Group CEO", "Medical Group President"],
+    keywords: "medical group physician group practice management employed physicians",
   },
-  "Medical Information": {
-    titles:    ["CMIO", "Chief Medical Information Officer", "VP Medical Informatics", "Chief Clinical Informatics Officer", "Medical Director Informatics"],
-    searchHints: "CMIO medical informatics clinical informatics EHR information technology physician",
+  "Medical": {
+    titles: ["CMIO", "Chief Medical Information Officer", "VP Medical Informatics", "Chief Clinical Informatics Officer", "Medical Director Informatics", "Chief Health Information Officer"],
+    keywords: "CMIO medical informatics clinical informatics EHR information officer physician",
   },
   "Chief Clinical Officer": {
-    titles:    ["CCO", "Chief Clinical Officer", "EVP Clinical Affairs", "Chief of Clinical Affairs", "Chief Clinical Integration Officer"],
-    searchHints: "chief clinical officer clinical affairs quality clinical integration",
+    titles: ["CCO", "Chief Clinical Officer", "EVP Clinical Affairs", "Chief of Clinical Affairs", "Chief Clinical Integration Officer", "Chief Clinical and Quality Officer"],
+    keywords: "chief clinical officer clinical affairs quality clinical integration",
   },
   "Medical Officer": {
-    titles:    ["CMO", "Chief Medical Officer", "SVP Medical Affairs", "VP Medical Affairs", "Chief of Medicine", "Physician-in-Chief"],
-    searchHints: "chief medical officer CMO physician leadership medical staff",
+    titles: ["CMO", "Chief Medical Officer", "SVP Medical Affairs", "VP Medical Affairs", "Chief of Medicine", "Physician-in-Chief", "Executive Vice President Medical Affairs"],
+    keywords: "chief medical officer CMO physician leadership medical staff medical affairs",
   },
   "Nursing Officer": {
-    titles:    ["CNO", "Chief Nursing Officer", "Chief Nursing Executive", "VP Nursing", "SVP Patient Care Services", "EVP Patient Care & CNO"],
-    searchHints: "chief nursing officer CNO nursing patient care services nursing executive",
+    titles: ["CNO", "Chief Nursing Officer", "Chief Nursing Executive", "VP Nursing", "SVP Patient Care Services", "EVP Patient Care & CNO", "Chief Nurse Executive"],
+    keywords: "chief nursing officer CNO nursing patient care services nursing executive",
   },
   "Operating Officer": {
-    titles:    ["COO", "Chief Operating Officer", "EVP Operations", "SVP Operations", "President & COO", "Chief Operations Officer"],
-    searchHints: "chief operating officer COO operations hospital operations",
+    titles: ["COO", "Chief Operating Officer", "EVP Operations", "SVP Operations", "President & COO", "Chief Operations Officer", "Executive Vice President Operations"],
+    keywords: "chief operating officer COO operations hospital operations",
   },
   "Patient Experience": {
-    titles:    ["Chief Experience Officer", "Chief Patient Experience Officer", "VP Patient Experience", "Director Patient Experience", "Chief of Patient Experience"],
-    searchHints: "patient experience patient satisfaction service excellence",
+    titles: ["Chief Experience Officer", "Chief Patient Experience Officer", "VP Patient Experience", "Director Patient Experience", "Chief of Patient Experience", "VP Experience"],
+    keywords: "patient experience patient satisfaction service excellence experience officer",
   },
   "Physician Executive": {
-    titles:    ["Chief Physician Executive", "VP Medical Staff", "SVP Physician Services", "Chief Physician Officer", "VP Physician Integration", "Medical Executive Director"],
-    searchHints: "physician executive physician leadership physician services medical staff",
+    titles: ["Chief Physician Executive", "VP Medical Staff", "SVP Physician Services", "Chief Physician Officer", "VP Physician Integration", "Medical Executive Director", "VP Physician Relations"],
+    keywords: "physician executive physician leadership physician services medical staff relations",
   },
   "Population Health": {
-    titles:    ["Chief Population Health Officer", "VP Population Health", "SVP Population Health", "VP Value-Based Care & Population Health", "Director Population Health"],
-    searchHints: "population health community health value-based care ACO",
+    titles: ["Chief Population Health Officer", "VP Population Health", "SVP Population Health", "VP Value-Based Care & Population Health", "Director Population Health", "Chief Population Health & Value Officer"],
+    keywords: "population health community health value-based care ACO accountable care",
   },
   "Quality Officer": {
-    titles:    ["Chief Quality Officer", "VP Quality", "Chief Patient Safety Officer", "VP Quality & Safety", "Chief Quality & Safety Officer", "SVP Quality"],
-    searchHints: "quality patient safety quality improvement accreditation",
+    titles: ["Chief Quality Officer", "VP Quality", "Chief Patient Safety Officer", "VP Quality & Safety", "Chief Quality & Safety Officer", "SVP Quality", "Chief Quality and Patient Safety Officer"],
+    keywords: "quality patient safety quality improvement accreditation regulatory",
   },
   "Service Line": {
-    titles:    ["VP Service Lines", "Chief Service Line Officer", "SVP Service Lines", "VP Clinical Service Lines", "VP Hospital Operations & Service Lines"],
-    searchHints: "service line cardiology oncology orthopedics neuroscience clinical program",
+    titles: ["VP Service Lines", "Chief Service Line Officer", "SVP Service Lines", "VP Clinical Service Lines", "VP Hospital Operations & Service Lines", "Service Line VP"],
+    keywords: "service line cardiology oncology orthopedics neuroscience clinical program",
   },
   "Strategy": {
-    titles:    ["Chief Strategy Officer", "CSO", "VP Strategy", "SVP Strategy", "Chief Planning Officer", "VP Strategic Planning"],
-    searchHints: "strategy strategic planning mergers acquisitions growth planning",
+    titles: ["Chief Strategy Officer", "CSO", "VP Strategy", "SVP Strategy", "Chief Planning Officer", "VP Strategic Planning", "Chief Strategy and Transformation Officer"],
+    keywords: "strategy strategic planning mergers acquisitions growth planning",
   },
   "Value Based Care": {
-    titles:    ["Chief Value Officer", "VP Value Based Care", "SVP Value Based Care", "VP ACO", "Chief ACO Officer", "VP Accountable Care"],
-    searchHints: "value based care accountable care ACO bundled payments risk",
+    titles: ["Chief Value Officer", "VP Value Based Care", "SVP Value Based Care", "VP ACO", "Chief ACO Officer", "VP Accountable Care", "VP Value-Based Programs"],
+    keywords: "value based care accountable care ACO bundled payments risk contracts",
   },
 };
 
@@ -116,7 +115,7 @@ export default async function handler(req) {
   }
 
   try {
-    const body = await req.json();
+    const body      = await req.json();
     const { companyName, domain, missingPersonas = [] } = body;
 
     if (!companyName || !missingPersonas.length) {
@@ -133,70 +132,66 @@ export default async function handler(req) {
 
     const persona    = missingPersonas[0];
     const definition = PERSONA_DEFINITIONS[persona];
-    const titles     = definition?.titles?.join(", ") || persona;
-    const hints      = definition?.searchHints || "";
+    const titles     = (definition?.titles || [persona]).join('", "');
+    const keywords   = definition?.keywords || persona;
+    const domainStr  = domain ? `https://${domain}` : companyName;
 
-    const prompt = `You are an expert healthcare executive researcher with access to web search. Your task is to find the CURRENT person holding a specific leadership role at a health system. Accuracy and completeness are paramount.
+    const prompt = `You are researching who currently holds a specific leadership role at a healthcare organization. Your goal is to find the CURRENT person in this role with HIGH accuracy.
 
-## Target Organization
-**Health System:** ${companyName}${domain ? ` | Domain: ${domain}` : ""}
+## Target
+Organization: ${companyName}
+Website: ${domainStr}
+Role Category: ${persona}
+Typical Titles: "${titles}"
+Role Keywords: ${keywords}
 
-## Role to Find
-**Persona Category:** ${persona}
-**Typical Titles:** ${titles}
-**Search Hints:** ${hints}
+## SEARCH STRATEGY — Follow in this exact order:
 
-## Research Instructions
+### Step 1: Go directly to the organization's website
+Search for: site:${domain || companyName.toLowerCase().replace(/\s+/g, '')+".org"} leadership OR "executive team" OR "our leaders" OR "leadership team"
+Also try fetching: ${domainStr}/about/leadership OR ${domainStr}/about/our-team OR ${domainStr}/leadership
 
-Search exhaustively using ALL of the following approaches before concluding not found:
-1. Search LinkedIn: "${companyName} ${titles.split(",")[0].trim()}" — try each title variant
-2. Search the org website: "${domain || companyName}" + "leadership" OR "executive team" OR "our team" OR "physicians"
-3. Search: site:${domain || "organization.org"} leadership OR executives OR physicians
-4. Search press releases: "${companyName} names" OR "${companyName} appoints" + the role title
-5. Search industry publications: Becker's, Modern Healthcare, Health Leaders, Fierce Healthcare — "${companyName} ${hints.split(" ")[0]}"
-6. Search conference speaker bios: "${companyName}" + role title + site:ache.org OR site:healthcarefinancenews.com OR site:himss.org
-7. Search "${companyName} medical staff" OR "${companyName} physician directory" OR "${companyName} provider directory"
-8. If domain known, try: "${domain}" + role title to find bio pages
-9. Search Google: "${companyName}" "${titles.split(",")[0].trim()}" -site:linkedin.com for non-LinkedIn sources
-10. If all else fails, search for the department head: "${companyName} ${hints.split(" ").slice(0,3).join(" ")}"
+### Step 2: Search LinkedIn with current role context
+Search: "${companyName}" "${keywords.split(" ").slice(0,3).join(" ")}" site:linkedin.com/in
+Also try: "${companyName}" "${(definition?.titles||[])[0]||persona}" linkedin 2024 OR 2025
 
-## Critical Requirements
-- Find who is IN THIS ROLE **RIGHT NOW** — verify they are currently employed at ${companyName}
-- If someone recently left or was replaced, find the CURRENT person
-- **IMPORTANT — Title Matching:** Do NOT require an exact title match. Use professional judgment to determine if someone's title FUNCTIONALLY fits the persona. Examples:
-  - "VP Ambulatory Chief Medical Officer, Multispecialty Services" → fits Ambulatory/Urgent Care ✓
-  - "Chief Nursing Executive" → fits Nursing Officer ✓  
-  - "SVP Patient Care & Chief Nursing Officer" → fits Nursing Officer ✓
-  - "EVP & CFO" → fits Finance ✓
-  - "President & CEO" → fits Executive/Leadership ✓
-  - Think about what the person ACTUALLY DOES, not just what their title says
-- Get their **work email** — try: firstname.lastname@${domain || "domain.com"}, f.lastname@${domain || "domain.com"}, firstnamelastname@${domain || "domain.com"}
-- Get their **exact current title** as listed on LinkedIn or the org website
-- Get their **LinkedIn URL** if available
-- Rate confidence: HIGH (confirmed on LinkedIn + org site), MEDIUM (one source), LOW (unverified)
+### Step 3: Search for recent news/announcements (2023-2026 ONLY)
+Search: "${companyName}" "${(definition?.titles||[])[0]||persona}" appointed OR named OR joins 2024 OR 2025
+Search: "${companyName}" leadership team 2024 OR 2025
 
-## Reasoning Step
-Before outputting JSON, think through:
-1. Who at ${companyName} most closely fills the functional role of ${persona}?
-2. Does their title functionally match even if not word-for-word?
-3. Are they currently in this role (not a past title)?
+### Step 4: Industry publications
+Search: "${companyName}" "${keywords.split(" ")[0]}" site:beckershospitalreview.com OR site:modernhealthcare.com OR site:healthleadersmedia.com
 
-## Output Format
-Respond with ONLY a JSON object, no markdown, no explanation:
+## CRITICAL RULES
+1. **RECENCY**: Only use sources from 2022 or later. If a source is from 2021 or earlier, IGNORE IT completely — leadership changes frequently and old data creates duplicates in our CRM.
+2. **FUNCTIONAL FIT**: Match on what the person DOES, not exact title. "VP Ambulatory Chief Medical Officer, Multispecialty Services" = Ambulatory/Urgent Care. Use judgment.
+3. **CURRENT EMPLOYMENT**: Verify the person is still at ${companyName} RIGHT NOW. Do not return someone who left.
+4. **PREFER ORG WEBSITE**: The organization's own website is the most reliable source for current leadership. Prioritize it.
+5. **EMAIL PATTERN**: If email not explicitly found, construct it from the org domain (${domain || "org domain"}): firstname.lastname@${domain || "domain.org"} — mark as "pattern"
+
+## REASONING
+Before outputting JSON, think:
+- Did I check the org's website first?
+- Is my source from 2022 or later?
+- Does this person's title FUNCTIONALLY match the ${persona} role?
+- Is there any evidence they're still at ${companyName} as of 2024-2025?
+
+## OUTPUT
+Respond with ONLY valid JSON — no markdown, no explanation, no preamble:
 {
-  "name": "Full Name",
-  "title": "Exact Current Title",
-  "linkedinUrl": "https://www.linkedin.com/in/username or null",
-  "email": "work.email@${domain || "organization.com"} or null",
-  "emailConfidence": "verified/pattern/unknown",
-  "source": "LinkedIn + Organization Website",
+  "name": "Full Name or null",
+  "title": "Exact current title or null",
+  "linkedinUrl": "https://linkedin.com/in/... or null",
+  "email": "email@domain.org or null",
+  "emailConfidence": "found/pattern/unknown",
+  "sourceUrl": "URL where you found this person",
+  "sourceYear": "2024 or 2025 etc",
   "confidence": "high/medium/low",
-  "currentEmployer": "${companyName}",
-  "titleFitReasoning": "Brief explanation of why this title fits the persona",
-  "notes": "Brief note on how found and any caveats"
+  "titleFitReasoning": "Why this title fits the ${persona} persona",
+  "notes": "How found, any caveats"
 }
 
-If you cannot find anyone currently in this role after thorough searching, return the JSON with null for name, title, linkedinUrl, email and confidence: "low".`;
+If not found after all steps, return JSON with null values and confidence: "low".`;
 
     const response = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
@@ -206,7 +201,7 @@ If you cannot find anyone currently in this role after thorough searching, retur
         "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify({
-        model:      "claude-sonnet-4-5", // Sonnet for best search quality
+        model:      "claude-sonnet-4-5",
         max_tokens: 2000,
         tools: [{
           type: "web_search_20250305",
@@ -223,40 +218,49 @@ If you cannot find anyone currently in this role after thorough searching, retur
 
     const data = await response.json();
 
-    // Extract final text response (after tool use)
+    // Extract final text block (after all tool use)
     const textBlocks = (data.content || []).filter(b => b.type === "text");
     const rawText    = textBlocks.map(b => b.text).join("\n").trim();
 
     let result = {
       persona,
-      name:            null,
-      title:           null,
-      linkedinUrl:     null,
-      email:           null,
-      emailConfidence: "unknown",
-      source:          "not found",
-      confidence:      "low",
-      notes:           null,
+      name:             null,
+      title:            null,
+      linkedinUrl:      null,
+      email:            null,
+      emailConfidence:  "unknown",
+      sourceUrl:        null,
+      sourceYear:       null,
+      confidence:       "low",
+      titleFitReasoning: null,
+      notes:            null,
     };
 
     try {
       const jsonMatch = rawText.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
         const parsed = JSON.parse(jsonMatch[0]);
+        // Hard reject if source is pre-2022
+        const year = parseInt(parsed.sourceYear || "2025");
+        const sourceOk = isNaN(year) || year >= 2022;
         result = {
           persona,
-          name:            parsed.name            || null,
-          title:           parsed.title           || null,
-          linkedinUrl:     parsed.linkedinUrl     || null,
-          email:           parsed.email           || null,
-          emailConfidence: parsed.emailConfidence || "unknown",
-          source:          parsed.source          || "web search",
-          confidence:      parsed.confidence      || "low",
-          notes:           parsed.notes           || null,
+          name:              sourceOk ? (parsed.name  || null) : null,
+          title:             sourceOk ? (parsed.title || null) : null,
+          linkedinUrl:       sourceOk ? (parsed.linkedinUrl || null) : null,
+          email:             sourceOk ? (parsed.email || null) : null,
+          emailConfidence:   parsed.emailConfidence  || "unknown",
+          sourceUrl:         parsed.sourceUrl        || null,
+          sourceYear:        parsed.sourceYear       || null,
+          confidence:        sourceOk ? (parsed.confidence || "low") : "low",
+          titleFitReasoning: parsed.titleFitReasoning || null,
+          notes:             sourceOk
+            ? (parsed.notes || null)
+            : `Source rejected — year ${parsed.sourceYear} is too old (pre-2022)`,
         };
       }
     } catch (parseErr) {
-      console.error("[gap-search] JSON parse error:", parseErr.message);
+      console.error("[gap-search] parse error:", parseErr.message, rawText.slice(0, 200));
     }
 
     return new Response(JSON.stringify({
