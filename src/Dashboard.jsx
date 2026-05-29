@@ -4650,17 +4650,22 @@ function GoldCommandTab({ accounts, loading, onRefresh, safeFetch, filterBdr, se
     if (!missing.length) return
     setGapRunning(true)
     setGapProgress(`Searching ${missing.length} missing personas...`)
+    // Track state locally so we can save incrementally on each result
+    let currentGapState = { ...gapState }
     for (let i = 0; i < missing.length; i++) {
       const persona = missing[i]
       setGapProgress(`Searching ${i+1}/${missing.length}: ${persona}...`)
       await searchGap(account.id, account.name, account.domain, persona)
-      await new Promise(r => setTimeout(r, 3000)) // 3s gap to avoid rate limit
+      // Save after each result so a crash doesn't lose progress
+      currentGapState = { ...currentGapState, [`${account.id}:${persona}`]: gapState[`${account.id}:${persona}`] }
+      const newLastRun = { ...gapLastRun, [account.id]: new Date().toISOString() }
+      saveGapCache(currentGapState, newLastRun)
+      await new Promise(r => setTimeout(r, 1500)) // 1.5s between searches
     }
-    setGapProgress(`✓ Done — searched ${missing.length} personas`)
-    setGapRunning(false)
-    // Save results to Azure Blob for persistence
     const newLastRun = { ...gapLastRun, [account.id]: new Date().toISOString() }
     setGapLastRun(newLastRun)
+    setGapProgress(`✓ Done — searched ${missing.length} personas`)
+    setGapRunning(false)
     saveGapCache(gapState, newLastRun)
   }
 
