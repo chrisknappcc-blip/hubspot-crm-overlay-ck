@@ -3772,7 +3772,7 @@ function OrgChart({ account, gapState = {}, searchGap }) {
                             <div style={{ fontSize:9, color:'var(--red)' }}>⚠ No contact</div>
                             {searchGap && (
                               <button
-                                onClick={e => { e.stopPropagation(); searchGap(account.id, account.name, account.domain, node.value) }}
+                                onClick={e => { e.stopPropagation(); searchGap(account.id, account.name, account.domain, node.value, account.contacts || []) }}
                                 style={{ fontSize:8, padding:'1px 5px', background:'var(--accent)', color:'#fff',
                                   border:'none', borderRadius:3, cursor:'pointer', marginTop:1 }}>
                                 Find
@@ -4571,10 +4571,11 @@ function GoldCommandTab({ accounts, loading, onRefresh, safeFetch, filterBdr, se
     try {
       // Pass existing CRM contacts so the model can reason about title fit
       // and avoid creating duplicates for people already in the CRM
+      // Gold route returns flattened objects: { name, title, persona, ... }
       const contactContext = existingContacts.map(c => ({
-        name:    [c.properties?.firstname, c.properties?.lastname].filter(Boolean).join(' '),
-        title:   c.properties?.jobtitle || '',
-        persona: c.properties?.target_persona || '',
+        name:    c.name || '',
+        title:   c.title || '',
+        persona: c.persona || '',
       })).filter(c => c.name)
 
       const data = await safeFetch('/api/hubspot-gap-search', {
@@ -4657,23 +4658,33 @@ function GoldCommandTab({ accounts, loading, onRefresh, safeFetch, filterBdr, se
     if (!account?.personaCoverage) return
     const missing = account.personaCoverage.filter(p => !p.covered).map(p => p.persona)
     if (!missing.length) return
+
+    // Skip personas that already have a cached result with a name found
+    const needsSearch = missing.filter(persona => {
+      const cached = gapState[`${account.id}:${persona}`]
+      return !cached?.result?.name // only search if no name was previously found
+    })
+
+    if (!needsSearch.length) {
+      setGapProgress(`✓ All ${missing.length} gaps already searched — use Export Results to download`)
+      return
+    }
+
     setGapRunning(true)
-    setGapProgress(`Searching ${missing.length} missing personas...`)
-    // Track state locally so we can save incrementally on each result
-    let currentGapState = { ...gapState }
-    for (let i = 0; i < missing.length; i++) {
-      const persona = missing[i]
-      setGapProgress(`Searching ${i+1}/${missing.length}: ${persona}...`)
+    setGapProgress(`Searching ${needsSearch.length} personas (${missing.length - needsSearch.length} cached)...`)
+
+    for (let i = 0; i < needsSearch.length; i++) {
+      const persona = needsSearch[i]
+      setGapProgress(`Searching ${i+1}/${needsSearch.length}: ${persona}...`)
       await searchGap(account.id, account.name, account.domain, persona, account.contacts || [])
       // Save after each result so a crash doesn't lose progress
-      currentGapState = { ...currentGapState, [`${account.id}:${persona}`]: gapState[`${account.id}:${persona}`] }
       const newLastRun = { ...gapLastRun, [account.id]: new Date().toISOString() }
-      saveGapCache(currentGapState, newLastRun)
-      await new Promise(r => setTimeout(r, 1500)) // 1.5s between searches
+      saveGapCache(gapState, newLastRun)
+      await new Promise(r => setTimeout(r, 1500))
     }
     const newLastRun = { ...gapLastRun, [account.id]: new Date().toISOString() }
     setGapLastRun(newLastRun)
-    setGapProgress(`✓ Done — searched ${missing.length} personas`)
+    setGapProgress(`✓ Done — searched ${needsSearch.length} personas (${missing.length - needsSearch.length} cached)`)
     setGapRunning(false)
     saveGapCache(gapState, newLastRun)
   }
