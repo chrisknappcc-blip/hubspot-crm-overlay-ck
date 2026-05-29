@@ -4565,20 +4565,29 @@ function GoldCommandTab({ accounts, loading, onRefresh, safeFetch, filterBdr, se
   const filtered = useGoldSort(accounts, search, sortBy)
   const sel = selected || filtered[0] || null
 
-  const searchGap = async (companyId, companyName, domain, persona) => {
+  const searchGap = async (companyId, companyName, domain, persona, existingContacts = []) => {
     const key = `${companyId}:${persona}`
     setGapState(s => ({ ...s, [key]: { status: 'searching', result: null } }))
     try {
+      // Pass existing CRM contacts so the model can reason about title fit
+      // and avoid creating duplicates for people already in the CRM
+      const contactContext = existingContacts.map(c => ({
+        name:    [c.properties?.firstname, c.properties?.lastname].filter(Boolean).join(' '),
+        title:   c.properties?.jobtitle || '',
+        persona: c.properties?.target_persona || '',
+      })).filter(c => c.name)
+
       const data = await safeFetch('/api/hubspot-gap-search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ companyName, domain, missingPersonas: [persona], batchSize: 1 }),
+        body: JSON.stringify({
+          companyName,
+          domain,
+          missingPersonas:  [persona],
+          existingContacts: contactContext,
+        }),
       })
-      let found = (data.found || []).find(f => f.persona === persona) || null
-      // Mark as already in CRM if name matches an existing contact
-      if (found?.name && found.confidence !== 'low') {
-        found = { ...found, exportable: true }
-      }
+      const found = (data.found || []).find(f => f.persona === persona) || null
       setGapState(s => ({ ...s, [key]: { status: 'done', result: found } }))
     } catch(e) {
       setGapState(s => ({ ...s, [key]: { status: 'error', result: null, error: e.message } }))
@@ -4655,7 +4664,7 @@ function GoldCommandTab({ accounts, loading, onRefresh, safeFetch, filterBdr, se
     for (let i = 0; i < missing.length; i++) {
       const persona = missing[i]
       setGapProgress(`Searching ${i+1}/${missing.length}: ${persona}...`)
-      await searchGap(account.id, account.name, account.domain, persona)
+      await searchGap(account.id, account.name, account.domain, persona, account.contacts || [])
       // Save after each result so a crash doesn't lose progress
       currentGapState = { ...currentGapState, [`${account.id}:${persona}`]: gapState[`${account.id}:${persona}`] }
       const newLastRun = { ...gapLastRun, [account.id]: new Date().toISOString() }
