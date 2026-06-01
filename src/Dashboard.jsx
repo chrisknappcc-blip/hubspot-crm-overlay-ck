@@ -4563,7 +4563,8 @@ function GoldCommandTab({ accounts, loading, onRefresh, safeFetch, filterBdr, se
     }).catch(() => {})
   }
   const filtered = useGoldSort(accounts, search, sortBy)
-  const sel = selected || filtered[0] || null
+  // Derive sel from current accounts (not stale selected reference) so Refresh map works
+  const sel = (selected ? filtered.find(a => a.id === selected.id) : null) || filtered[0] || null
 
   const searchGap = async (companyId, companyName, domain, persona, existingContacts = []) => {
     const key = `${companyId}:${persona}`
