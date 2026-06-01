@@ -4607,20 +4607,26 @@ function GoldCommandTab({ accounts, loading, onRefresh, safeFetch, filterBdr, se
     ).join('\n')
 
     // ── File 1: HubSpot import (new contacts to create) ───────────────────────
+    // Export includes both Email Domain and Company Domain Name for HubSpot advanced import
+    // Also includes Record ID (company HubSpot ID) for reference
     const importRows = [['First Name','Last Name','Email','Job Title','Company Name',
-      'Email Domain','Target Persona','Assigned BDR','LinkedIn URL']]
+      'Email Domain','Company Domain Name','Company Record ID',
+      'Target Persona','Assigned BDR','LinkedIn URL']]
     Object.entries(gapState)
       .filter(([k]) => k.startsWith(key+':'))
       .forEach(([k, v]) => {
         const persona = k.replace(key+':', '')
         const r = v.result
         if (!r?.name) return
+        // Skip contacts already in CRM to prevent duplicates
+        if (r.alreadyInCRM) return
         const parts = r.name.trim().split(' ')
-        // Email Domain triggers HubSpot's auto-association to the matching company record
         const emailDomain = r.email ? r.email.split('@')[1] : (account.domain||'')
         importRows.push([parts[0]||'', parts.slice(1).join(' ')||'',
           r.email||'', r.title||'', account.name||'',
           emailDomain,
+          account.domain||'',  // Company Domain Name for advanced import association
+          key||'',             // Company Record ID
           persona, assignedBdr, r.linkedinUrl||''])
       })
 
@@ -4795,10 +4801,10 @@ function GoldCommandTab({ accounts, loading, onRefresh, safeFetch, filterBdr, se
                         {sel.personaCoverage?.filter(p=>p.covered).length||0}/22 personas covered
                       </span>
                       <button onClick={() => { onRefresh(); setMapVersion(v => v+1); }}
-                        title="Refresh persona map from HubSpot"
-                        style={{ fontSize:10, padding:'2px 8px', background:'none',
-                          border:'1px solid var(--border)', borderRadius:4,
-                          color:'var(--text-tertiary)', cursor:'pointer' }}>
+                        title="Re-fetch contacts from HubSpot to update the persona map"
+                        style={{ fontSize:11, padding:'4px 12px', background:'var(--bg-secondary)',
+                          border:'1px solid var(--accent)', borderRadius:'var(--radius)',
+                          color:'var(--accent)', cursor:'pointer', fontWeight:600 }}>
                         ↻ Refresh map
                       </button>
                     </div>
