@@ -152,7 +152,7 @@ Return ONLY valid JSON with no markdown or explanation:
     let result = {
       persona,
       name: null, title: null, linkedinUrl: null, email: null,
-      emailConfidence: "unknown",  sourceYear: null,
+      emailConfidence: sourceUrl: null,
       confidence: "low", alreadyInCRM: false, titleFitReasoning: null, notes: null,
     };
 
@@ -169,7 +169,7 @@ Return ONLY valid JSON with no markdown or explanation:
           linkedinUrl:       stale ? null : (parsed.linkedinUrl     || null),
           email:             stale ? null : (parsed.email           || null),
           emailConfidence:   parsed.emailConfidence  || "unknown",
-          
+          sourceUrl:         null,
           sourceYear:        parsed.sourceYear       || null,
           confidence:        stale ? "low" : (parsed.confidence     || "low"),
           alreadyInCRM:      parsed.alreadyInCRM     || false,
