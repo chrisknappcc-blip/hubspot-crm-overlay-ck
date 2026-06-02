@@ -127,7 +127,7 @@ Return ONLY valid JSON with no markdown or explanation:
         max_tokens: 2000,
         thinking: {
           type:          "enabled",
-          budget_tokens: 1000,
+          budget_tokens: 1024,
         },
         system: systemPrompt,
         tools: [{
