@@ -4608,30 +4608,48 @@ function GoldCommandTab({ accounts, loading, onRefresh, safeFetch, filterBdr, se
     ).join('\n')
 
     // ── File 1: HubSpot import (new contacts to create) ───────────────────────
-    // Export includes both Email Domain and Company Domain Name for HubSpot advanced import
-    // Also includes Record ID (company HubSpot ID) for reference
+    // Two sets of rows:
+    // 1. NEW contacts to import (not in CRM)
+    // 2. EXISTING contacts that need target_persona updated
     const importRows = [['First Name','Last Name','Email','Job Title','Company Name',
       'Email Domain','Company Domain Name','Company Record ID',
-      'Target Persona','Assigned BDR','LinkedIn URL']]
+      'Target Persona','Assigned BDR','LinkedIn URL','Status']]
+    const updateRows = [['First Name','Last Name','Job Title','Current Persona','Recommended Persona',
+      'Action Needed','Title Fit Reasoning']]
     Object.entries(gapState)
       .filter(([k]) => k.startsWith(key+':'))
       .forEach(([k, v]) => {
         const persona = k.replace(key+':', '')
         const r = v.result
         if (!r?.name) return
-        // Skip contacts already in CRM to prevent duplicates
-        if (r.alreadyInCRM) return
         const parts = r.name.trim().split(' ')
-        const emailDomain = r.email ? r.email.split('@')[1] : (account.domain||'')
-        importRows.push([parts[0]||'', parts.slice(1).join(' ')||'',
-          r.email||'', r.title||'', account.name||'',
-          emailDomain,
-          account.domain||'',  // Company Domain Name for advanced import association
-          key||'',             // Company Record ID
-          persona, assignedBdr, r.linkedinUrl||''])
+        if (r.alreadyInCRM) {
+          // Already in CRM — add to update list (needs target_persona set)
+          updateRows.push([parts[0]||'', parts.slice(1).join(' ')||'',
+            r.title||'', '', persona,
+            'Update target_persona in HubSpot',
+            r.titleFitReasoning||''])
+        } else {
+          // New contact — add to import list
+          const emailDomain = r.email ? r.email.split('@')[1] : (account.domain||'')
+          importRows.push([parts[0]||'', parts.slice(1).join(' ')||'',
+            r.email||'', r.title||'', account.name||'',
+            emailDomain,
+            account.domain||'',
+            key||'',
+            persona, assignedBdr, r.linkedinUrl||'', 'NEW'])
+        }
       })
 
-    // ── File 2: Full review file ───────────────────────────────────────────────
+    // ── File 2: Update personas file (existing CRM contacts needing target_persona) ──
+    if (updateRows.length > 1) {
+      const a3 = document.createElement('a')
+      a3.href = URL.createObjectURL(new Blob([toCSV(updateRows)], { type: 'text/csv' }))
+      a3.download = `UPDATE-PERSONAS-${slug}-${date}.csv`
+      a3.click()
+    }
+
+    // ── File 3: Full review file ───────────────────────────────────────────────
     const reviewRows = [['Status','Persona','Name','Title','Email','LinkedIn','Source','Confidence','Notes']]
     ;(account.personaCoverage||[]).filter(p => p.covered).forEach(p => {
       const c = p.contacts?.[0]
