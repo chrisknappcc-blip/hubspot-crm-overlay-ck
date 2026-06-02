@@ -83,23 +83,21 @@ Standard Titles: "${titles}"
 Role Keywords: ${keywords}
 Organization Website: ${domainStr}
 
-## IMPORTANT: CHECK EXISTING CONTACTS FIRST
-Before searching the web, review the existing contacts list above. Ask yourself:
-- Does any existing contact's title FUNCTIONALLY cover the ${persona} role?
-- Example: "VP Ambulatory Chief Medical Officer, Multispecialty Services" covers Ambulatory/Urgent Care
-- Example: "Chief Nursing Executive" covers Nursing Officer
-- If YES → return that person with confidence: "existing_crm_contact" and do NOT search the web
+## STEP 1: CHECK EXISTING CONTACTS FIRST — NO WEB SEARCH
+Review the existing contacts list above. Does any contact's title FUNCTIONALLY cover the ${persona} role?
+- "VP Ambulatory Chief Medical Officer" covers Ambulatory/Urgent Care
+- "Chief Nursing Executive" covers Nursing Officer
+- "EVP & CFO" covers Finance
+If YES → return that person immediately with confidence: "existing_crm_contact". Do NOT call web_search.
 
-## IF NOT FOUND IN EXISTING CONTACTS, SEARCH THE WEB
-Search in this order:
-1. Fetch ${domainStr}/about/leadership OR ${domainStr}/leadership OR ${domainStr}/about/our-team directly
-2. Search: site:${domain || companyName.split(' ')[0].toLowerCase()+'.org'} leadership executives
-3. Search: "${companyName}" "${(definition?.titles||[])[0]||persona}" site:linkedin.com
-4. Search: "${companyName}" "${keywords.split(' ').slice(0,3).join(' ')}" 2024 OR 2025
-5. Search: "${companyName}" "${(definition?.titles||[])[0]||persona}" beckershospitalreview.com OR modernhealthcare.com
+## STEP 2: ONLY IF NOT FOUND IN EXISTING CONTACTS — SEARCH THE WEB
+Use a MAXIMUM of 2-3 web searches total. Do not search more than 3 times.
+1. Search: "${companyName}" "${(definition?.titles||[])[0]||persona}" leadership 2024 OR 2025
+2. Search: site:${domain || companyName.split(' ')[0].toLowerCase()+'.org'} leadership team
+3. ONLY if needed: "${companyName}" "${keywords.split(' ').slice(0,2).join(' ')}" site:linkedin.com
 
-## RECENCY RULE
-Only use sources from 2022 or later. If your only source is pre-2022, return null.
+STOP searching as soon as you find a strong match. Do not run all 3 if search 1 finds someone.
+Only use sources from 2022 or later.
 
 ## OUTPUT
 Return ONLY valid JSON with no markdown or explanation:
@@ -126,10 +124,10 @@ Return ONLY valid JSON with no markdown or explanation:
       },
       body: JSON.stringify({
         model:      "claude-haiku-4-5-20251001",
-        max_tokens: 4000,
+        max_tokens: 2000,
         thinking: {
           type:          "enabled",
-          budget_tokens: 2000,
+          budget_tokens: 1000,
         },
         system: systemPrompt,
         tools: [{
