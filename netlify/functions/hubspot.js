@@ -816,6 +816,13 @@ export const handler = async (event, context) => {
       try {
         const baseFilters  = buildCustomFilters(qp);
         const filterGroups = buildFilterGroups(qp);
+        // Always require firstname to exclude nameless records
+        const nameFilter = { propertyName: "firstname", operator: "HAS_PROPERTY" };
+        if (filterGroups.length > 0 && filterGroups[0].filters.length > 0) {
+          filterGroups[0].filters.push(nameFilter);
+        } else {
+          filterGroups.push({ filters: [nameFilter] });
+        }
         let contacts = [];
 
         if (filterGroups.length > 0 && filterGroups[0].filters.length > 0) {
