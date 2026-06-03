@@ -393,6 +393,9 @@ Return ONLY valid JSON with no markdown or explanation:
       confidence: "low", alreadyInCRM: false, titleFitReasoning: null, notes: null,
     };
 
+    // Debug: log what the model actually returned so we can diagnose low-confidence results
+    console.log(`[gap-search] persona="${persona}" company="${companyName}" rawText=${rawText.slice(0, 800)}`);
+
     try {
       const jsonMatch = rawText.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
@@ -415,6 +418,7 @@ Return ONLY valid JSON with no markdown or explanation:
             ? `Rejected — source year ${parsed.sourceYear} is pre-2022`
             : (parsed.notes || null),
         };
+        console.log(`[gap-search] result: persona="${persona}" name="${result.name}" confidence="${result.confidence}" stale=${stale} sourceYear=${parsed.sourceYear} notes="${result.notes}"`);
       }
     } catch (e) {
       console.error("[gap-search] parse error:", e.message, rawText.slice(0, 200));
