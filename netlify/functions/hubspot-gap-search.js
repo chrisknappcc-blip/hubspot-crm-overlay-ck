@@ -12,28 +12,265 @@ const CORS = {
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 
 const PERSONA_DEFINITIONS = {
-  "Access/Patient Access":   { titles: ["Chief Access Officer","VP Patient Access","Vice President Patient Access","Director Patient Access","VP Access Services","VP Patient Access & Scheduling"], keywords: "patient access scheduling registration admissions" },
-  "Ambulatory/Urgent Care":  { titles: ["Chief Ambulatory Officer","VP Ambulatory","VP Ambulatory Care","VP Ambulatory Services","Ambulatory Chief Medical Officer","VP Ambulatory Operations","SVP Ambulatory","Medical Director Ambulatory","VP Multispecialty","Chief Medical Officer Ambulatory","VP Ambulatory Chief Medical Officer"], keywords: "ambulatory care outpatient urgent care clinic multispecialty" },
-  "Business Development":    { titles: ["Chief Business Development Officer","VP Business Development","SVP Business Development","VP Growth","Chief Growth Officer","VP Strategic Partnerships","VP Corporate Development"], keywords: "business development partnerships growth strategy expansion" },
-  "Case Management":         { titles: ["VP Case Management","Chief Care Management Officer","Director Case Management","VP Care Management","VP Care Transitions","VP Care Coordination"], keywords: "case management care coordination transitions utilization discharge" },
-  "Clinical Operations":     { titles: ["VP Clinical Operations","Chief Clinical Operations Officer","SVP Clinical Operations","VP Clinical Services"], keywords: "clinical operations hospital operations patient care services" },
-  "Emergency Department":    { titles: ["Chief of Emergency Medicine","Medical Director Emergency","VP Emergency Services","Chair Emergency Medicine","Chief Emergency Services"], keywords: "emergency department emergency medicine ED urgent" },
-  "Executive/Leadership":    { titles: ["CEO","President","President & CEO","Chief Executive Officer","Executive Director","System President"], keywords: "chief executive president hospital health system leadership" },
-  "Finance":                 { titles: ["CFO","Chief Financial Officer","SVP Finance","EVP & CFO","VP Finance","Senior Vice President Finance"], keywords: "chief financial officer CFO finance revenue cycle budget" },
-  "Innovation":              { titles: ["Chief Innovation Officer","Chief Digital Officer","Chief Transformation Officer","VP Innovation","CDO"], keywords: "innovation digital transformation technology health IT" },
-  "Medical Group":           { titles: ["President Medical Group","CEO Medical Group","VP Medical Group","Executive Director Medical Group"], keywords: "medical group physician group practice management" },
-  "Medical":                 { titles: ["CMIO","Chief Medical Information Officer","VP Medical Informatics","Chief Clinical Informatics Officer"], keywords: "CMIO medical informatics clinical informatics EHR" },
-  "Chief Clinical Officer":  { titles: ["CCO","Chief Clinical Officer","EVP Clinical Affairs","Chief of Clinical Affairs"], keywords: "chief clinical officer clinical affairs quality" },
-  "Medical Officer":         { titles: ["CMO","Chief Medical Officer","SVP Medical Affairs","VP Medical Affairs","Chief of Medicine","Physician-in-Chief"], keywords: "chief medical officer CMO physician leadership medical affairs" },
-  "Nursing Officer":         { titles: ["CNO","Chief Nursing Officer","Chief Nursing Executive","VP Nursing","SVP Patient Care Services","EVP Patient Care & CNO"], keywords: "chief nursing officer CNO nursing patient care services" },
-  "Operating Officer":       { titles: ["COO","Chief Operating Officer","EVP Operations","SVP Operations","President & COO"], keywords: "chief operating officer COO operations hospital operations" },
-  "Patient Experience":      { titles: ["Chief Experience Officer","Chief Patient Experience Officer","VP Patient Experience","Director Patient Experience"], keywords: "patient experience patient satisfaction service excellence" },
-  "Physician Executive":     { titles: ["Chief Physician Executive","VP Medical Staff","SVP Physician Services","Chief Physician Officer","VP Physician Integration"], keywords: "physician executive physician leadership physician services" },
-  "Population Health":       { titles: ["Chief Population Health Officer","VP Population Health","SVP Population Health","VP Value-Based Care & Population Health"], keywords: "population health community health value-based care ACO" },
-  "Quality Officer":         { titles: ["Chief Quality Officer","VP Quality","Chief Patient Safety Officer","VP Quality & Safety","Chief Quality & Safety Officer"], keywords: "quality patient safety quality improvement accreditation" },
-  "Service Line":            { titles: ["VP Service Lines","Chief Service Line Officer","SVP Service Lines","VP Clinical Service Lines"], keywords: "service line cardiology oncology orthopedics neuroscience" },
-  "Strategy":                { titles: ["Chief Strategy Officer","CSO","VP Strategy","SVP Strategy","Chief Planning Officer"], keywords: "strategy strategic planning mergers acquisitions growth" },
-  "Value Based Care":        { titles: ["Chief Value Officer","VP Value Based Care","SVP Value Based Care","VP ACO","Chief ACO Officer"], keywords: "value based care accountable care ACO bundled payments risk" },
+  // Key names are stable — they match TARGET_PERSONAS in hubspot.js and Dashboard.jsx.
+  // Do not rename keys. Titles = union of both sources; keywords = rich strategic terms
+  // so the model can reason about functional fit beyond exact title matching.
+
+  "Access/Patient Access": {
+    titles: [
+      "Chief Access Officer","Chief Patient Access Officer",
+      "VP Patient Access","Vice President Patient Access",
+      "SVP Patient Access","Senior Vice President Patient Access",
+      "VP Access Services","VP Patient Access & Scheduling",
+      "Director Patient Access",
+    ],
+    keywords: "patient access strategy, revenue cycle, price transparency, financial clearance, prior authorization, insurance verification, financial counseling, cost estimation, collections, scheduling, registration, admissions",
+  },
+
+  "Ambulatory/Urgent Care": {
+    titles: [
+      "Chief Ambulatory Officer",
+      "VP Ambulatory Services","Vice President Ambulatory Services",
+      "SVP Ambulatory","SVP Urgent Care","Senior Vice President Urgent Care",
+      "VP Ambulatory","VP Ambulatory Care","VP Ambulatory Operations",
+      "VP Multispecialty",
+      "Ambulatory Chief Medical Officer","Chief Medical Officer Ambulatory","VP Ambulatory Chief Medical Officer",
+      "Medical Director Ambulatory",
+      "Executive Director Outpatient Services",
+    ],
+    keywords: "ambulatory strategy, urgent care operations, outpatient growth, retail health, telehealth, virtual care, clinic efficiency, patient experience, provider productivity, express care, multispecialty",
+  },
+
+  "Business Development": {
+    titles: [
+      "Chief Business Development Officer","CBDO",
+      "Chief Growth Officer",
+      "SVP Business Development","Senior VP Business Development",
+      "VP Business Development","VP Growth",
+      "VP Strategic Partnerships","Vice President Strategic Partnerships",
+      "VP Corporate Development",
+      "Executive Director Business Development",
+    ],
+    keywords: "partnership strategy, joint ventures, JVs, M&A, mergers, acquisitions, strategic growth, market development, competitive intelligence, due diligence, business model innovation, expansion",
+  },
+
+  "Case Management": {
+    titles: [
+      "Chief Care Management Officer",
+      "SVP Care Coordination","Senior VP Care Coordination",
+      "VP Case Management","Vice President Case Management",
+      "VP Care Management","VP Care Transitions","VP Care Coordination",
+      "Director Case Management",
+      "Executive Director Case Management",
+    ],
+    keywords: "case management, care coordination, utilization management, discharge planning, transitions of care, readmission reduction, length of stay, patient navigation, social determinants, complex care",
+  },
+
+  "Clinical Operations": {
+    titles: [
+      "Chief Clinical Operations Officer","CCOO",
+      "SVP Clinical Operations","Senior Vice President Clinical Operations",
+      "VP Clinical Operations","VP Clinical Services",
+      "VP Ambulatory Operations","Vice President Ambulatory Operations",
+      "Executive Director Clinical Services",
+    ],
+    keywords: "clinical operations, performance improvement, care model redesign, patient flow, throughput, care variation, service line growth, capacity management, block utilization, provider efficiency",
+  },
+
+  "Emergency Department": {
+    titles: [
+      "Chief of Emergency Medicine","Chief Emergency Services",
+      "Medical Director Emergency Services","Medical Director Emergency",
+      "VP Emergency Services","Vice President Emergency Services",
+      "Chair Emergency Medicine",
+      "Executive Director Trauma Services",
+      "ED Operations Director",
+    ],
+    keywords: "ED operations, emergency care, trauma services, disaster preparedness, triage, throughput, patient flow, left without being seen, LWBS, boarding, EMS, behavioral health",
+  },
+
+  "Executive/Leadership": {
+    titles: [
+      "Chief Executive Officer","CEO",
+      "President","President & CEO","System President",
+      "President & Chief Operating Officer","President & COO",
+      "Executive Vice President","EVP",
+      "Senior Vice President","SVP",
+      "Executive Director",
+    ],
+    keywords: "enterprise strategy, strategic planning, leadership development, organizational transformation, change management, governance, board relations, external affairs, government relations, corporate communications",
+  },
+
+  "Finance": {
+    titles: [
+      "Chief Financial Officer","CFO","EVP & CFO",
+      "SVP Finance","Senior Vice President Finance",
+      "VP Finance","VP Revenue Cycle","Vice President Revenue Cycle",
+      "Executive Director Financial Planning",
+    ],
+    keywords: "financial strategy, capital planning, treasury, revenue cycle, cost reduction, risk management, value-based contracting, budgeting, forecasting, financial reporting, payer contracting",
+  },
+
+  "Innovation": {
+    titles: [
+      "Chief Innovation Officer","CINO",
+      "Chief Digital Officer","CDO",
+      "Chief Transformation Officer",
+      "SVP Innovation","Senior Vice President Innovation",
+      "VP Innovation","VP Digital Transformation","Vice President Digital Transformation",
+      "Executive Director Innovation Strategy",
+    ],
+    keywords: "innovation strategy, digital health, strategic partnerships, venture investing, incubators, accelerators, disruptive innovation, design thinking, agile, pilot programs, digital transformation, health IT",
+  },
+
+  // Retained from existing — not in new list. Key name must stay "Medical Group".
+  "Medical Group": {
+    titles: [
+      "President Medical Group","CEO Medical Group",
+      "VP Medical Group","Vice President Medical Group",
+      "Executive Director Medical Group",
+    ],
+    keywords: "medical group management, physician group strategy, employed physician enterprise, group practice operations, physician alignment, multispecialty group, faculty practice plan",
+  },
+
+  // Key name stays "Medical" — maps to label "Medical Information" in hubspot.js / Dashboard.jsx.
+  "Medical": {
+    titles: [
+      "Chief Medical Information Officer","CMIO",
+      "VP Clinical Informatics","Vice President Clinical Informatics",
+      "VP Medical Informatics",
+      "Chief Clinical Informatics Officer",
+      "Senior Director Medical Informatics",
+    ],
+    keywords: "clinical informatics, EHR optimization, clinical decision support, CPOE, predictive analytics, AI, machine learning, telemedicine, interoperability, precision medicine, digital diagnostics, health information technology",
+  },
+
+  "Chief Clinical Officer": {
+    titles: [
+      "Chief Clinical Officer","CCO",
+      "EVP Clinical Affairs","Chief of Clinical Affairs",
+      "SVP Clinical Services","Senior VP Clinical Services",
+    ],
+    keywords: "clinical strategy, quality, safety, evidence-based practice, care standardization, clinical transformation, interprofessional practice, care model redesign, shared governance, Magnet designation",
+  },
+
+  "Medical Officer": {
+    titles: [
+      "Chief Medical Officer","CMO",
+      "SVP Medical Affairs","Senior Vice President Medical Affairs",
+      "VP Medical Affairs",
+      "VP Clinical Integration","Vice President Clinical Integration",
+      "Chief of Medicine","Physician-in-Chief",
+      "Executive Director Population Health",
+    ],
+    keywords: "clinical leadership, medical staff, physician alignment, clinical integration, population health, value-based care, ACOs, accountable care, clinical informatics, care management, risk adjustment",
+  },
+
+  "Nursing Officer": {
+    titles: [
+      "Chief Nursing Officer","CNO",
+      "Chief Nursing Executive","CNE",
+      "SVP Patient Care Services","Senior VP Patient Care Services",
+      "EVP Patient Care & CNO",
+      "VP Nursing","Vice President Nursing",
+      "Executive Director Nursing Practice",
+    ],
+    keywords: "nursing strategy, professional practice model, care delivery, nursing workforce, retention, Magnet, shared governance, healthy work environment, interprofessional, nurse-sensitive outcomes",
+  },
+
+  "Operating Officer": {
+    titles: [
+      "Chief Operating Officer","COO",
+      "EVP Operations",
+      "SVP Operations","Senior Vice President Operations",
+      "President & COO",
+      "VP Hospital Operations","Vice President Hospital Operations",
+      "Executive Director Perioperative Services",
+    ],
+    keywords: "operations strategy, performance improvement, capacity management, patient flow, throughput, supply chain, facilities, capital projects, lean, six sigma, operational excellence",
+  },
+
+  "Patient Experience": {
+    titles: [
+      "Chief Experience Officer","CXO",
+      "Chief Patient Experience Officer",
+      "SVP Patient Experience","Senior VP Patient Experience",
+      "VP Patient Experience","VP Service Excellence","Vice President Service Excellence",
+      "Director Patient Experience",
+      "Executive Director Patient Engagement",
+    ],
+    keywords: "patient experience, human-centered design, real-time feedback, patient and family advisory councils, experience governance, empathy, compassion, service recovery, experience mapping, patient-reported outcomes, service excellence",
+  },
+
+  "Physician Executive": {
+    titles: [
+      "Chief Physician Executive","CPE","Chief Physician Officer",
+      "SVP Physician Services","SVP Physician Enterprise","Senior VP Physician Enterprise",
+      "VP Medical Staff","VP Physician Integration",
+      "VP Clinical Integration","Vice President Clinical Integration",
+      "Executive Director Medical Group",
+    ],
+    keywords: "physician leadership, clinical quality, medical staff, clinical integration, physician engagement, dyad leadership, group practice management, compensation, recruitment, service line strategy",
+  },
+
+  "Population Health": {
+    titles: [
+      "Chief Population Health Officer","CPHO",
+      "SVP Population Health","Senior Vice President Population Health",
+      "VP Population Health","VP Value-Based Care & Population Health",
+      "VP Care Management","Vice President Care Management",
+      "Executive Director Population Health Analytics",
+    ],
+    keywords: "population health, risk stratification, care management, social determinants, community health, health equity, predictive analytics, clinical integration, value-based care, payer partnerships",
+  },
+
+  "Quality Officer": {
+    titles: [
+      "Chief Quality Officer","CQO",
+      "Chief Patient Safety Officer","Chief Quality & Safety Officer",
+      "SVP Quality & Safety","Senior VP Quality & Safety",
+      "VP Quality","VP Quality & Safety",
+      "VP Clinical Excellence","Vice President Clinical Excellence",
+      "Executive Director Accreditation & Regulatory",
+    ],
+    keywords: "quality strategy, high reliability, patient safety, regulatory, accreditation, clinical excellence, infection prevention, quality analytics, performance improvement, harm reduction, zero harm",
+  },
+
+  "Service Line": {
+    titles: [
+      "Chief Service Line Officer",
+      "SVP Service Lines","SVP Oncology Services",
+      "VP Service Lines","VP Clinical Service Lines",
+      "VP Heart & Vascular","Vice President Heart & Vascular",
+      "Executive Director Orthopedics & Neurosciences",
+      "Service Line CMO","Service Line Chief Medical Officer",
+      "Senior Director Oncology Services",
+    ],
+    keywords: "service line strategy, program development, growth, market share, centers of excellence, COEs, institutes, clinical outcomes, patient experience, strategic marketing, physician engagement, subspecialty, cardiology, oncology, orthopedics, neuroscience",
+  },
+
+  "Strategy": {
+    titles: [
+      "Chief Strategy Officer","CSO",
+      "Chief Planning Officer",
+      "SVP Strategy","SVP Strategy & Growth","Senior VP Strategy & Growth",
+      "VP Strategy","VP Strategic Planning","Vice President Strategic Planning",
+      "Executive Director Strategy & Innovation",
+    ],
+    keywords: "corporate strategy, strategic planning, business development, market intelligence, partnerships, M&A, mergers, acquisitions, scenario planning, strategic execution, portfolio management, growth",
+  },
+
+  "Value Based Care": {
+    titles: [
+      "Chief Value Officer","CVO",
+      "Chief ACO Officer",
+      "SVP Value Based Care","SVP Value Transformation","Senior VP Value Transformation",
+      "VP Value Based Care","VP ACO",
+      "VP Population Health & Value","Vice President Population Health & Value",
+      "Executive Director ACO Strategy",
+    ],
+    keywords: "value-based care, risk-based contracting, bundled payments, episodes of care, ACOs, accountable care, clinically integrated networks, CINs, capitation, risk adjustment, performance metrics, gainsharing",
+  },
 };
 
 export const config = { path: "/api/hubspot-gap-search" };
@@ -152,7 +389,7 @@ Return ONLY valid JSON with no markdown or explanation:
     let result = {
       persona,
       name: null, title: null, linkedinUrl: null, email: null,
-      emailConfidence: sourceUrl: null,
+      emailConfidence: "unknown", sourceUrl: null, sourceYear: null,
       confidence: "low", alreadyInCRM: false, titleFitReasoning: null, notes: null,
     };
 
@@ -169,7 +406,7 @@ Return ONLY valid JSON with no markdown or explanation:
           linkedinUrl:       stale ? null : (parsed.linkedinUrl     || null),
           email:             stale ? null : (parsed.email           || null),
           emailConfidence:   parsed.emailConfidence  || "unknown",
-          sourceUrl:         null,
+          sourceUrl:         parsed.sourceUrl        || null,
           sourceYear:        parsed.sourceYear       || null,
           confidence:        stale ? "low" : (parsed.confidence     || "low"),
           alreadyInCRM:      parsed.alreadyInCRM     || false,
