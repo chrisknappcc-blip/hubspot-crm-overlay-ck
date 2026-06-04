@@ -975,8 +975,24 @@ export const handler = async (event, context) => {
         ];
         const selectedRepOwnerId = selectedOwnerIds.length === 1 ? selectedOwnerIds[0] : null;
 
-        // Build filter groups for replies -- OR between assigned_bdr and hubspot_owner_id
-        const replyFilterGroups = buildFilterGroups(qp).flatMap(g => [
+        // Build reply filter groups — BDR mode: only assigned_bdr (NOT hubspot_owner_id).
+        // AE ownership ≠ outreach responsibility. Using owner_id for BDR reps causes AE-owned
+        // contacts (e.g. Matt's accounts) to bleed into the BDR reply queue.
+        // In AE mode (owner_id only, no assigned_bdr): use hubspot_owner_id as normal.
+        const bdrValsForReply   = qp.assigned_bdr ? decodeURIComponent(qp.assigned_bdr).split(",").map(s=>s.trim()).filter(Boolean) : [];
+        const ownerValsForReply = qp.owner_id     ? String(qp.owner_id).split(",").map(s=>s.trim()).filter(Boolean)                 : [];
+        const replyRepGroups = bdrValsForReply.length > 0
+          ? [{ filters: bdrValsForReply.length === 1
+              ? [{ propertyName: "assigned_bdr", operator: "EQ", value: bdrValsForReply[0] }]
+              : [{ propertyName: "assigned_bdr", operator: "IN", values: bdrValsForReply }]
+            }]
+          : ownerValsForReply.length > 0
+          ? [{ filters: ownerValsForReply.length === 1
+              ? [{ propertyName: "hubspot_owner_id", operator: "EQ", value: ownerValsForReply[0] }]
+              : [{ propertyName: "hubspot_owner_id", operator: "IN", values: ownerValsForReply }]
+            }]
+          : buildFilterGroups(qp); // fallback: no explicit params, use default logic
+        const replyFilterGroups = replyRepGroups.flatMap(g => [
           { filters: [{ propertyName: "hs_sales_email_last_replied", operator: "GTE", value: sinceISO }, ...g.filters] },
           { filters: [{ propertyName: "hs_email_last_reply_date",    operator: "GTE", value: sinceISO }, ...g.filters] },
         ]);
@@ -1144,17 +1160,25 @@ export const handler = async (event, context) => {
           .sort((a, b) => new Date(b.replyDate) - new Date(a.replyDate));
 
         // ── Section 2: Upcoming sequences (currently enrolled) ────────────────
-        // Sequences: only show contacts enrolled within the selected days window.
-        // Filtering by hs_latest_sequence_enrolled_date >= sinceISO prevents year-old
-        // enrollments from clogging the list and respects the days selector.
-        const seqFilterGroups = buildFilterGroups(qp, [
-          { propertyName: "hs_sequences_is_enrolled",        operator: "EQ",  value: "true" },
-          { propertyName: "hs_latest_sequence_enrolled_date", operator: "GTE", value: sinceISO },
+        // Sequences: show contacts currently enrolled where a sequence email fired in the window.
+        // Anchoring on hs_email_last_send_date (step fire date) not enrollment date —
+        // contacts enrolled 6 weeks ago but stepped last week should appear.
+        // Two OR groups: (1) recent email send, (2) recently enrolled (catches new additions).
+        const seqBaseGroups = buildFilterGroups(qp);
+        const seqFilterGroups = seqBaseGroups.flatMap(g => [
+          { filters: [...g.filters,
+              { propertyName: "hs_sequences_is_enrolled",  operator: "EQ",  value: "true" },
+              { propertyName: "hs_email_last_send_date",   operator: "GTE", value: sinceISO },
+          ]},
+          { filters: [...g.filters,
+              { propertyName: "hs_sequences_is_enrolled",          operator: "EQ",  value: "true" },
+              { propertyName: "hs_latest_sequence_enrolled_date",  operator: "GTE", value: sinceISO },
+          ]},
         ]);
         const sequencesData = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
           filterGroups: seqFilterGroups,
           properties: BASE_CONTACT_PROPS,
-          sorts:  [{ propertyName: "hs_latest_sequence_enrolled_date", direction: "DESCENDING" }],
+          sorts:  [{ propertyName: "hs_email_last_send_date", direction: "DESCENDING" }],
           limit:  50,
         }).catch(() => ({ results: [] }));
 
