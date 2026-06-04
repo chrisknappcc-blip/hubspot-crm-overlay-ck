@@ -1471,9 +1471,42 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
 
               {!todoLoading && todoItems.length > 0 && (() => {
                 const allActive  = todoItems.filter(t => !t.completed)
+
+                // ── All tab: merge items for the same contact into one card ──
+                const buildMerged = (items) => {
+                  const byContact = {}
+                  const noContact = []
+                  items.forEach(item => {
+                    if (item.contactId) {
+                      if (!byContact[item.contactId]) byContact[item.contactId] = []
+                      byContact[item.contactId].push(item)
+                    } else {
+                      noContact.push(item)
+                    }
+                  })
+                  const merged = Object.values(byContact).map(group => {
+                    // Lead = HP item if any, else most recent
+                    const lead     = group.find(i => i.priority === 'HIGH') ||
+                                     group.sort((a,b) => new Date(b.createdAt||0) - new Date(a.createdAt||0))[0]
+                    const isHP     = group.some(i => i.priority === 'HIGH')
+                    const reasons  = group.map(i => ({ text: i.text, type: i.type, createdAt: i.createdAt }))
+                    const earliest = group.reduce((min, i) =>
+                      !min || new Date(i.createdAt||0) < new Date(min||0) ? i.createdAt : min, null)
+                    return { ...lead, _merged: group, _reasons: reasons, _earliest: earliest,
+                      priority: isHP ? 'HIGH' : lead.priority }
+                  })
+                  // Sort: HP first, then by most-recent activity
+                  merged.sort((a,b) => {
+                    if (a.priority === 'HIGH' && b.priority !== 'HIGH') return -1
+                    if (b.priority === 'HIGH' && a.priority !== 'HIGH') return 1
+                    return new Date(b.createdAt||0) - new Date(a.createdAt||0)
+                  })
+                  return [...merged, ...noContact]
+                }
+
                 const active     = todoTab === 'high-priority'
                   ? allActive.filter(t => t.priority === 'HIGH').sort((a,b) => new Date(a.createdAt||0) - new Date(b.createdAt||0))
-                  : allActive
+                  : buildMerged(allActive)
                 const done       = todoItems.filter(t => t.completed)
                 const pageActive = active.slice(todoPage * TODO_PAGE_SIZE, (todoPage + 1) * TODO_PAGE_SIZE)
                 return (
@@ -1507,14 +1540,46 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                             </span>
                           )}
                         </div>
-                        <div style={{ fontSize:13, color:'var(--text)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
-                          {item.text}
-                        </div>
+                        {/* Name / title — use subtext as the person identifier */}
                         {item.subtext && (
-                          <div style={{ fontSize:11, color:'var(--text-tertiary)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                          <div style={{ fontSize:12, fontWeight:600, color:'var(--text)',
+                            overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', marginBottom:4 }}>
                             {item.subtext}
                           </div>
                         )}
+
+                        {/* Merged reasons summary OR single task text */}
+                        {item._reasons?.length > 1 ? (
+                          <div style={{ display:'flex', flexDirection:'column', gap:3 }}>
+                            {item._reasons.map((r, ri) => {
+                              const typeColor = r.type === 'reply' ? 'var(--accent)'
+                                : r.type === 'sequence' ? 'var(--amber)'
+                                : r.type === 'high-priority' ? '#D97706'
+                                : 'var(--text-tertiary)'
+                              return (
+                                <div key={ri} style={{ display:'flex', alignItems:'center', gap:6 }}>
+                                  <span style={{ width:6, height:6, borderRadius:'50%',
+                                    background:typeColor, flexShrink:0 }} />
+                                  <span style={{ fontSize:12, color:'var(--text-secondary)',
+                                    overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                                    {r.text}
+                                  </span>
+                                  {r.createdAt && (
+                                    <span style={{ fontSize:10, color:'var(--text-tertiary)', flexShrink:0, marginLeft:'auto' }}>
+                                      {new Date(r.createdAt).toLocaleString('en-US', { month:'short', day:'numeric' })}
+                                    </span>
+                                  )}
+                                </div>
+                              )
+                            })}
+                          </div>
+                        ) : (
+                          <div style={{ fontSize:12, color:'var(--text-secondary)',
+                            overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                            {item.text}
+                          </div>
+                        )}
+
                         {/* History log for updated HP items */}
                         {isHPItem && item.history?.length > 0 && (
                           <div style={{ marginTop:6, paddingLeft:8, borderLeft:'2px solid rgba(217,119,6,.3)' }}>
