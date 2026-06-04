@@ -273,6 +273,60 @@ const PERSONA_DEFINITIONS = {
   },
 };
 
+
+// ─── CRM Contact Pre-Check ───────────────────────────────────────────────────
+// Deterministic keyword matching so the model can't reason past explicit rules.
+// Returns the matching contact object, or null.
+function preCheckCRMContact(persona, existingContacts) {
+  if (!existingContacts?.length) return null;
+
+  // Keyword maps per persona.
+  // Arrays are OR-matched (any hit = match). Case-insensitive.
+  const KEYWORD_MAP = {
+    "Access/Patient Access":   ["Patient Access", "Access Services", "Chief Access"],
+    "Ambulatory/Urgent Care":  ["Ambulatory", "Urgent Care", "Outpatient"],
+    "Business Development":    ["Business Development", "CBDO", "Chief Growth", "Strategic Partnerships", "Corporate Development"],
+    "Case Management":         ["Case Management", "Care Coordination", "Care Transitions", "Cross Care"],
+    "Chief Clinical Officer":  ["Chief Clinical Officer", "\bCCO\b", "EVP Clinical Affairs"],
+    "Clinical Operations":     ["Clinical Operations", "Clinical Services", "\bCCOO\b"],
+    "Emergency Department":    ["Emergency Medicine", "Emergency Services", "Emergency Department", "Chief of Emergency"],
+    "Executive/Leadership":    ["\bCEO\b", "Chief Executive", "System President", "Executive Director"],
+    "Finance":                 ["\bCFO\b", "Chief Financial", "Revenue Cycle", "EVP.*Finance"],
+    "Innovation":              ["Innovation", "Digital Transformation", "\bCINO\b"],
+    "Medical":                 ["\bCMIO\b", "Medical Informatics", "Clinical Informatics", "Medical Information"],
+    "Medical Group":           ["Medical Group", "Physician Group", "Faculty Practice"],
+    "Medical Officer":         ["\bCMO\b", "Chief Medical Officer", "Medical Affairs", "Medical Staff"],
+    "Nursing Officer":         ["\bCNO\b", "\bCNE\b", "Chief Nursing", "Patient Care Services", "VP Nursing", "SVP Nursing"],
+    "Operating Officer":       ["\bCOO\b", "Chief Operating", "Hospital Operations",
+                                "Acute & Ambulatory Operations", "Acute and Ambulatory Operations",
+                                "Operations President", "President.*Operations"],
+    "Patient Experience":      ["Patient Experience", "Service Excellence", "\bCXO\b"],
+    "Physician Executive":     ["Chief Physician", "\bCPE\b", "Physician Enterprise", "Physician Integration"],
+    "Population Health":       ["Population Health", "Value-Based Care", "Value Based Care"],
+    "Quality Officer":         ["Quality", "Patient Safety", "Clinical Excellence", "\bCQO\b"],
+    "Service Line":            ["Cardiology", "Oncology", "Neurosciences", "Neuroscience", "Orthopedics",
+                                "Heart.*Vascular", "Vascular", "Cancer", "Spine", "Surgical Services",
+                                "Trauma", "Behavioral Health", "Service Line"],
+    "Strategy":                ["Chief Strategy", "Strategic Planning", "\bCSO\b"],
+    "Value Based Care":        ["Value.Based Care", "Value Based Care", "\bACO\b", "\bCVO\b"],
+  };
+
+  const patterns = KEYWORD_MAP[persona];
+  if (!patterns) return null;
+
+  for (const contact of existingContacts) {
+    const title = contact.title || "";
+    for (const kw of patterns) {
+      const re = new RegExp(kw, "i");
+      if (re.test(title)) {
+        console.log(`[gap-search] CRM pre-check HIT: persona="${persona}" contact="${contact.name}" title="${title}" keyword="${kw}"`);
+        return contact;
+      }
+    }
+  }
+  return null;
+}
+
 export const config = { path: "/api/hubspot-gap-search" };
 
 export default async function handler(req) {
@@ -295,6 +349,33 @@ export default async function handler(req) {
     const titles     = (definition?.titles || [persona]).join('", "');
     const keywords   = definition?.keywords || persona;
     const domainStr  = domain ? `https://${domain}` : companyName;
+
+    // ── CRM pre-check (deterministic JS — bypasses model entirely) ──────────
+    const crmMatch = preCheckCRMContact(persona, existingContacts);
+    if (crmMatch) {
+      const result = {
+        persona,
+        name:              crmMatch.name  || null,
+        title:             crmMatch.title || null,
+        linkedinUrl:       crmMatch.linkedinUrl || null,
+        email:             crmMatch.email || null,
+        emailConfidence:   "unknown",
+        sourceUrl:         null,
+        sourceYear:        null,
+        confidence:        "existing_crm_contact",
+        alreadyInCRM:      true,
+        titleFitReasoning: `Title "${crmMatch.title}" functionally covers ${persona} (keyword match)`,
+        notes:             "Matched via CRM pre-check — no web search needed",
+      };
+      console.log(`[gap-search] CRM pre-check RETURN: persona="${persona}" name="${result.name}" title="${result.title}"`);
+      return new Response(JSON.stringify({
+        companyName,
+        searchedPersonas:  [persona],
+        remainingPersonas: missingPersonas.slice(1),
+        hasMore:           missingPersonas.length > 1,
+        found:             [result],
+      }), { status: 200, headers: { ...CORS, "Content-Type": "application/json" } });
+    }
 
     // Format existing contacts for context injection
     const existingContactsText = existingContacts.length > 0
@@ -320,32 +401,11 @@ Standard Titles: "${titles}"
 Role Keywords: ${keywords}
 Organization Website: ${domainStr}
 
-## STEP 1: CHECK EXISTING CONTACTS FIRST — NO WEB SEARCH
-Match on FUNCTION, not exact title. A title covers this persona if the person's scope clearly encompasses this domain.
+## YOUR TASK: SEARCH THE WEB FOR THE ${persona} ROLE
+The existing CRM contacts have already been checked programmatically. None match.
+Your job is ONLY to find who currently holds this role via web search.
 
-SPECIFIC FUNCTIONAL MAPPINGS — these always count as a match:
-- Title contains "Ambulatory", "Urgent Care", or "Outpatient" → Ambulatory/Urgent Care
-- Title contains "Chief Nursing", "CNO", "CNE", or "Patient Care Services" → Nursing Officer
-- Title contains "CFO", "Chief Financial", or "Revenue Cycle" → Finance
-- Title contains "COO", "Chief Operating", or "Hospital Operations" → Operating Officer
-- Title contains "CMO", "Chief Medical Officer", or "Medical Affairs" (not CMIO) → Medical Officer
-- Title contains "CMIO", "Medical Informatics", or "Clinical Informatics" → Medical (CMIO role)
-- Title contains "Quality", "Patient Safety", or "Clinical Excellence" → Quality Officer
-- Title contains "Chief Clinical Officer", "CCO", or "EVP Clinical Affairs" → Chief Clinical Officer
-- Title contains "Chief Physician", "CPE", or "Physician Enterprise" → Physician Executive
-- Title contains "Population Health", "Care Management", or "Value-Based" → Population Health or Value Based Care
-- Title contains "Patient Experience", "Service Excellence", or "CXO" → Patient Experience
-- Title contains "Case Management", "Care Coordination", or "Care Transitions" → Case Management
-- Title contains "Chief Strategy", "Strategic Planning", or "CSO" → Strategy
-- Title contains "Innovation", "Digital Transformation", or "CINO" → Innovation
-- Title contains "Clinical Operations", "Clinical Services", "Acute Operations", or "Ambulatory Operations" → Clinical Operations
-- VP/SVP/Director/President of ANY specific clinical service (Cardiology, Oncology, Neurosciences, Orthopedics, Heart, Vascular, Cancer, Spine, Surgical, Trauma, Behavioral Health) → Service Line
-- Title contains "Medical Group", "Physician Group", or "Faculty Practice" → Medical Group
-
-If any existing contact matches → return them with confidence: "existing_crm_contact". Do NOT call web_search.
-If NO existing contact matches → proceed to STEP 2.
-
-## STEP 2: ONLY IF NOT FOUND IN EXISTING CONTACTS — SEARCH THE WEB
+## WEB SEARCH
 Use a MAXIMUM of 2-3 web searches total. Do not search more than 3 times.
 1. Search: "${companyName}" "${(definition?.titles||[])[0]||persona}" 2024 OR 2025
 2. Search: "${companyName}" ${keywords.split(',').slice(0,3).join(' ')} leadership
