@@ -73,6 +73,7 @@ const CUSTOM_PROPS = [
   "assigned_bdr",
   "target_account__bdr_led_outreach",
   "territory",
+  "target_persona",           // persona assignment — used for Gold Target detection
 ];
 
 // Standard contact properties always fetched
@@ -308,6 +309,9 @@ function normalizeContact(c) {
     sequenceId:            p.hs_latest_sequence_enrolled      || null,
     sequenceEnrolledDate:  p.hs_latest_sequence_enrolled_date || null,
     inSequence:            p.hs_sequences_is_enrolled === "true",
+    // Gold Target detection fields
+    target_persona:        p.target_persona || "",
+    associatedcompanyid:   p.associatedcompanyid || c.properties?.associatedcompanyid || "",
   };
 }
 
@@ -3006,7 +3010,7 @@ export const handler = async (event, context) => {
       if (!todoId) return error(400, "Todo ID required");
       try {
         const body    = JSON.parse(event.body || "{}");
-        const allowed = ["completed","text","subtext","dueDate"];
+        const allowed = ["completed","text","subtext","dueDate","history","priority","contactId"];
         const changes = Object.fromEntries(Object.entries(body).filter(([k]) => allowed.includes(k)));
         const item    = await updateTodo(user.userId, todoId, changes);
         return ok({ item });
