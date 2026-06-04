@@ -1024,9 +1024,18 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
   const todoItemsRef = useRef([])
   useEffect(() => { todoItemsRef.current = todoItems }, [todoItems])
 
+  // ownRepName: captured once when filterBdr first resolves to the logged-in user's name.
+  // Used to skip HP todo creation when viewing another rep's signals.
+  const ownRepName = useRef(null)
+  useEffect(() => {
+    if (filterBdr && !ownRepName.current) ownRepName.current = filterBdr
+  }, [filterBdr])
+
   const hpProcessed = useRef(new Set())
   useEffect(() => {
     if (!signals.length) return
+    // Never create HP todos from another rep's signals — they'd land in the wrong todo store
+    if (ownRepName.current && filterBdr && filterBdr !== ownRepName.current) return
     signals.forEach(signal => {
       if (!signal.contactId || !isHighPriority(signal)) return
       if (hpProcessed.current.has(signal.contactId)) return
@@ -1062,7 +1071,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
         })
       }
     })
-  }, [signals, isHighPriority])   // intentionally excludes todoItems — snapshot via ref
+  }, [signals, isHighPriority, filterBdr])   // filterBdr: re-check when rep switches
   // Stagger all fetches to avoid rate limit storm on filter change or mount.
   // Signals (fetchData) fires immediately ~2s, tasks at 1s, gold at 3s, activity at 5s, content at 4s.
   useEffect(() => {
