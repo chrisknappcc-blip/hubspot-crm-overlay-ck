@@ -314,8 +314,6 @@ function preCheckCRMContact(persona, existingContacts) {
   if (!patterns) return null;
 
   for (const contact of existingContacts) {
-    // Skip contacts already assigned to a different persona — don't steal them
-    if (contact.persona && contact.persona !== "unassigned" && contact.persona !== persona) continue;
     const title = contact.title || "";
     for (const kw of patterns) {
       const re = new RegExp(kw, "i");
@@ -402,9 +400,9 @@ Standard Titles: "${titles}"
 Role Keywords: ${keywords}
 Organization Website: ${domainStr}
 
-## YOUR TASK: SEARCH THE WEB FOR THE ${persona} ROLE
-The existing CRM contacts have already been checked programmatically. None match.
-Your job is ONLY to find who currently holds this role via web search.
+## YOUR TASK: FIND WHO CURRENTLY HOLDS THE ${persona} ROLE AT ${companyName}
+Search the web to identify the current person in this role.
+If the person you find is already in the existing contacts list above, set alreadyInCRM: true AND still include their full name and title in the output — do not return null for name.
 
 ## WEB SEARCH
 Use a MAXIMUM of 2-3 web searches total. Do not search more than 3 times.
