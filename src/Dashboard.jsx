@@ -625,7 +625,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
     }
   }, [todoItems])
   const [taskDays, setTaskDays]       = useState('14')
-  const [taskSection, setTaskSection] = useState('replies')
+  const [taskSection, setTaskSection] = useState('high-priority')
   const [taskLoading, setTaskLoading] = useState(false)
 
   // Gold accounts
@@ -1623,15 +1623,27 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                 {/* Section tabs */}
                 <div style={{ display:'flex', gap:0, marginBottom:12, background:'var(--bg-secondary)', borderRadius:'var(--radius)', padding:3 }}>
                   {[
-                    { key:'replies',   label:'Replies', count: taskData.repliesAwaitingResponse.length },
-                    { key:'sequences', label:'Sequences', count: taskData.upcomingSequences.length },
-                    { key:'tasks',     label:'Due tasks', count: taskData.dueTasks.length },
-                  ].map(({ key, label, count }) => (
+                    { key:'high-priority', label:'High Priority', count: todoItems.filter(t => t.priority==='HIGH' && !t.completed).length, amber: true },
+                    { key:'replies',       label:'Replies',       count: taskData.repliesAwaitingResponse.length },
+                    { key:'sequences',     label:'Sequences',     count: taskData.upcomingSequences.length },
+                    { key:'tasks',         label:'Due tasks',     count: taskData.dueTasks.length },
+                  ].map(({ key, label, count, amber }) => (
                     <button key={key} onClick={() => { setTaskSection(key); setTaskPage(0) }}
-                      style={{ flex:1, fontSize:12, fontWeight: taskSection===key ? 500 : 400, color: taskSection===key ? 'var(--text)' : 'var(--text-tertiary)', background: taskSection===key ? 'var(--bg-panel)' : 'transparent', border:'none', borderRadius:'var(--radius)', padding:'5px 8px', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', gap:5 }}>
+                      style={{ flex:1, fontSize:12, fontWeight: taskSection===key ? 500 : 400,
+                        color: taskSection===key ? (amber ? '#D97706' : 'var(--text)') : 'var(--text-tertiary)',
+                        background: taskSection===key ? 'var(--bg-panel)' : 'transparent',
+                        border:'none', borderRadius:'var(--radius)', padding:'5px 8px', cursor:'pointer',
+                        display:'flex', alignItems:'center', justifyContent:'center', gap:5 }}>
                       {label}
                       {count > 0 && (
-                        <span style={{ fontSize:10, fontWeight:600, background: taskSection===key ? (key==='replies' ? 'var(--red-light)' : 'var(--accent-light)') : 'var(--border)', color: taskSection===key ? (key==='replies' ? 'var(--red)' : 'var(--accent-text)') : 'var(--text-tertiary)', borderRadius:10, padding:'0 5px', minWidth:16, textAlign:'center' }}>
+                        <span style={{ fontSize:10, fontWeight:600,
+                          background: taskSection===key
+                            ? (amber ? 'rgba(217,119,6,.15)' : key==='replies' ? 'var(--red-light)' : 'var(--accent-light)')
+                            : 'var(--border)',
+                          color: taskSection===key
+                            ? (amber ? '#D97706' : key==='replies' ? 'var(--red)' : 'var(--accent-text)')
+                            : 'var(--text-tertiary)',
+                          borderRadius:10, padding:'0 5px', minWidth:16, textAlign:'center' }}>
                           {count}
                         </span>
                       )}
@@ -1640,6 +1652,74 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                 </div>
 
                 {taskLoading && <div style={{ color:'var(--text-tertiary)', fontSize:13 }}>Loading...</div>}
+
+                {/* Section: High Priority */}
+                {!taskLoading && taskSection === 'high-priority' && (() => {
+                  const hpItems = todoItems.filter(t => t.priority === 'HIGH' && !t.completed)
+                    .sort((a,b) => new Date(a.createdAt||0) - new Date(b.createdAt||0))
+                  const hpPage  = taskPage
+                  const paged   = hpItems.slice(hpPage * PAGE_SIZE, (hpPage+1) * PAGE_SIZE)
+                  return (
+                    <div>
+                      {hpItems.length === 0 && (
+                        <div style={{ fontSize:13, color:'var(--text-tertiary)', textAlign:'center', padding:'16px 0' }}>
+                          No high priority items right now.
+                        </div>
+                      )}
+                      {paged.map((item, i) => {
+                        const overdue48 = item.createdAt &&
+                          (Date.now() - new Date(item.createdAt).getTime() > 48 * 60 * 60 * 1000)
+                        return (
+                          <div key={item.id} style={{ padding:'10px 0',
+                            borderBottom: i < paged.length - 1 ? '1px solid var(--border)' : 'none' }}>
+                            <div style={{ display:'flex', alignItems:'flex-start', gap:10 }}>
+                              <input type="checkbox" checked={false}
+                                onChange={e => { e.stopPropagation(); toggleTodo(item.id, true) }}
+                                style={{ flexShrink:0, marginTop:3, cursor:'pointer',
+                                  accentColor:'#D97706', width:15, height:15 }} />
+                              <div style={{ flex:1, minWidth:0,
+                                background: overdue48 ? 'rgba(239,68,68,.05)' : 'rgba(217,119,6,.05)',
+                                border: `1.5px solid ${overdue48 ? 'var(--red)' : 'rgba(217,119,6,.3)'}`,
+                                borderRadius:'var(--radius)', padding:'8px 10px' }}>
+                                <div style={{ display:'flex', alignItems:'center', gap:6, marginBottom:4 }}>
+                                  <span style={{ fontSize:9, fontWeight:700,
+                                    background: overdue48 ? 'var(--red)' : '#D97706',
+                                    color:'#fff', borderRadius:3, padding:'2px 6px',
+                                    letterSpacing:'.04em', textTransform:'uppercase' }}>
+                                    {overdue48 ? 'OVERDUE' : 'HIGH PRIORITY'}
+                                  </span>
+                                  {item.createdAt && (
+                                    <span style={{ fontSize:10, color:'var(--text-tertiary)' }}>
+                                      {new Date(item.createdAt).toLocaleString('en-US', { month:'short', day:'numeric', hour:'numeric', minute:'2-digit' })}
+                                    </span>
+                                  )}
+                                </div>
+                                <div style={{ fontSize:13, fontWeight:500, color:'var(--text)',
+                                  overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                                  {item.text}
+                                </div>
+                                {item.subtext && (
+                                  <div style={{ fontSize:11, color:'var(--text-tertiary)', marginTop:2 }}>
+                                    {item.subtext}
+                                  </div>
+                                )}
+                                {item.history?.length > 0 && (
+                                  <div style={{ marginTop:6, paddingLeft:8,
+                                    borderLeft:'2px solid rgba(217,119,6,.3)' }}>
+                                    {item.history.map((h, hi) => (
+                                      <div key={hi} style={{ fontSize:10, color:'var(--text-tertiary)', marginBottom:2 }}>{h}</div>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        )
+                      })}
+                      <Pager page={hpPage} total={hpItems.length} pageSize={PAGE_SIZE} onChange={setTaskPage} />
+                    </div>
+                  )
+                })()}
 
                 {/* Section: Replies awaiting response */}
                 {!taskLoading && taskSection === 'replies' && (
@@ -1887,27 +1967,6 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                       borderRadius: isHP ? 'var(--radius)' : 0,
                       background: rowBg,
                       border: rowBorder }}>
-                      {/* Gold Target checkbox row */}
-                      {s.contactId && (
-                        <div style={{ display:'flex', alignItems:'center', gap:6, marginBottom:6 }}>
-                          <input type="checkbox" checked={isHP}
-                            onChange={e => { e.stopPropagation(); toggleHpOverride(s.contactId, isHP) }}
-                            style={{ cursor:'pointer', accentColor:'#D97706', width:13, height:13, flexShrink:0 }} />
-                          <span style={{ fontSize:10, fontWeight:600, color: isHP ? '#D97706' : 'var(--text-tertiary)',
-                            letterSpacing:'.04em', textTransform:'uppercase' }}>
-                            Gold Target
-                          </span>
-                          {isHP && (
-                            <span style={{ fontSize:9, fontWeight:700, background:'#D97706', color:'#fff',
-                              borderRadius:3, padding:'1px 6px', letterSpacing:'.04em', textTransform:'uppercase' }}>
-                              High Priority
-                            </span>
-                          )}
-                          {!autoHP && isHP && (
-                            <span style={{ fontSize:9, color:'var(--text-tertiary)', fontStyle:'italic' }}>manual</span>
-                          )}
-                        </div>
-                      )}
                       <div style={{ display:'flex', gap:10 }}>
 
                         {/* Icon */}
@@ -1923,14 +1982,39 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
 
                         <div style={{ flex:1, minWidth:0 }}>
 
-                          {/* Action label — color coded */}
-                          <div style={{ fontSize:11, fontWeight:700, color:accentCol,
-                            textTransform:'uppercase', letterSpacing:'.05em', marginBottom:3 }}>
-                            {actionLabel}
-                            <span style={{ fontSize:10, fontWeight:500, marginLeft:6, textTransform:'none',
-                              letterSpacing:0, color: s.emailSource === 'sales' ? 'var(--blue)' : 'var(--text-tertiary)' }}>
-                              {s.emailSource === 'sales' ? '1:1' : 'Sequence'}
-                            </span>
+                          {/* Action label row — color coded + Gold Target toggle */}
+                          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:3 }}>
+                            <div style={{ fontSize:11, fontWeight:700, color:accentCol,
+                              textTransform:'uppercase', letterSpacing:'.05em' }}>
+                              {actionLabel}
+                              <span style={{ fontSize:10, fontWeight:500, marginLeft:6, textTransform:'none',
+                                letterSpacing:0, color: s.emailSource === 'sales' ? 'var(--blue)' : 'var(--text-tertiary)' }}>
+                                {s.emailSource === 'sales' ? '1:1' : 'Sequence'}
+                              </span>
+                            </div>
+                            {s.contactId && (
+                              <button
+                                onClick={e => { e.stopPropagation(); toggleHpOverride(s.contactId, isHP) }}
+                                title={isHP ? 'Remove High Priority' : 'Mark as High Priority'}
+                                style={{ display:'flex', alignItems:'center', gap:5, background:'none', border:'none',
+                                  cursor:'pointer', padding:'3px 6px', borderRadius:'var(--radius)',
+                                  color: isHP ? '#D97706' : 'var(--text-tertiary)',
+                                  background: isHP ? 'rgba(217,119,6,.1)' : 'transparent',
+                                  flexShrink:0 }}>
+                                <svg width="14" height="14" viewBox="0 0 24 24"
+                                  fill={isHP ? '#D97706' : 'none'}
+                                  stroke={isHP ? '#D97706' : 'currentColor'}
+                                  strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                  <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
+                                </svg>
+                                <span style={{ fontSize:10, fontWeight:600, letterSpacing:'.04em', textTransform:'uppercase' }}>
+                                  {isHP ? 'High Priority' : 'Gold Target'}
+                                </span>
+                                {!autoHP && isHP && (
+                                  <span style={{ fontSize:9, opacity:.7, fontStyle:'italic' }}>manual</span>
+                                )}
+                              </button>
+                            )}
                           </div>
 
                           {/* Name */}
