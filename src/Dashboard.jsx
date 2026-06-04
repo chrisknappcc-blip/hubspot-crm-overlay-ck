@@ -1665,40 +1665,47 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                     </div>
                   )})}
 
-                  {active.length > 0 && (
-                    <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between',
-                      marginTop:8, paddingTop:8, borderTop:'1px solid var(--border)',
-                      fontSize:11, color:'var(--text-tertiary)' }}>
-                      <span>
-                        {todoPage * TODO_PAGE_SIZE + 1}–{Math.min((todoPage+1)*TODO_PAGE_SIZE, active.length)} of {active.length}
-                        {active.length !== todoItems.filter(t=>!t.completed).length &&
-                          <span style={{ marginLeft:4, opacity:.7 }}>
-                            ({todoItems.filter(t=>!t.completed).length} tasks)
-                          </span>
-                        }
-                      </span>
-                      <div style={{ display:'flex', gap:6 }}>
-                        <button onClick={() => setTodoPage(p => Math.max(0,p-1))}
-                          disabled={todoPage===0}
-                          style={{ fontSize:12, padding:'4px 10px', background:'var(--bg-secondary)',
-                            border:'1px solid var(--border)', borderRadius:'var(--radius)',
-                            cursor:todoPage===0?'not-allowed':'pointer',
-                            color:todoPage===0?'var(--text-tertiary)':'var(--text)',
-                            opacity:todoPage===0?0.5:1 }}>
-                          ← Prev
-                        </button>
-                        <button onClick={() => setTodoPage(p => p+1)}
-                          disabled={(todoPage+1)*TODO_PAGE_SIZE>=active.length}
-                          style={{ fontSize:12, padding:'4px 10px', background:'var(--bg-secondary)',
-                            border:'1px solid var(--border)', borderRadius:'var(--radius)',
-                            cursor:(todoPage+1)*TODO_PAGE_SIZE>=active.length?'not-allowed':'pointer',
-                            color:(todoPage+1)*TODO_PAGE_SIZE>=active.length?'var(--text-tertiary)':'var(--text)',
-                            opacity:(todoPage+1)*TODO_PAGE_SIZE>=active.length?0.5:1 }}>
-                          Next →
-                        </button>
+                  {active.length > 0 && (() => {
+                    const totalPages = Math.ceil(active.length / TODO_PAGE_SIZE)
+                    const start = todoPage * TODO_PAGE_SIZE + 1
+                    const end   = Math.min((todoPage + 1) * TODO_PAGE_SIZE, active.length)
+                    return (
+                      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between',
+                        marginTop:8, paddingTop:8, borderTop:'1px solid var(--border)',
+                        fontSize:11, color:'var(--text-tertiary)' }}>
+                        <span>
+                          {start}–{end} of {active.length}
+                          {active.length !== todoItems.filter(t=>!t.completed).length &&
+                            <span style={{ marginLeft:4, opacity:.7 }}>
+                              ({todoItems.filter(t=>!t.completed).length} tasks)
+                            </span>
+                          }
+                        </span>
+                        {totalPages > 1 && (
+                          <div style={{ display:'flex', gap:6 }}>
+                            <button onClick={() => setTodoPage(p => Math.max(0, p - 1))}
+                              disabled={todoPage === 0}
+                              style={{ fontSize:12, padding:'4px 10px', background:'var(--bg-secondary)',
+                                border:'1px solid var(--border)', borderRadius:'var(--radius)',
+                                cursor: todoPage === 0 ? 'default' : 'pointer',
+                                color: todoPage === 0 ? 'var(--text-tertiary)' : 'var(--text)',
+                                opacity: todoPage === 0 ? 0.45 : 1 }}>
+                              ← Prev
+                            </button>
+                            <button onClick={() => setTodoPage(p => p + 1)}
+                              disabled={todoPage >= totalPages - 1}
+                              style={{ fontSize:12, padding:'4px 10px', background:'var(--bg-secondary)',
+                                border:'1px solid var(--border)', borderRadius:'var(--radius)',
+                                cursor: todoPage >= totalPages - 1 ? 'default' : 'pointer',
+                                color: todoPage >= totalPages - 1 ? 'var(--text-tertiary)' : 'var(--text)',
+                                opacity: todoPage >= totalPages - 1 ? 0.45 : 1 }}>
+                              Next →
+                            </button>
+                          </div>
+                        )}
                       </div>
-                    </div>
-                  )}
+                    )
+                  })()}
 
                                     {/* Completed items with strikethrough */}
                   {done.length > 0 && (
