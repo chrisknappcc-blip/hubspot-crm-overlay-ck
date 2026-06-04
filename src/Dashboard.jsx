@@ -1401,11 +1401,20 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
               <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:6 }}>
                 <SectionTitle style={{ margin:0 }}>
                   To-Do
-                  {todoItems.filter(t=>!t.completed).length > 0 && (
-                    <span style={{ marginLeft:8, background:'var(--accent)', color:'#fff', borderRadius:10, padding:'1px 7px', fontSize:10, fontWeight:600 }}>
-                      {todoItems.filter(t=>!t.completed).length}
-                    </span>
-                  )}
+                  {todoItems.filter(t=>!t.completed).length > 0 && (() => {
+                    // Badge shows merged contact count so it matches what's visible on screen
+                    const seen = new Set(); let merged = 0
+                    todoItems.filter(t=>!t.completed).forEach(t => {
+                      if (t.contactId) { if (!seen.has(t.contactId)) { seen.add(t.contactId); merged++ } }
+                      else merged++
+                    })
+                    return (
+                      <span style={{ marginLeft:8, background:'var(--accent)', color:'#fff', borderRadius:10, padding:'1px 7px', fontSize:10, fontWeight:600 }}
+                        title={`${todoItems.filter(t=>!t.completed).length} tasks across ${merged} contacts`}>
+                        {merged}
+                      </span>
+                    )
+                  })()}
                 </SectionTitle>
                 <div style={{ display:'flex', gap:6, alignItems:'center' }}>
                   <button onClick={() => exportTodos('text')} title="Copy recap to clipboard"
@@ -1656,7 +1665,41 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                     </div>
                   )})}
 
-                  <Pager page={todoPage} total={active.length} pageSize={TODO_PAGE_SIZE} onChange={setTodoPage} />
+                  {active.length > 0 && (
+                    <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between',
+                      marginTop:8, paddingTop:8, borderTop:'1px solid var(--border)',
+                      fontSize:11, color:'var(--text-tertiary)' }}>
+                      <span>
+                        {todoPage * TODO_PAGE_SIZE + 1}–{Math.min((todoPage+1)*TODO_PAGE_SIZE, active.length)} of {active.length}
+                        {active.length !== todoItems.filter(t=>!t.completed).length &&
+                          <span style={{ marginLeft:4, opacity:.7 }}>
+                            ({todoItems.filter(t=>!t.completed).length} tasks)
+                          </span>
+                        }
+                      </span>
+                      {active.length > TODO_PAGE_SIZE && (
+                        <div style={{ display:'flex', gap:6 }}>
+                          <button onClick={() => setTodoPage(p => Math.max(0,p-1))} disabled={todoPage===0}
+                            style={{ fontSize:12, padding:'4px 10px', background:'var(--bg-secondary)',
+                              border:'1px solid var(--border)', borderRadius:'var(--radius)',
+                              cursor:todoPage===0?'not-allowed':'pointer',
+                              color:todoPage===0?'var(--text-tertiary)':'var(--text)',
+                              opacity:todoPage===0?0.5:1 }}>
+                            ← Prev
+                          </button>
+                          <button onClick={() => setTodoPage(p => p+1)}
+                            disabled={(todoPage+1)*TODO_PAGE_SIZE>=active.length}
+                            style={{ fontSize:12, padding:'4px 10px', background:'var(--bg-secondary)',
+                              border:'1px solid var(--border)', borderRadius:'var(--radius)',
+                              cursor:(todoPage+1)*TODO_PAGE_SIZE>=active.length?'not-allowed':'pointer',
+                              color:(todoPage+1)*TODO_PAGE_SIZE>=active.length?'var(--text-tertiary)':'var(--text)',
+                              opacity:(todoPage+1)*TODO_PAGE_SIZE>=active.length?0.5:1 }}>
+                            Next →
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
 
                                     {/* Completed items with strikethrough */}
                   {done.length > 0 && (
