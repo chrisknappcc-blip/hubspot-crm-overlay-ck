@@ -508,6 +508,11 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
   const [todoInput, setTodoInput]     = useState('')
   const [todoDueDate, setTodoDueDate] = useState('')
   const [todoSyncing, setTodoSyncing] = useState(false)
+  const [todoTab,    setTodoTab]     = useState('high-priority')
+  const [hpOverrides, setHpOverrides] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('cipher_hp_overrides') || '{}') }
+    catch { return {} }
+  })
 
   const fetchTodos = useCallback(async () => {
     setTodoLoading(true)
@@ -562,6 +567,17 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
         body: JSON.stringify({ completed }),
       })
     } catch (e) { console.error('[todo/toggle]', e) }
+  }, [])
+
+  const updateTodoItem = useCallback(async (id, changes) => {
+    try {
+      const data = await safeFetch(`/api/hubspot/todo/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(changes),
+      })
+      if (data?.item) setTodoItems(prev => prev.map(t => t.id === id ? { ...t, ...data.item } : t))
+    } catch (e) { console.error('[todo/update]', e) }
   }, [])
 
   const deleteTodoItem = useCallback(async (id) => {
@@ -626,6 +642,38 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
   const [gapBatchProgress, setGapBatchProgress] = useState('')
   const [expandedGaps, setExpandedGaps]   = useState({}) // keyed by companyId
   const [goldSelectedAccount, setGoldSelectedAccount] = useState(null)
+
+  // ── Gold Target / High Priority helpers ────────────────────────────────────
+  const goldCompanyIds = useMemo(
+    () => new Set((goldAccounts || []).map(a => a.id).filter(Boolean)),
+    [goldAccounts]
+  )
+  // autoHP: contact has a persona assigned AND is at a Gold account
+  const autoIsHP = useCallback((signal) => {
+    if (!signal?.contactId) return false
+    return !!(signal.contact?.target_persona) &&
+           goldCompanyIds.has(signal.contact?.associatedcompanyid)
+  }, [goldCompanyIds])
+  // isHighPriority: manual override takes precedence, else auto-detect
+  const isHighPriority = useCallback((signal) => {
+    if (!signal?.contactId) return false
+    const override = hpOverrides[signal.contactId]
+    if (override !== undefined) return override
+    return autoIsHP(signal)
+  }, [hpOverrides, autoIsHP])
+  // Toggle override: if currently auto, force the opposite; if overridden, clear back to auto
+  const toggleHpOverride = useCallback((contactId, currentValue) => {
+    setHpOverrides(prev => {
+      const next = { ...prev }
+      if (prev[contactId] !== undefined) {
+        delete next[contactId]  // clear override → back to auto
+      } else {
+        next[contactId] = !currentValue  // override = flip from current
+      }
+      try { localStorage.setItem('cipher_hp_overrides', JSON.stringify(next)) } catch {}
+      return next
+    })
+  }, [])
 
   // ── Persisted report filter state ─────────────────────────────────────────
   // Lifted up to Dashboard so state survives tab switches (ReportsTab unmounts/remounts)
@@ -970,6 +1018,42 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
 
   useEffect(() => { fetchData() }, [fetchData])
   useEffect(() => { fetchTodos(); syncTodos() }, [fetchTodos, syncTodos])
+
+  // ── Auto-create / update High Priority To-Dos from Gold Target signals ──────
+  const hpProcessed = useRef(new Set())
+  useEffect(() => {
+    if (!signals.length || todoLoading) return
+    signals.forEach(signal => {
+      if (!signal.contactId || !isHighPriority(signal)) return
+      if (hpProcessed.current.has(signal.contactId)) return
+      hpProcessed.current.add(signal.contactId)
+
+      const signalType  = signal.score >= 100 ? 'replied' : signal.score >= 60 ? 'clicked' : 'opened'
+      const name        = signal.contact?.name || signal.recipientEmail || 'Contact'
+      const taskText    = signalType === 'replied'
+        ? `Reply to ${name} — responded to your email`
+        : signalType === 'clicked'
+        ? `Follow up — ${name} clicked your email, no reply yet`
+        : `Follow up — ${name} opened your email, no reply yet`
+      const subtext     = [signal.contact?.company, signal.contact?.title].filter(Boolean).join(' · ')
+      const ts          = new Date().toLocaleString('en-US', { month:'short', day:'numeric', hour:'numeric', minute:'2-digit' })
+
+      const existing = todoItems.find(t =>
+        t.contactId === signal.contactId && t.priority === 'HIGH' && !t.completed
+      )
+      if (existing) {
+        const history = [...(existing.history || []), `${ts} — ${taskText}`]
+        updateTodoItem(existing.id, { text: taskText, history })
+      } else {
+        addTodoItem(taskText, {
+          priority:  'HIGH',
+          contactId: signal.contactId,
+          type:      'high-priority',
+          subtext,
+        })
+      }
+    })
+  }, [signals, todoLoading, todoItems, isHighPriority, addTodoItem, updateTodoItem])
   // Stagger all fetches to avoid rate limit storm on filter change or mount.
   // Signals (fetchData) fires immediately ~2s, tasks at 1s, gold at 3s, activity at 5s, content at 4s.
   useEffect(() => {
@@ -1296,7 +1380,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
 
             {/* ── To-Do Section ── */}
             <Panel style={{ marginBottom:12 }}>
-              <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:10 }}>
+              <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:6 }}>
                 <SectionTitle style={{ margin:0 }}>
                   To-Do
                   {todoItems.filter(t=>!t.completed).length > 0 && (
@@ -1320,8 +1404,39 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                   </button>
                 </div>
               </div>
+              {/* Tabs */}
+              {(() => {
+                const hpActive = todoItems.filter(t => t.priority === 'HIGH' && !t.completed)
+                const allActive = todoItems.filter(t => !t.completed)
+                return (
+                  <div style={{ display:'flex', borderBottom:'1px solid var(--border)', marginBottom:10 }}>
+                    {[
+                      { key:'high-priority', label:'High Priority', count: hpActive.length, color:'#D97706' },
+                      { key:'all',           label:'All',           count: allActive.length, color:'var(--accent)' },
+                    ].map(tab => (
+                      <button key={tab.key} onClick={() => { setTodoTab(tab.key); setTodoPage(0) }}
+                        style={{ padding:'6px 14px', fontSize:12, fontWeight: todoTab===tab.key ? 600 : 400,
+                          color: todoTab===tab.key ? tab.color : 'var(--text-tertiary)',
+                          background:'none', border:'none',
+                          borderBottom: todoTab===tab.key ? `2px solid ${tab.color}` : '2px solid transparent',
+                          cursor:'pointer', display:'flex', alignItems:'center', gap:5 }}>
+                        {tab.label}
+                        {tab.count > 0 && (
+                          <span style={{ background: todoTab===tab.key ? tab.color : 'var(--bg-secondary)',
+                            color: todoTab===tab.key ? '#fff' : 'var(--text-tertiary)',
+                            borderRadius:10, padding:'1px 6px', fontSize:9, fontWeight:700 }}>
+                            {tab.count}
+                          </span>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                )
+              })()}
               <div style={{ fontSize:11, color:'var(--text-tertiary)', marginBottom:10 }}>
-                ⭐ Gold Account contacts surface first. Meetings show HubSpot-logged only — full calendar sync available once Outlook is connected.
+                {todoTab === 'high-priority'
+                  ? '🔴 Gold Account contacts flagged for immediate follow-up. Red outline = 48 hrs overdue.'
+                  : '⭐ Gold Account contacts surface first. Meetings show HubSpot-logged only — full calendar sync available once Outlook is connected.'}
               </div>
 
               {/* Add item input */}
@@ -1355,22 +1470,43 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
               )}
 
               {!todoLoading && todoItems.length > 0 && (() => {
-                const active    = todoItems.filter(t => !t.completed)
-                const done      = todoItems.filter(t => t.completed)
+                const allActive  = todoItems.filter(t => !t.completed)
+                const active     = todoTab === 'high-priority'
+                  ? allActive.filter(t => t.priority === 'HIGH').sort((a,b) => new Date(a.createdAt||0) - new Date(b.createdAt||0))
+                  : allActive
+                const done       = todoItems.filter(t => t.completed)
                 const pageActive = active.slice(todoPage * TODO_PAGE_SIZE, (todoPage + 1) * TODO_PAGE_SIZE)
                 return (
                 <div style={{ display:'flex', flexDirection:'column', gap:2 }}>
                   {/* Active items */}
                   {active.length === 0 && <div style={{ fontSize:12, color:'var(--text-tertiary)', padding:'8px 0' }}>All caught up!</div>}
-                  {pageActive.map(item => (
+                  {pageActive.map(item => {
+                    const isHPItem   = item.priority === 'HIGH'
+                    const overdue48  = isHPItem && item.createdAt &&
+                      (Date.now() - new Date(item.createdAt).getTime() > 48 * 60 * 60 * 1000)
+                    return (
                     <div key={item.id}
                       onClick={() => item.hubspotUrl && window.open(item.hubspotUrl, '_blank', 'noopener,noreferrer')}
-                      style={{ display:'flex', alignItems:'center', gap:8, padding:'6px 4px', borderRadius:'var(--radius)', background:'transparent', cursor: item.hubspotUrl ? 'pointer' : 'default' }}
-                      onMouseEnter={e => { e.currentTarget.style.background='var(--bg-secondary)' }}
-                      onMouseLeave={e => { e.currentTarget.style.background='transparent' }}>
+                      style={{ display:'flex', alignItems:'flex-start', gap:8, padding:'8px 6px',
+                        borderRadius:'var(--radius)',
+                        background: isHPItem ? 'rgba(217,119,6,.05)' : 'transparent',
+                        border: overdue48 ? '1.5px solid var(--red)' : isHPItem ? '1px solid rgba(217,119,6,.25)' : '1px solid transparent',
+                        marginBottom: isHPItem ? 4 : 0,
+                        cursor: item.hubspotUrl ? 'pointer' : 'default' }}
+                      onMouseEnter={e => { if (!isHPItem) e.currentTarget.style.background='var(--bg-secondary)' }}
+                      onMouseLeave={e => { if (!isHPItem) e.currentTarget.style.background='transparent' }}>
                       <input type="checkbox" checked={false} onChange={e => { e.stopPropagation(); toggleTodo(item.id, true) }}
-                        style={{ flexShrink:0, cursor:'pointer', accentColor:'var(--accent)', width:15, height:15 }} />
+                        style={{ flexShrink:0, cursor:'pointer', accentColor: isHPItem ? '#D97706' : 'var(--accent)', width:15, height:15, marginTop:2 }} />
                       <div style={{ flex:1, minWidth:0 }}>
+                        <div style={{ display:'flex', alignItems:'center', gap:6, marginBottom:2 }}>
+                          {isHPItem && (
+                            <span style={{ fontSize:9, fontWeight:700, background: overdue48 ? 'var(--red)' : '#D97706',
+                              color:'#fff', borderRadius:3, padding:'1px 5px', letterSpacing:'.04em',
+                              textTransform:'uppercase', flexShrink:0 }}>
+                              {overdue48 ? 'OVERDUE' : 'HIGH PRIORITY'}
+                            </span>
+                          )}
+                        </div>
                         <div style={{ fontSize:13, color:'var(--text)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
                           {item.text}
                         </div>
@@ -1379,7 +1515,15 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                             {item.subtext}
                           </div>
                         )}
-                        <div style={{ display:'flex', gap:8, marginTop:2, flexWrap:'wrap' }}>
+                        {/* History log for updated HP items */}
+                        {isHPItem && item.history?.length > 0 && (
+                          <div style={{ marginTop:6, paddingLeft:8, borderLeft:'2px solid rgba(217,119,6,.3)' }}>
+                            {item.history.map((h, hi) => (
+                              <div key={hi} style={{ fontSize:10, color:'var(--text-tertiary)', marginBottom:2 }}>{h}</div>
+                            ))}
+                          </div>
+                        )}
+                        <div style={{ display:'flex', gap:8, marginTop:3, flexWrap:'wrap' }}>
                           {item.createdAt && (
                             <span style={{ fontSize:10, color:'var(--text-tertiary)' }}>
                               Added {new Date(item.createdAt).toLocaleString('en-US', { month:'short', day:'numeric', hour:'numeric', minute:'2-digit' })}
@@ -1411,7 +1555,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                         )}
                       </div>
                     </div>
-                  ))}
+                  )})}
 
                   {/* Pager for active items */}
                   {active.length > TODO_PAGE_SIZE && (
@@ -1733,8 +1877,37 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                     )
                   }
 
+                  const isHP      = isHighPriority(s)
+                  const autoHP    = autoIsHP(s)
+                  const rowBg     = isHP ? 'rgba(217,119,6,.07)' : 'transparent'
+                  const rowBorder = isHP ? '1px solid rgba(217,119,6,.35)' : (!isLast ? '1px solid var(--border)' : 'none')
+
                   return (
-                    <div key={i} style={{ padding:'11px 0', borderBottom: !isLast ? '1px solid var(--border)' : 'none' }}>
+                    <div key={i} style={{ padding:'11px 10px', marginBottom: isHP ? 4 : 0,
+                      borderRadius: isHP ? 'var(--radius)' : 0,
+                      background: rowBg,
+                      border: rowBorder }}>
+                      {/* Gold Target checkbox row */}
+                      {s.contactId && (
+                        <div style={{ display:'flex', alignItems:'center', gap:6, marginBottom:6 }}>
+                          <input type="checkbox" checked={isHP}
+                            onChange={e => { e.stopPropagation(); toggleHpOverride(s.contactId, isHP) }}
+                            style={{ cursor:'pointer', accentColor:'#D97706', width:13, height:13, flexShrink:0 }} />
+                          <span style={{ fontSize:10, fontWeight:600, color: isHP ? '#D97706' : 'var(--text-tertiary)',
+                            letterSpacing:'.04em', textTransform:'uppercase' }}>
+                            Gold Target
+                          </span>
+                          {isHP && (
+                            <span style={{ fontSize:9, fontWeight:700, background:'#D97706', color:'#fff',
+                              borderRadius:3, padding:'1px 6px', letterSpacing:'.04em', textTransform:'uppercase' }}>
+                              High Priority
+                            </span>
+                          )}
+                          {!autoHP && isHP && (
+                            <span style={{ fontSize:9, color:'var(--text-tertiary)', fontStyle:'italic' }}>manual</span>
+                          )}
+                        </div>
+                      )}
                       <div style={{ display:'flex', gap:10 }}>
 
                         {/* Icon */}
