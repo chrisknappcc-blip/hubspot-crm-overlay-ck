@@ -1020,13 +1020,17 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
   useEffect(() => { fetchTodos(); syncTodos() }, [fetchTodos, syncTodos])
 
   // ── Auto-create / update High Priority To-Dos from Gold Target signals ──────
+  // todoItemsRef: snapshot so the HP effect doesn't re-fire every time a todo is added
+  const todoItemsRef = useRef([])
+  useEffect(() => { todoItemsRef.current = todoItems }, [todoItems])
+
   const hpProcessed = useRef(new Set())
   useEffect(() => {
-    if (!signals.length || todoLoading) return
+    if (!signals.length) return
     signals.forEach(signal => {
       if (!signal.contactId || !isHighPriority(signal)) return
       if (hpProcessed.current.has(signal.contactId)) return
-      hpProcessed.current.add(signal.contactId)
+      hpProcessed.current.add(signal.contactId)  // mark BEFORE async work
 
       const signalType  = signal.score >= 100 ? 'replied' : signal.score >= 60 ? 'clicked' : 'opened'
       const name        = signal.contact?.name || signal.recipientEmail || 'Contact'
@@ -1038,22 +1042,27 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
       const subtext     = [signal.contact?.company, signal.contact?.title].filter(Boolean).join(' · ')
       const ts          = new Date().toLocaleString('en-US', { month:'short', day:'numeric', hour:'numeric', minute:'2-digit' })
 
-      const existing = todoItems.find(t =>
+      const existing = todoItemsRef.current.find(t =>
         t.contactId === signal.contactId && t.priority === 'HIGH' && !t.completed
       )
       if (existing) {
-        const history = [...(existing.history || []), `${ts} — ${taskText}`]
-        updateTodoItem(existing.id, { text: taskText, history })
+        // Only append history if this exact text isn't already recorded
+        const alreadyLogged = (existing.history || []).some(h => h.includes(taskText)) || existing.text === taskText
+        if (!alreadyLogged) {
+          const history = [...(existing.history || []), `${ts} — ${taskText}`]
+          updateTodoItem(existing.id, { text: taskText, history })
+        }
       } else {
         addTodoItem(taskText, {
-          priority:  'HIGH',
-          contactId: signal.contactId,
-          type:      'high-priority',
+          priority:     'HIGH',
+          contactId:    signal.contactId,
+          contactName:  name,
+          type:         'high-priority',
           subtext,
         })
       }
     })
-  }, [signals, todoLoading, todoItems, isHighPriority, addTodoItem, updateTodoItem])
+  }, [signals, isHighPriority])   // intentionally excludes todoItems — snapshot via ref
   // Stagger all fetches to avoid rate limit storm on filter change or mount.
   // Signals (fetchData) fires immediately ~2s, tasks at 1s, gold at 3s, activity at 5s, content at 4s.
   useEffect(() => {
@@ -1486,14 +1495,23 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                   })
                   const merged = Object.values(byContact).map(group => {
                     // Lead = HP item if any, else most recent
-                    const lead     = group.find(i => i.priority === 'HIGH') ||
-                                     group.sort((a,b) => new Date(b.createdAt||0) - new Date(a.createdAt||0))[0]
+                    const sorted   = [...group].sort((a,b) => new Date(b.createdAt||0) - new Date(a.createdAt||0))
+                    const lead     = group.find(i => i.priority === 'HIGH') || sorted[0]
                     const isHP     = group.some(i => i.priority === 'HIGH')
-                    const reasons  = group.map(i => ({ text: i.text, type: i.type, createdAt: i.createdAt }))
+                    // Deduplicate reasons by text — same signal text can appear if effect fired multiple times
+                    const seen     = new Set()
+                    const reasons  = group
+                      .map(i => ({ text: i.text, type: i.type, createdAt: i.createdAt }))
+                      .filter(r => { if (seen.has(r.text)) return false; seen.add(r.text); return true })
                     const earliest = group.reduce((min, i) =>
                       !min || new Date(i.createdAt||0) < new Date(min||0) ? i.createdAt : min, null)
+                    // Resolve display name: contactName field > parse from text > fallback
+                    const contactName = lead.contactName ||
+                      group.find(i => i.contactName)?.contactName ||
+                      (lead.text?.match(/(?:Reply to|Follow up — )([^—]+?)(?:\s+(?:responded|opened|clicked))/) || [])[1]?.trim() ||
+                      null
                     return { ...lead, _merged: group, _reasons: reasons, _earliest: earliest,
-                      priority: isHP ? 'HIGH' : lead.priority }
+                      priority: isHP ? 'HIGH' : lead.priority, _contactName: contactName }
                   })
                   // Sort: HP first, then by most-recent activity
                   merged.sort((a,b) => {
@@ -1540,10 +1558,17 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                             </span>
                           )}
                         </div>
-                        {/* Name / title — use subtext as the person identifier */}
+                        {/* Person name — prominent header */}
+                        <div style={{ fontSize:13, fontWeight:700, color:'var(--text)',
+                          overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', marginBottom:2 }}>
+                          {item._contactName || item.contactName ||
+                            (item.text?.match(/(?:Reply to|Follow up — )([^—]+?)(?:\s+(?:responded|opened|clicked))/)||[])[1]?.trim() ||
+                            item.text}
+                        </div>
+                        {/* Company · Title subtitle */}
                         {item.subtext && (
-                          <div style={{ fontSize:12, fontWeight:600, color:'var(--text)',
-                            overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', marginBottom:4 }}>
+                          <div style={{ fontSize:11, color:'var(--text-tertiary)',
+                            overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', marginBottom:6 }}>
                             {item.subtext}
                           </div>
                         )}
