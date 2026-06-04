@@ -1673,14 +1673,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                       <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between',
                         marginTop:8, paddingTop:8, borderTop:'1px solid var(--border)',
                         fontSize:11, color:'var(--text-tertiary)' }}>
-                        <span>
-                          {start}–{end} of {active.length}
-                          {active.length !== todoItems.filter(t=>!t.completed).length &&
-                            <span style={{ marginLeft:4, opacity:.7 }}>
-                              ({todoItems.filter(t=>!t.completed).length} tasks)
-                            </span>
-                          }
-                        </span>
+                        <span>{start}–{end} of {active.length}</span>
                         {totalPages > 1 && (
                           <div style={{ display:'flex', gap:6 }}>
                             <button onClick={() => setTodoPage(p => Math.max(0, p - 1))}
