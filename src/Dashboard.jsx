@@ -503,7 +503,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
   // ── To-Do list state ────────────────────────────────────────────────────────
   const [todoItems, setTodoItems]     = useState([])
   const [todoPage, setTodoPage]       = useState(0)
-  const TODO_PAGE_SIZE = 10
+  const TODO_PAGE_SIZE = 5
   const [todoLoading, setTodoLoading] = useState(false)
   const [todoInput, setTodoInput]     = useState('')
   const [todoDueDate, setTodoDueDate] = useState('')
@@ -1656,24 +1656,9 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                     </div>
                   )})}
 
-                  {/* Pager for active items */}
-                  {active.length > TODO_PAGE_SIZE && (
-                    <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'8px 4px 4px', borderTop:'1px solid var(--border)', marginTop:4 }}>
-                      <button onClick={() => setTodoPage(p => Math.max(0, p-1))} disabled={todoPage === 0}
-                        style={{ fontSize:11, color: todoPage===0?'var(--text-tertiary)':'var(--accent)', background:'none', border:'none', cursor: todoPage===0?'default':'pointer', padding:0 }}>
-                        ← Prev
-                      </button>
-                      <span style={{ fontSize:11, color:'var(--text-tertiary)' }}>
-                        {todoPage * TODO_PAGE_SIZE + 1}–{Math.min((todoPage+1) * TODO_PAGE_SIZE, active.length)} of {active.length}
-                      </span>
-                      <button onClick={() => setTodoPage(p => p+1)} disabled={(todoPage+1)*TODO_PAGE_SIZE >= active.length}
-                        style={{ fontSize:11, color:(todoPage+1)*TODO_PAGE_SIZE>=active.length?'var(--text-tertiary)':'var(--accent)', background:'none', border:'none', cursor:(todoPage+1)*TODO_PAGE_SIZE>=active.length?'default':'pointer', padding:0 }}>
-                        Next →
-                      </button>
-                    </div>
-                  )}
+                  <Pager page={todoPage} total={active.length} pageSize={TODO_PAGE_SIZE} onChange={setTodoPage} />
 
-                  {/* Completed items with strikethrough */}
+                                    {/* Completed items with strikethrough */}
                   {done.length > 0 && (
                     <>
                       <div style={{ fontSize:10, fontWeight:600, textTransform:'uppercase', letterSpacing:'.05em', color:'var(--text-tertiary)', padding:'8px 4px 4px', marginTop:4, borderTop:'1px solid var(--border)' }}>
