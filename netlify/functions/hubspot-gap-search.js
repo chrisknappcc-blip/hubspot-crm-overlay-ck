@@ -321,17 +321,35 @@ Role Keywords: ${keywords}
 Organization Website: ${domainStr}
 
 ## STEP 1: CHECK EXISTING CONTACTS FIRST — NO WEB SEARCH
-Review the existing contacts list above. Does any contact's title FUNCTIONALLY cover the ${persona} role?
-- "VP Ambulatory Chief Medical Officer" covers Ambulatory/Urgent Care
-- "Chief Nursing Executive" covers Nursing Officer
-- "EVP & CFO" covers Finance
-If YES → return that person immediately with confidence: "existing_crm_contact". Do NOT call web_search.
+Match on FUNCTION, not exact title. A title covers this persona if the person's scope clearly encompasses this domain.
+
+SPECIFIC FUNCTIONAL MAPPINGS — these always count as a match:
+- Title contains "Ambulatory", "Urgent Care", or "Outpatient" → Ambulatory/Urgent Care
+- Title contains "Chief Nursing", "CNO", "CNE", or "Patient Care Services" → Nursing Officer
+- Title contains "CFO", "Chief Financial", or "Revenue Cycle" → Finance
+- Title contains "COO", "Chief Operating", or "Hospital Operations" → Operating Officer
+- Title contains "CMO", "Chief Medical Officer", or "Medical Affairs" (not CMIO) → Medical Officer
+- Title contains "CMIO", "Medical Informatics", or "Clinical Informatics" → Medical (CMIO role)
+- Title contains "Quality", "Patient Safety", or "Clinical Excellence" → Quality Officer
+- Title contains "Chief Clinical Officer", "CCO", or "EVP Clinical Affairs" → Chief Clinical Officer
+- Title contains "Chief Physician", "CPE", or "Physician Enterprise" → Physician Executive
+- Title contains "Population Health", "Care Management", or "Value-Based" → Population Health or Value Based Care
+- Title contains "Patient Experience", "Service Excellence", or "CXO" → Patient Experience
+- Title contains "Case Management", "Care Coordination", or "Care Transitions" → Case Management
+- Title contains "Chief Strategy", "Strategic Planning", or "CSO" → Strategy
+- Title contains "Innovation", "Digital Transformation", or "CINO" → Innovation
+- Title contains "Clinical Operations", "Clinical Services", "Acute Operations", or "Ambulatory Operations" → Clinical Operations
+- VP/SVP/Director/President of ANY specific clinical service (Cardiology, Oncology, Neurosciences, Orthopedics, Heart, Vascular, Cancer, Spine, Surgical, Trauma, Behavioral Health) → Service Line
+- Title contains "Medical Group", "Physician Group", or "Faculty Practice" → Medical Group
+
+If any existing contact matches → return them with confidence: "existing_crm_contact". Do NOT call web_search.
+If NO existing contact matches → proceed to STEP 2.
 
 ## STEP 2: ONLY IF NOT FOUND IN EXISTING CONTACTS — SEARCH THE WEB
 Use a MAXIMUM of 2-3 web searches total. Do not search more than 3 times.
-1. Search: "${companyName}" "${(definition?.titles||[])[0]||persona}" leadership 2024 OR 2025
-2. Search: site:${domain || companyName.split(' ')[0].toLowerCase()+'.org'} leadership team
-3. ONLY if needed: "${companyName}" "${keywords.split(' ').slice(0,2).join(' ')}" site:linkedin.com
+1. Search: "${companyName}" "${(definition?.titles||[])[0]||persona}" 2024 OR 2025
+2. Search: "${companyName}" ${keywords.split(',').slice(0,3).join(' ')} leadership
+3. ONLY if needed: "${companyName}" "${persona}" site:linkedin.com
 
 STOP searching as soon as you find a strong match. Do not run all 3 if search 1 finds someone.
 Only use sources from 2022 or later.
