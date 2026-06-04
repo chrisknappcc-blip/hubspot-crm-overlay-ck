@@ -298,15 +298,14 @@ function preCheckCRMContact(persona, existingContacts) {
     "Medical Officer":         ["\bCMO\b", "Chief Medical Officer", "Medical Affairs", "Medical Staff"],
     "Nursing Officer":         ["\bCNO\b", "\bCNE\b", "Chief Nursing", "Patient Care Services", "VP Nursing", "SVP Nursing"],
     "Operating Officer":       ["\bCOO\b", "Chief Operating", "Hospital Operations",
-                                "Acute & Ambulatory Operations", "Acute and Ambulatory Operations",
-                                "Operations President", "President.*Operations"],
+                                "Acute & Ambulatory Operations", "Acute and Ambulatory Operations"],
     "Patient Experience":      ["Patient Experience", "Service Excellence", "\bCXO\b"],
     "Physician Executive":     ["Chief Physician", "\bCPE\b", "Physician Enterprise", "Physician Integration"],
     "Population Health":       ["Population Health", "Value-Based Care", "Value Based Care"],
     "Quality Officer":         ["Quality", "Patient Safety", "Clinical Excellence", "\bCQO\b"],
     "Service Line":            ["Cardiology", "Oncology", "Neurosciences", "Neuroscience", "Orthopedics",
                                 "Heart.*Vascular", "Vascular", "Cancer", "Spine", "Surgical Services",
-                                "Trauma", "Behavioral Health", "Service Line"],
+                                "Trauma", "Service Line"],
     "Strategy":                ["Chief Strategy", "Strategic Planning", "\bCSO\b"],
     "Value Based Care":        ["Value.Based Care", "Value Based Care", "\bACO\b", "\bCVO\b"],
   };
@@ -315,6 +314,8 @@ function preCheckCRMContact(persona, existingContacts) {
   if (!patterns) return null;
 
   for (const contact of existingContacts) {
+    // Skip contacts already assigned to a different persona — don't steal them
+    if (contact.persona && contact.persona !== "unassigned" && contact.persona !== persona) continue;
     const title = contact.title || "";
     for (const kw of patterns) {
       const re = new RegExp(kw, "i");
