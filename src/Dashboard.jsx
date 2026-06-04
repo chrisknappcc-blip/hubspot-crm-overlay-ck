@@ -1677,27 +1677,26 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                           </span>
                         }
                       </span>
-                      {active.length > TODO_PAGE_SIZE && (
-                        <div style={{ display:'flex', gap:6 }}>
-                          <button onClick={() => setTodoPage(p => Math.max(0,p-1))} disabled={todoPage===0}
-                            style={{ fontSize:12, padding:'4px 10px', background:'var(--bg-secondary)',
-                              border:'1px solid var(--border)', borderRadius:'var(--radius)',
-                              cursor:todoPage===0?'not-allowed':'pointer',
-                              color:todoPage===0?'var(--text-tertiary)':'var(--text)',
-                              opacity:todoPage===0?0.5:1 }}>
-                            ← Prev
-                          </button>
-                          <button onClick={() => setTodoPage(p => p+1)}
-                            disabled={(todoPage+1)*TODO_PAGE_SIZE>=active.length}
-                            style={{ fontSize:12, padding:'4px 10px', background:'var(--bg-secondary)',
-                              border:'1px solid var(--border)', borderRadius:'var(--radius)',
-                              cursor:(todoPage+1)*TODO_PAGE_SIZE>=active.length?'not-allowed':'pointer',
-                              color:(todoPage+1)*TODO_PAGE_SIZE>=active.length?'var(--text-tertiary)':'var(--text)',
-                              opacity:(todoPage+1)*TODO_PAGE_SIZE>=active.length?0.5:1 }}>
-                            Next →
-                          </button>
-                        </div>
-                      )}
+                      <div style={{ display:'flex', gap:6 }}>
+                        <button onClick={() => setTodoPage(p => Math.max(0,p-1))}
+                          disabled={todoPage===0}
+                          style={{ fontSize:12, padding:'4px 10px', background:'var(--bg-secondary)',
+                            border:'1px solid var(--border)', borderRadius:'var(--radius)',
+                            cursor:todoPage===0?'not-allowed':'pointer',
+                            color:todoPage===0?'var(--text-tertiary)':'var(--text)',
+                            opacity:todoPage===0?0.5:1 }}>
+                          ← Prev
+                        </button>
+                        <button onClick={() => setTodoPage(p => p+1)}
+                          disabled={(todoPage+1)*TODO_PAGE_SIZE>=active.length}
+                          style={{ fontSize:12, padding:'4px 10px', background:'var(--bg-secondary)',
+                            border:'1px solid var(--border)', borderRadius:'var(--radius)',
+                            cursor:(todoPage+1)*TODO_PAGE_SIZE>=active.length?'not-allowed':'pointer',
+                            color:(todoPage+1)*TODO_PAGE_SIZE>=active.length?'var(--text-tertiary)':'var(--text)',
+                            opacity:(todoPage+1)*TODO_PAGE_SIZE>=active.length?0.5:1 }}>
+                          Next →
+                        </button>
+                      </div>
                     </div>
                   )}
 
