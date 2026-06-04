@@ -73,7 +73,6 @@ const CUSTOM_PROPS = [
   "assigned_bdr",
   "target_account__bdr_led_outreach",
   "territory",
-  "target_persona",           // persona assignment — used for Gold Target detection
 ];
 
 // Standard contact properties always fetched
@@ -309,9 +308,6 @@ function normalizeContact(c) {
     sequenceId:            p.hs_latest_sequence_enrolled      || null,
     sequenceEnrolledDate:  p.hs_latest_sequence_enrolled_date || null,
     inSequence:            p.hs_sequences_is_enrolled === "true",
-    // Gold Target detection fields
-    target_persona:        p.target_persona || "",
-    associatedcompanyid:   p.associatedcompanyid || c.properties?.associatedcompanyid || "",
   };
 }
 
@@ -941,7 +937,7 @@ export const handler = async (event, context) => {
         const now     = Date.now();
         const sinceISO    = new Date(now - days * 24 * 60 * 60 * 1000).toISOString();
         const windowEnd   = new Date(now + days * 24 * 60 * 60 * 1000).toISOString();
-        const overdueFrom = new Date(now - 90  * 24 * 60 * 60 * 1000).toISOString();
+        const overdueFrom = sinceISO; // overdue window matches the days selector — no more stale April tasks
 
         const customFilters = buildCustomFilters(qp); // picks up assigned_bdr, territory etc.
 
@@ -1127,10 +1123,9 @@ export const handler = async (event, context) => {
               ? Object.entries(OWNER_NAME_TO_ID).find(([, id]) => id === String(contactOwnerId))?.[0] || null
               : null;
 
-            // If specific reps are selected, exclude contacts owned by anyone not in the list
-            if (selectedOwnerIds.length > 0 && contactOwnerId && !selectedOwnerIds.includes(String(contactOwnerId))) {
-              return null;
-            }
+            // Note: ownership cross-check removed — filterGroups already scope to the
+            // correct rep via assigned_bdr OR hubspot_owner_id. The double-check was
+            // incorrectly excluding BDR contacts whose hubspot_owner_id is an AE.
 
             const info = normalizeContact(c);
             return {
@@ -1149,14 +1144,18 @@ export const handler = async (event, context) => {
           .sort((a, b) => new Date(b.replyDate) - new Date(a.replyDate));
 
         // ── Section 2: Upcoming sequences (currently enrolled) ────────────────
+        // Sequences: only show contacts enrolled within the selected days window.
+        // Filtering by hs_latest_sequence_enrolled_date >= sinceISO prevents year-old
+        // enrollments from clogging the list and respects the days selector.
         const seqFilterGroups = buildFilterGroups(qp, [
-          { propertyName: "hs_sequences_is_enrolled", operator: "EQ", value: "true" },
+          { propertyName: "hs_sequences_is_enrolled",        operator: "EQ",  value: "true" },
+          { propertyName: "hs_latest_sequence_enrolled_date", operator: "GTE", value: sinceISO },
         ]);
         const sequencesData = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
           filterGroups: seqFilterGroups,
           properties: BASE_CONTACT_PROPS,
-          sorts:  [{ propertyName: "hs_latest_sequence_enrolled_date", direction: "ASCENDING" }],
-          limit:  200,
+          sorts:  [{ propertyName: "hs_latest_sequence_enrolled_date", direction: "DESCENDING" }],
+          limit:  50,
         }).catch(() => ({ results: [] }));
 
         const upcomingSequences = (sequencesData.results || []).map(c => {
@@ -3010,7 +3009,7 @@ export const handler = async (event, context) => {
       if (!todoId) return error(400, "Todo ID required");
       try {
         const body    = JSON.parse(event.body || "{}");
-        const allowed = ["completed","text","subtext","dueDate","history","priority","contactId"];
+        const allowed = ["completed","text","subtext","dueDate"];
         const changes = Object.fromEntries(Object.entries(body).filter(([k]) => allowed.includes(k)));
         const item    = await updateTodo(user.userId, todoId, changes);
         return ok({ item });
