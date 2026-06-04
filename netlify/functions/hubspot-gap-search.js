@@ -314,6 +314,11 @@ function preCheckCRMContact(persona, existingContacts) {
   if (!patterns) return null;
 
   for (const contact of existingContacts) {
+    // If this contact is already assigned to a different persona, skip it.
+    // We don't want to double-count someone already covering another role.
+    // Only skip if persona is explicitly set — unassigned contacts are fair game.
+    const assignedPersona = contact.persona;
+    if (assignedPersona && assignedPersona !== "unassigned" && assignedPersona !== persona) continue;
     const title = contact.title || "";
     for (const kw of patterns) {
       const re = new RegExp(kw, "i");
