@@ -4756,6 +4756,50 @@ export const handler = async (event, context) => {
       }
     }
 
+    // ── Org Intel: lookup company contacts for Contact Intelligence panel ─────────
+    if (method === "GET" && path === "/org-intel-contacts") {
+      try {
+        const orgName = qp.orgName || "";
+        const domain  = qp.domain  || "";
+        if (!orgName) return ok({ contacts: [] });
+
+        // Search HubSpot for the company by name
+        const compSearch = await hsPost(user.userId, "/crm/v3/objects/companies/search", {
+          filterGroups: [{ filters: [{ propertyName: "name", operator: "CONTAINS_TOKEN", value: orgName }] }],
+          properties:   ["name", "domain"],
+          limit:        1,
+        }).catch(() => ({ results: [] }));
+
+        const company = compSearch.results?.[0];
+        if (!company) return ok({ contacts: [], companyFound: false });
+
+        // Get contacts associated with this company
+        const assocData = await hsPost(user.userId, "/crm/v4/associations/companies/contacts/batch/read", {
+          inputs: [{ id: company.id }],
+        }).catch(() => ({ results: [] }));
+
+        const contactIds = (assocData.results?.[0]?.to || []).map(t => String(t.toObjectId)).slice(0, 100);
+        if (contactIds.length === 0) return ok({ contacts: [], companyFound: true, companyName: company.properties?.name });
+
+        const contactData = await hsPost(user.userId, "/crm/v3/objects/contacts/batch/read", {
+          inputs:     contactIds.map(id => ({ id })),
+          properties: ["firstname", "lastname", "jobtitle", "email", "target_persona"],
+        }).catch(() => ({ results: [] }));
+
+        const contacts = (contactData.results || []).map(c => ({
+          id:            c.id,
+          name:          [c.properties?.firstname, c.properties?.lastname].filter(Boolean).join(" "),
+          title:         c.properties?.jobtitle  || "",
+          email:         c.properties?.email     || "",
+          target_persona: c.properties?.target_persona || "",
+        })).filter(c => c.name);
+
+        return ok({ contacts, companyFound: true, companyName: company.properties?.name, companyId: company.id });
+      } catch (err) {
+        return ok({ contacts: [], error: err.message });
+      }
+    }
+
     // ── Gold Account Persona Gaps ────────────────────────────────────────────────
     // GET /hubspot/gold-gaps?companyId=123       — single account
     // GET /hubspot/gold-gaps?batch=true          — all Gold accounts
