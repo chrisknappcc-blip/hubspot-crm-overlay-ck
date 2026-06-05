@@ -447,6 +447,8 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
     return { running:false, done:false, updated:0, skipped:0, total:0, progress:'' }
   })
   const [adminOpen, setAdminOpen]           = useState(false)
+  const [previewData, setPreviewData]       = useState(null)   // dry run results
+  const [previewLoading, setPreviewLoading] = useState(false)
   const saveRepSyncState = (s) => {
     setRepSyncState(s)
     try { sessionStorage.setItem('repSyncState', JSON.stringify(s)) } catch {}
@@ -489,6 +491,23 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
       saveRepSyncState({ running:false, done:false, updated:totalUpdated, skipped:totalSkipped, total:grandTotal, progress:`Error: ${e.message}` })
     }
   }
+  const runDryRun = async () => {
+    setPreviewLoading(true)
+    setPreviewData(null)
+    try {
+      const res = await safeFetch(`/api/hubspot/sync-primary-rep`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ batchStart: 0, batchSize: 50, fullCrm: false, dryRun: true }),
+      })
+      setPreviewData(res)
+    } catch(e) {
+      setPreviewData({ error: e.message })
+    } finally {
+      setPreviewLoading(false)
+    }
+  }
+
   const [syncMode, setSyncMode]             = useState(() => {
     try { return sessionStorage.getItem('syncMode') || 'gold' } catch { return 'gold' }
   })
@@ -503,18 +522,11 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
   // ── To-Do list state ────────────────────────────────────────────────────────
   const [todoItems, setTodoItems]     = useState([])
   const [todoPage, setTodoPage]       = useState(0)
-  const TODO_PAGE_SIZE = 5
+  const TODO_PAGE_SIZE = 10
   const [todoLoading, setTodoLoading] = useState(false)
   const [todoInput, setTodoInput]     = useState('')
   const [todoDueDate, setTodoDueDate] = useState('')
   const [todoSyncing, setTodoSyncing] = useState(false)
-  const [todoTab,    setTodoTab]     = useState('high-priority')
-  const [hpOverrides, setHpOverrides] = useState(() => {
-    try { return JSON.parse(localStorage.getItem('cipher_hp_overrides') || '{}') }
-    catch { return {} }
-  })
-  const [outlookData, setOutlookData]       = useState({ connected: false, emails: {} })
-  const [outlookLoading, setOutlookLoading] = useState(false)
 
   const fetchTodos = useCallback(async () => {
     setTodoLoading(true)
@@ -571,17 +583,6 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
     } catch (e) { console.error('[todo/toggle]', e) }
   }, [])
 
-  const updateTodoItem = useCallback(async (id, changes) => {
-    try {
-      const data = await safeFetch(`/api/hubspot/todo/${id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(changes),
-      })
-      if (data?.item) setTodoItems(prev => prev.map(t => t.id === id ? { ...t, ...data.item } : t))
-    } catch (e) { console.error('[todo/update]', e) }
-  }, [])
-
   const deleteTodoItem = useCallback(async (id) => {
     setTodoItems(prev => prev.filter(t => t.id !== id))
     try {
@@ -627,7 +628,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
     }
   }, [todoItems])
   const [taskDays, setTaskDays]       = useState('14')
-  const [taskSection, setTaskSection] = useState('high-priority')
+  const [taskSection, setTaskSection] = useState('replies')
   const [taskLoading, setTaskLoading] = useState(false)
 
   // Gold accounts
@@ -644,38 +645,6 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
   const [gapBatchProgress, setGapBatchProgress] = useState('')
   const [expandedGaps, setExpandedGaps]   = useState({}) // keyed by companyId
   const [goldSelectedAccount, setGoldSelectedAccount] = useState(null)
-
-  // ── Gold Target / High Priority helpers ────────────────────────────────────
-  const goldCompanyIds = useMemo(
-    () => new Set((goldAccounts || []).map(a => a.id).filter(Boolean)),
-    [goldAccounts]
-  )
-  // autoHP: contact has a persona assigned AND is at a Gold account
-  const autoIsHP = useCallback((signal) => {
-    if (!signal?.contactId) return false
-    return !!(signal.contact?.target_persona) &&
-           goldCompanyIds.has(signal.contact?.associatedcompanyid)
-  }, [goldCompanyIds])
-  // isHighPriority: manual override takes precedence, else auto-detect
-  const isHighPriority = useCallback((signal) => {
-    if (!signal?.contactId) return false
-    const override = hpOverrides[signal.contactId]
-    if (override !== undefined) return override
-    return autoIsHP(signal)
-  }, [hpOverrides, autoIsHP])
-  // Toggle override: if currently auto, force the opposite; if overridden, clear back to auto
-  const toggleHpOverride = useCallback((contactId, currentValue) => {
-    setHpOverrides(prev => {
-      const next = { ...prev }
-      if (prev[contactId] !== undefined) {
-        delete next[contactId]  // clear override → back to auto
-      } else {
-        next[contactId] = !currentValue  // override = flip from current
-      }
-      try { localStorage.setItem('cipher_hp_overrides', JSON.stringify(next)) } catch {}
-      return next
-    })
-  }, [])
 
   // ── Persisted report filter state ─────────────────────────────────────────
   // Lifted up to Dashboard so state survives tab switches (ReportsTab unmounts/remounts)
@@ -1020,80 +989,6 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
 
   useEffect(() => { fetchData() }, [fetchData])
   useEffect(() => { fetchTodos(); syncTodos() }, [fetchTodos, syncTodos])
-
-  // ── Load Outlook sent emails for sentAt resolution ────────────────────────
-  useEffect(() => {
-    if (!user?.id) return
-    setOutlookLoading(true)
-    safeFetch(`/api/outlook-emails?userId=${user.id}&days=30`)
-      .then(data => { if (data) setOutlookData(data) })
-      .catch(e => console.error('[outlook] load failed:', e.message))
-      .finally(() => setOutlookLoading(false))
-
-    // Check for ?outlook_connected=1 or ?outlook_error=... in URL
-    const params = new URLSearchParams(window.location.search)
-    if (params.has('outlook_connected')) {
-      window.history.replaceState({}, '', window.location.pathname)
-    }
-    if (params.has('outlook_error')) {
-      console.error('[outlook] OAuth error:', params.get('outlook_error'))
-      window.history.replaceState({}, '', window.location.pathname)
-    }
-  }, [user?.id])
-
-  // ── Auto-create / update High Priority To-Dos from Gold Target signals ──────
-  // todoItemsRef: snapshot so the HP effect doesn't re-fire every time a todo is added
-  const todoItemsRef = useRef([])
-  useEffect(() => { todoItemsRef.current = todoItems }, [todoItems])
-
-  // ownRepName: captured once when filterBdr first resolves to the logged-in user's name.
-  // Used to skip HP todo creation when viewing another rep's signals.
-  const ownRepName = useRef(null)
-  useEffect(() => {
-    if (filterBdr && !ownRepName.current) ownRepName.current = filterBdr
-  }, [filterBdr])
-
-  const hpProcessed = useRef(new Set())
-  useEffect(() => {
-    if (!signals.length) return
-    // Never create HP todos from another rep's signals — they'd land in the wrong todo store
-    if (ownRepName.current && filterBdr && filterBdr !== ownRepName.current) return
-    signals.forEach(signal => {
-      if (!signal.contactId || !isHighPriority(signal)) return
-      if (hpProcessed.current.has(signal.contactId)) return
-      hpProcessed.current.add(signal.contactId)  // mark BEFORE async work
-
-      const signalType  = signal.score >= 100 ? 'replied' : signal.score >= 60 ? 'clicked' : 'opened'
-      const name        = signal.contact?.name || signal.recipientEmail || 'Contact'
-      const taskText    = signalType === 'replied'
-        ? `Reply to ${name} — responded to your email`
-        : signalType === 'clicked'
-        ? `Follow up — ${name} clicked your email, no reply yet`
-        : `Follow up — ${name} opened your email, no reply yet`
-      const subtext     = [signal.contact?.company, signal.contact?.title].filter(Boolean).join(' · ')
-      const ts          = new Date().toLocaleString('en-US', { month:'short', day:'numeric', hour:'numeric', minute:'2-digit' })
-
-      const existing = todoItemsRef.current.find(t =>
-        t.contactId === signal.contactId && t.priority === 'HIGH' && !t.completed
-      )
-      if (existing) {
-        // Only append history if this exact text isn't already recorded
-        const alreadyLogged = (existing.history || []).some(h => h.includes(taskText)) || existing.text === taskText
-        if (!alreadyLogged) {
-          const history = [...(existing.history || []), `${ts} — ${taskText}`]
-          updateTodoItem(existing.id, { text: taskText, history })
-        }
-      } else {
-        addTodoItem(taskText, {
-          priority:     'HIGH',
-          contactId:    signal.contactId,
-          contactName:  name,
-          type:         'high-priority',
-          subtext,
-        })
-      }
-    })
-  }, [signals, isHighPriority, filterBdr])   // filterBdr: re-check when rep switches
   // Stagger all fetches to avoid rate limit storm on filter change or mount.
   // Signals (fetchData) fires immediately ~2s, tasks at 1s, gold at 3s, activity at 5s, content at 4s.
   useEffect(() => {
@@ -1375,7 +1270,15 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                           {repSyncState.total > 0 ? `${Math.round(((repSyncState.updated+repSyncState.skipped)/repSyncState.total)*100)}%` : '…'}
                         </div>
                       )}
-                      <div style={{ display:'flex', gap:6, flexShrink:0 }}>
+                      <div style={{ display:'flex', gap:6, flexShrink:0, flexWrap:'wrap' }}>
+                        <button onClick={runDryRun} disabled={repSyncState.running || previewLoading}
+                          style={{ padding:'6px 10px', background:'none',
+                            border:'1px solid var(--amber, #D97706)',
+                            color: (repSyncState.running || previewLoading) ? 'var(--text-tertiary)' : '#D97706',
+                            borderRadius:'var(--radius)', fontSize:11,
+                            cursor: (repSyncState.running || previewLoading) ? 'not-allowed' : 'pointer' }}>
+                          {previewLoading ? '⟳ Previewing…' : 'Preview (Gold)'}
+                        </button>
                         <button onClick={() => runRepSync(false)} disabled={repSyncState.running}
                           style={{ padding:'6px 10px', background:'none', border:'1px solid var(--border)',
                             color: repSyncState.running ? 'var(--text-tertiary)' : 'var(--text-secondary)',
@@ -1394,6 +1297,80 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                         </button>
                       </div>
                     </div>
+
+                    {/* ── Dry run preview results ── */}
+                    {previewData && !previewData.error && (
+                      <div style={{ marginTop:12, border:'1px solid var(--border)', borderRadius:'var(--radius)',
+                        overflow:'hidden', fontSize:11 }}>
+                        {/* Summary bar */}
+                        <div style={{ padding:'8px 12px', background:'var(--bg-secondary)',
+                          display:'flex', gap:16, flexWrap:'wrap', alignItems:'center',
+                          borderBottom:'1px solid var(--border)' }}>
+                          <span style={{ fontWeight:600 }}>Preview — first 50 Gold contacts</span>
+                          <span style={{ color: previewData.engagementHitRate > 50 ? 'var(--green, #22c55e)' : 'var(--red)' }}>
+                            Engagement data found: {previewData.engagementHitRate}%
+                          </span>
+                          <span style={{ color:'var(--accent)' }}>
+                            Would update: {previewData.wouldChange}
+                          </span>
+                          <span style={{ color:'var(--text-tertiary)' }}>
+                            Unchanged / skipped: {(previewData.preview?.length || 0) - previewData.wouldChange}
+                          </span>
+                          <button onClick={() => setPreviewData(null)}
+                            style={{ marginLeft:'auto', background:'none', border:'none',
+                              color:'var(--text-tertiary)', cursor:'pointer', fontSize:11 }}>
+                            ✕ Close
+                          </button>
+                        </div>
+                        {/* Table */}
+                        <div style={{ overflowX:'auto', maxHeight:340, overflowY:'auto' }}>
+                          <table style={{ width:'100%', borderCollapse:'collapse', fontSize:11 }}>
+                            <thead>
+                              <tr style={{ background:'var(--bg-secondary)', position:'sticky', top:0 }}>
+                                {['Contact','Company','Assigned BDR','Current Rep','Proposed Rep','Last Engagement','Eng. Owner'].map(h => (
+                                  <th key={h} style={{ padding:'6px 10px', textAlign:'left',
+                                    color:'var(--text-tertiary)', fontWeight:500,
+                                    borderBottom:'1px solid var(--border)' }}>{h}</th>
+                                ))}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {(previewData.preview || []).map((row, i) => (
+                                <tr key={row.contactId}
+                                  style={{ background: row.skippedDnc ? 'rgba(239,68,68,.05)'
+                                    : row.wouldChange ? 'rgba(59,130,246,.05)' : 'transparent',
+                                    borderBottom:'1px solid var(--border)' }}>
+                                  <td style={{ padding:'5px 10px', color:'var(--text)' }}>{row.name}</td>
+                                  <td style={{ padding:'5px 10px', color:'var(--text-secondary)' }}>{row.company}</td>
+                                  <td style={{ padding:'5px 10px', color:'var(--text-tertiary)' }}>{row.assignedBdr || '—'}</td>
+                                  <td style={{ padding:'5px 10px', color:'var(--text-tertiary)' }}>{row.currentRep || '—'}</td>
+                                  <td style={{ padding:'5px 10px',
+                                    color: row.wouldChange ? 'var(--accent)' : 'var(--text-tertiary)',
+                                    fontWeight: row.wouldChange ? 600 : 400 }}>
+                                    {row.proposedRep || '—'}
+                                    {row.wouldChange && <span style={{ marginLeft:4, fontSize:9, opacity:.6 }}>↑ change</span>}
+                                  </td>
+                                  <td style={{ padding:'5px 10px', color:'var(--text-tertiary)' }}>
+                                    {row.lastEngagementTs || (row.skippedDnc ? 'DNC/skip' : 'none')}
+                                  </td>
+                                  <td style={{ padding:'5px 10px',
+                                    color: row.lastEngagementExcluded ? 'var(--text-tertiary)' : 'var(--text-secondary)' }}>
+                                    {row.lastEngagementOwner
+                                      ? `${row.lastEngagementOwner}${row.lastEngagementExcluded ? ' (excl.)' : ''}`
+                                      : '—'}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
+                    {previewData?.error && (
+                      <div style={{ marginTop:8, fontSize:11, color:'var(--red)' }}>
+                        Preview error: {previewData.error}
+                      </div>
+                    )}
                 )}
               </div>
             )}
@@ -1420,23 +1397,14 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
 
             {/* ── To-Do Section ── */}
             <Panel style={{ marginBottom:12 }}>
-              <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:6 }}>
+              <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:10 }}>
                 <SectionTitle style={{ margin:0 }}>
                   To-Do
-                  {todoItems.filter(t=>!t.completed).length > 0 && (() => {
-                    // Badge shows merged contact count so it matches what's visible on screen
-                    const seen = new Set(); let merged = 0
-                    todoItems.filter(t=>!t.completed).forEach(t => {
-                      if (t.contactId) { if (!seen.has(t.contactId)) { seen.add(t.contactId); merged++ } }
-                      else merged++
-                    })
-                    return (
-                      <span style={{ marginLeft:8, background:'var(--accent)', color:'#fff', borderRadius:10, padding:'1px 7px', fontSize:10, fontWeight:600 }}
-                        title={`${todoItems.filter(t=>!t.completed).length} tasks across ${merged} contacts`}>
-                        {merged}
-                      </span>
-                    )
-                  })()}
+                  {todoItems.filter(t=>!t.completed).length > 0 && (
+                    <span style={{ marginLeft:8, background:'var(--accent)', color:'#fff', borderRadius:10, padding:'1px 7px', fontSize:10, fontWeight:600 }}>
+                      {todoItems.filter(t=>!t.completed).length}
+                    </span>
+                  )}
                 </SectionTitle>
                 <div style={{ display:'flex', gap:6, alignItems:'center' }}>
                   <button onClick={() => exportTodos('text')} title="Copy recap to clipboard"
@@ -1453,39 +1421,8 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                   </button>
                 </div>
               </div>
-              {/* Tabs */}
-              {(() => {
-                const hpActive = todoItems.filter(t => t.priority === 'HIGH' && !t.completed)
-                const allActive = todoItems.filter(t => !t.completed)
-                return (
-                  <div style={{ display:'flex', borderBottom:'1px solid var(--border)', marginBottom:10 }}>
-                    {[
-                      { key:'high-priority', label:'High Priority', count: hpActive.length, color:'#D97706' },
-                      { key:'all',           label:'All',           count: allActive.length, color:'var(--accent)' },
-                    ].map(tab => (
-                      <button key={tab.key} onClick={() => { setTodoTab(tab.key); setTodoPage(0) }}
-                        style={{ padding:'6px 14px', fontSize:12, fontWeight: todoTab===tab.key ? 600 : 400,
-                          color: todoTab===tab.key ? tab.color : 'var(--text-tertiary)',
-                          background:'none', border:'none',
-                          borderBottom: todoTab===tab.key ? `2px solid ${tab.color}` : '2px solid transparent',
-                          cursor:'pointer', display:'flex', alignItems:'center', gap:5 }}>
-                        {tab.label}
-                        {tab.count > 0 && (
-                          <span style={{ background: todoTab===tab.key ? tab.color : 'var(--bg-secondary)',
-                            color: todoTab===tab.key ? '#fff' : 'var(--text-tertiary)',
-                            borderRadius:10, padding:'1px 6px', fontSize:9, fontWeight:700 }}>
-                            {tab.count}
-                          </span>
-                        )}
-                      </button>
-                    ))}
-                  </div>
-                )
-              })()}
               <div style={{ fontSize:11, color:'var(--text-tertiary)', marginBottom:10 }}>
-                {todoTab === 'high-priority'
-                  ? '🔴 Gold Account contacts flagged for immediate follow-up. Red outline = 48 hrs overdue.'
-                  : '⭐ Gold Account contacts surface first. Meetings show HubSpot-logged only — full calendar sync available once Outlook is connected.'}
+                ⭐ Gold Account contacts surface first. Meetings show HubSpot-logged only — full calendar sync available once Outlook is connected.
               </div>
 
               {/* Add item input */}
@@ -1519,141 +1456,31 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
               )}
 
               {!todoLoading && todoItems.length > 0 && (() => {
-                const allActive  = todoItems.filter(t => !t.completed)
-
-                // ── All tab: merge items for the same contact into one card ──
-                const buildMerged = (items) => {
-                  const byContact = {}
-                  const noContact = []
-                  items.forEach(item => {
-                    if (item.contactId) {
-                      if (!byContact[item.contactId]) byContact[item.contactId] = []
-                      byContact[item.contactId].push(item)
-                    } else {
-                      noContact.push(item)
-                    }
-                  })
-                  const merged = Object.values(byContact).map(group => {
-                    // Lead = HP item if any, else most recent
-                    const sorted   = [...group].sort((a,b) => new Date(b.createdAt||0) - new Date(a.createdAt||0))
-                    const lead     = group.find(i => i.priority === 'HIGH') || sorted[0]
-                    const isHP     = group.some(i => i.priority === 'HIGH')
-                    // Deduplicate reasons by text — same signal text can appear if effect fired multiple times
-                    const seen     = new Set()
-                    const reasons  = group
-                      .map(i => ({ text: i.text, type: i.type, createdAt: i.createdAt }))
-                      .filter(r => { if (seen.has(r.text)) return false; seen.add(r.text); return true })
-                    const earliest = group.reduce((min, i) =>
-                      !min || new Date(i.createdAt||0) < new Date(min||0) ? i.createdAt : min, null)
-                    // Resolve display name: contactName field > parse from text > fallback
-                    const contactName = lead.contactName ||
-                      group.find(i => i.contactName)?.contactName ||
-                      (lead.text?.match(/(?:Reply to|Follow up — )([^—]+?)(?:\s+(?:responded|opened|clicked))/) || [])[1]?.trim() ||
-                      null
-                    return { ...lead, _merged: group, _reasons: reasons, _earliest: earliest,
-                      priority: isHP ? 'HIGH' : lead.priority, _contactName: contactName }
-                  })
-                  // Sort: HP first, then by most-recent activity
-                  merged.sort((a,b) => {
-                    if (a.priority === 'HIGH' && b.priority !== 'HIGH') return -1
-                    if (b.priority === 'HIGH' && a.priority !== 'HIGH') return 1
-                    return new Date(b.createdAt||0) - new Date(a.createdAt||0)
-                  })
-                  return [...merged, ...noContact]
-                }
-
-                const active     = todoTab === 'high-priority'
-                  ? allActive.filter(t => t.priority === 'HIGH').sort((a,b) => new Date(a.createdAt||0) - new Date(b.createdAt||0))
-                  : buildMerged(allActive)
-                const done       = todoItems.filter(t => t.completed)
+                const active    = todoItems.filter(t => !t.completed)
+                const done      = todoItems.filter(t => t.completed)
                 const pageActive = active.slice(todoPage * TODO_PAGE_SIZE, (todoPage + 1) * TODO_PAGE_SIZE)
                 return (
                 <div style={{ display:'flex', flexDirection:'column', gap:2 }}>
                   {/* Active items */}
                   {active.length === 0 && <div style={{ fontSize:12, color:'var(--text-tertiary)', padding:'8px 0' }}>All caught up!</div>}
-                  {pageActive.map(item => {
-                    const isHPItem   = item.priority === 'HIGH'
-                    const overdue48  = isHPItem && item.createdAt &&
-                      (Date.now() - new Date(item.createdAt).getTime() > 48 * 60 * 60 * 1000)
-                    return (
+                  {pageActive.map(item => (
                     <div key={item.id}
                       onClick={() => item.hubspotUrl && window.open(item.hubspotUrl, '_blank', 'noopener,noreferrer')}
-                      style={{ display:'flex', alignItems:'flex-start', gap:8, padding:'8px 6px',
-                        borderRadius:'var(--radius)',
-                        background: isHPItem ? 'rgba(217,119,6,.05)' : 'transparent',
-                        border: overdue48 ? '1.5px solid var(--red)' : isHPItem ? '1px solid rgba(217,119,6,.25)' : '1px solid transparent',
-                        marginBottom: isHPItem ? 4 : 0,
-                        cursor: item.hubspotUrl ? 'pointer' : 'default' }}
-                      onMouseEnter={e => { if (!isHPItem) e.currentTarget.style.background='var(--bg-secondary)' }}
-                      onMouseLeave={e => { if (!isHPItem) e.currentTarget.style.background='transparent' }}>
+                      style={{ display:'flex', alignItems:'center', gap:8, padding:'6px 4px', borderRadius:'var(--radius)', background:'transparent', cursor: item.hubspotUrl ? 'pointer' : 'default' }}
+                      onMouseEnter={e => { e.currentTarget.style.background='var(--bg-secondary)' }}
+                      onMouseLeave={e => { e.currentTarget.style.background='transparent' }}>
                       <input type="checkbox" checked={false} onChange={e => { e.stopPropagation(); toggleTodo(item.id, true) }}
-                        style={{ flexShrink:0, cursor:'pointer', accentColor: isHPItem ? '#D97706' : 'var(--accent)', width:15, height:15, marginTop:2 }} />
+                        style={{ flexShrink:0, cursor:'pointer', accentColor:'var(--accent)', width:15, height:15 }} />
                       <div style={{ flex:1, minWidth:0 }}>
-                        <div style={{ display:'flex', alignItems:'center', gap:6, marginBottom:2 }}>
-                          {isHPItem && (
-                            <span style={{ fontSize:9, fontWeight:700, background: overdue48 ? 'var(--red)' : '#D97706',
-                              color:'#fff', borderRadius:3, padding:'1px 5px', letterSpacing:'.04em',
-                              textTransform:'uppercase', flexShrink:0 }}>
-                              {overdue48 ? 'OVERDUE' : 'HIGH PRIORITY'}
-                            </span>
-                          )}
+                        <div style={{ fontSize:13, color:'var(--text)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                          {item.text}
                         </div>
-                        {/* Person name — prominent header */}
-                        <div style={{ fontSize:13, fontWeight:700, color:'var(--text)',
-                          overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', marginBottom:2 }}>
-                          {item._contactName || item.contactName ||
-                            (item.text?.match(/(?:Reply to|Follow up — )([^—]+?)(?:\s+(?:responded|opened|clicked))/)||[])[1]?.trim() ||
-                            item.text}
-                        </div>
-                        {/* Company · Title subtitle */}
                         {item.subtext && (
-                          <div style={{ fontSize:11, color:'var(--text-tertiary)',
-                            overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', marginBottom:6 }}>
+                          <div style={{ fontSize:11, color:'var(--text-tertiary)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
                             {item.subtext}
                           </div>
                         )}
-
-                        {/* Merged reasons summary OR single task text */}
-                        {item._reasons?.length > 1 ? (
-                          <div style={{ display:'flex', flexDirection:'column', gap:3 }}>
-                            {item._reasons.map((r, ri) => {
-                              const typeColor = r.type === 'reply' ? 'var(--accent)'
-                                : r.type === 'sequence' ? 'var(--amber)'
-                                : r.type === 'high-priority' ? '#D97706'
-                                : 'var(--text-tertiary)'
-                              return (
-                                <div key={ri} style={{ display:'flex', alignItems:'center', gap:6 }}>
-                                  <span style={{ width:6, height:6, borderRadius:'50%',
-                                    background:typeColor, flexShrink:0 }} />
-                                  <span style={{ fontSize:12, color:'var(--text-secondary)',
-                                    overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
-                                    {r.text}
-                                  </span>
-                                  {r.createdAt && (
-                                    <span style={{ fontSize:10, color:'var(--text-tertiary)', flexShrink:0, marginLeft:'auto' }}>
-                                      {new Date(r.createdAt).toLocaleString('en-US', { month:'short', day:'numeric' })}
-                                    </span>
-                                  )}
-                                </div>
-                              )
-                            })}
-                          </div>
-                        ) : (
-                          <div style={{ fontSize:12, color:'var(--text-secondary)',
-                            overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
-                            {item.text}
-                          </div>
-                        )}
-
-                        {/* History log for updated HP items */}
-                        {isHPItem && item.history?.length > 0 && (
-                          <div style={{ marginTop:6, paddingLeft:8, borderLeft:'2px solid rgba(217,119,6,.3)' }}>
-                            {item.history.map((h, hi) => (
-                              <div key={hi} style={{ fontSize:10, color:'var(--text-tertiary)', marginBottom:2 }}>{h}</div>
-                            ))}
-                          </div>
-                        )}
-                        <div style={{ display:'flex', gap:8, marginTop:3, flexWrap:'wrap' }}>
+                        <div style={{ display:'flex', gap:8, marginTop:2, flexWrap:'wrap' }}>
                           {item.createdAt && (
                             <span style={{ fontSize:10, color:'var(--text-tertiary)' }}>
                               Added {new Date(item.createdAt).toLocaleString('en-US', { month:'short', day:'numeric', hour:'numeric', minute:'2-digit' })}
@@ -1685,44 +1512,26 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                         )}
                       </div>
                     </div>
-                  )})}
+                  ))}
 
-                  {active.length > 0 && (() => {
-                    const totalPages = Math.ceil(active.length / TODO_PAGE_SIZE)
-                    const start = todoPage * TODO_PAGE_SIZE + 1
-                    const end   = Math.min((todoPage + 1) * TODO_PAGE_SIZE, active.length)
-                    return (
-                      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between',
-                        marginTop:8, paddingTop:8, borderTop:'1px solid var(--border)',
-                        fontSize:11, color:'var(--text-tertiary)' }}>
-                        <span>{start}–{end} of {active.length}</span>
-                        {totalPages > 1 && (
-                          <div style={{ display:'flex', gap:6 }}>
-                            <button onClick={() => setTodoPage(p => Math.max(0, p - 1))}
-                              disabled={todoPage === 0}
-                              style={{ fontSize:12, padding:'4px 10px', background:'var(--bg-secondary)',
-                                border:'1px solid var(--border)', borderRadius:'var(--radius)',
-                                cursor: todoPage === 0 ? 'default' : 'pointer',
-                                color: todoPage === 0 ? 'var(--text-tertiary)' : 'var(--text)',
-                                opacity: todoPage === 0 ? 0.45 : 1 }}>
-                              ← Prev
-                            </button>
-                            <button onClick={() => setTodoPage(p => p + 1)}
-                              disabled={todoPage >= totalPages - 1}
-                              style={{ fontSize:12, padding:'4px 10px', background:'var(--bg-secondary)',
-                                border:'1px solid var(--border)', borderRadius:'var(--radius)',
-                                cursor: todoPage >= totalPages - 1 ? 'default' : 'pointer',
-                                color: todoPage >= totalPages - 1 ? 'var(--text-tertiary)' : 'var(--text)',
-                                opacity: todoPage >= totalPages - 1 ? 0.45 : 1 }}>
-                              Next →
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    )
-                  })()}
+                  {/* Pager for active items */}
+                  {active.length > TODO_PAGE_SIZE && (
+                    <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'8px 4px 4px', borderTop:'1px solid var(--border)', marginTop:4 }}>
+                      <button onClick={() => setTodoPage(p => Math.max(0, p-1))} disabled={todoPage === 0}
+                        style={{ fontSize:11, color: todoPage===0?'var(--text-tertiary)':'var(--accent)', background:'none', border:'none', cursor: todoPage===0?'default':'pointer', padding:0 }}>
+                        ← Prev
+                      </button>
+                      <span style={{ fontSize:11, color:'var(--text-tertiary)' }}>
+                        {todoPage * TODO_PAGE_SIZE + 1}–{Math.min((todoPage+1) * TODO_PAGE_SIZE, active.length)} of {active.length}
+                      </span>
+                      <button onClick={() => setTodoPage(p => p+1)} disabled={(todoPage+1)*TODO_PAGE_SIZE >= active.length}
+                        style={{ fontSize:11, color:(todoPage+1)*TODO_PAGE_SIZE>=active.length?'var(--text-tertiary)':'var(--accent)', background:'none', border:'none', cursor:(todoPage+1)*TODO_PAGE_SIZE>=active.length?'default':'pointer', padding:0 }}>
+                        Next →
+                      </button>
+                    </div>
+                  )}
 
-                                    {/* Completed items with strikethrough */}
+                  {/* Completed items with strikethrough */}
                   {done.length > 0 && (
                     <>
                       <div style={{ fontSize:10, fontWeight:600, textTransform:'uppercase', letterSpacing:'.05em', color:'var(--text-tertiary)', padding:'8px 4px 4px', marginTop:4, borderTop:'1px solid var(--border)' }}>
@@ -1771,27 +1580,15 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                 {/* Section tabs */}
                 <div style={{ display:'flex', gap:0, marginBottom:12, background:'var(--bg-secondary)', borderRadius:'var(--radius)', padding:3 }}>
                   {[
-                    { key:'high-priority', label:'High Priority', count: todoItems.filter(t => t.priority==='HIGH' && !t.completed).length, amber: true },
-                    { key:'replies',       label:'Replies',       count: taskData.repliesAwaitingResponse.length },
-                    { key:'sequences',     label:'Sequences',     count: taskData.upcomingSequences.length },
-                    { key:'tasks',         label:'Due tasks',     count: taskData.dueTasks.length },
-                  ].map(({ key, label, count, amber }) => (
+                    { key:'replies',   label:'Replies', count: taskData.repliesAwaitingResponse.length },
+                    { key:'sequences', label:'Sequences', count: taskData.upcomingSequences.length },
+                    { key:'tasks',     label:'Due tasks', count: taskData.dueTasks.length },
+                  ].map(({ key, label, count }) => (
                     <button key={key} onClick={() => { setTaskSection(key); setTaskPage(0) }}
-                      style={{ flex:1, fontSize:12, fontWeight: taskSection===key ? 500 : 400,
-                        color: taskSection===key ? (amber ? '#D97706' : 'var(--text)') : 'var(--text-tertiary)',
-                        background: taskSection===key ? 'var(--bg-panel)' : 'transparent',
-                        border:'none', borderRadius:'var(--radius)', padding:'5px 8px', cursor:'pointer',
-                        display:'flex', alignItems:'center', justifyContent:'center', gap:5 }}>
+                      style={{ flex:1, fontSize:12, fontWeight: taskSection===key ? 500 : 400, color: taskSection===key ? 'var(--text)' : 'var(--text-tertiary)', background: taskSection===key ? 'var(--bg-panel)' : 'transparent', border:'none', borderRadius:'var(--radius)', padding:'5px 8px', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', gap:5 }}>
                       {label}
                       {count > 0 && (
-                        <span style={{ fontSize:10, fontWeight:600,
-                          background: taskSection===key
-                            ? (amber ? 'rgba(217,119,6,.15)' : key==='replies' ? 'var(--red-light)' : 'var(--accent-light)')
-                            : 'var(--border)',
-                          color: taskSection===key
-                            ? (amber ? '#D97706' : key==='replies' ? 'var(--red)' : 'var(--accent-text)')
-                            : 'var(--text-tertiary)',
-                          borderRadius:10, padding:'0 5px', minWidth:16, textAlign:'center' }}>
+                        <span style={{ fontSize:10, fontWeight:600, background: taskSection===key ? (key==='replies' ? 'var(--red-light)' : 'var(--accent-light)') : 'var(--border)', color: taskSection===key ? (key==='replies' ? 'var(--red)' : 'var(--accent-text)') : 'var(--text-tertiary)', borderRadius:10, padding:'0 5px', minWidth:16, textAlign:'center' }}>
                           {count}
                         </span>
                       )}
@@ -1800,74 +1597,6 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                 </div>
 
                 {taskLoading && <div style={{ color:'var(--text-tertiary)', fontSize:13 }}>Loading...</div>}
-
-                {/* Section: High Priority */}
-                {!taskLoading && taskSection === 'high-priority' && (() => {
-                  const hpItems = todoItems.filter(t => t.priority === 'HIGH' && !t.completed)
-                    .sort((a,b) => new Date(a.createdAt||0) - new Date(b.createdAt||0))
-                  const hpPage  = taskPage
-                  const paged   = hpItems.slice(hpPage * PAGE_SIZE, (hpPage+1) * PAGE_SIZE)
-                  return (
-                    <div>
-                      {hpItems.length === 0 && (
-                        <div style={{ fontSize:13, color:'var(--text-tertiary)', textAlign:'center', padding:'16px 0' }}>
-                          No high priority items right now.
-                        </div>
-                      )}
-                      {paged.map((item, i) => {
-                        const overdue48 = item.createdAt &&
-                          (Date.now() - new Date(item.createdAt).getTime() > 48 * 60 * 60 * 1000)
-                        return (
-                          <div key={item.id} style={{ padding:'10px 0',
-                            borderBottom: i < paged.length - 1 ? '1px solid var(--border)' : 'none' }}>
-                            <div style={{ display:'flex', alignItems:'flex-start', gap:10 }}>
-                              <input type="checkbox" checked={false}
-                                onChange={e => { e.stopPropagation(); toggleTodo(item.id, true) }}
-                                style={{ flexShrink:0, marginTop:3, cursor:'pointer',
-                                  accentColor:'#D97706', width:15, height:15 }} />
-                              <div style={{ flex:1, minWidth:0,
-                                background: overdue48 ? 'rgba(239,68,68,.05)' : 'rgba(217,119,6,.05)',
-                                border: `1.5px solid ${overdue48 ? 'var(--red)' : 'rgba(217,119,6,.3)'}`,
-                                borderRadius:'var(--radius)', padding:'8px 10px' }}>
-                                <div style={{ display:'flex', alignItems:'center', gap:6, marginBottom:4 }}>
-                                  <span style={{ fontSize:9, fontWeight:700,
-                                    background: overdue48 ? 'var(--red)' : '#D97706',
-                                    color:'#fff', borderRadius:3, padding:'2px 6px',
-                                    letterSpacing:'.04em', textTransform:'uppercase' }}>
-                                    {overdue48 ? 'OVERDUE' : 'HIGH PRIORITY'}
-                                  </span>
-                                  {item.createdAt && (
-                                    <span style={{ fontSize:10, color:'var(--text-tertiary)' }}>
-                                      {new Date(item.createdAt).toLocaleString('en-US', { month:'short', day:'numeric', hour:'numeric', minute:'2-digit' })}
-                                    </span>
-                                  )}
-                                </div>
-                                <div style={{ fontSize:13, fontWeight:500, color:'var(--text)',
-                                  overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
-                                  {item.text}
-                                </div>
-                                {item.subtext && (
-                                  <div style={{ fontSize:11, color:'var(--text-tertiary)', marginTop:2 }}>
-                                    {item.subtext}
-                                  </div>
-                                )}
-                                {item.history?.length > 0 && (
-                                  <div style={{ marginTop:6, paddingLeft:8,
-                                    borderLeft:'2px solid rgba(217,119,6,.3)' }}>
-                                    {item.history.map((h, hi) => (
-                                      <div key={hi} style={{ fontSize:10, color:'var(--text-tertiary)', marginBottom:2 }}>{h}</div>
-                                    ))}
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-                          </div>
-                        )
-                      })}
-                      <Pager page={hpPage} total={hpItems.length} pageSize={PAGE_SIZE} onChange={setTaskPage} />
-                    </div>
-                  )
-                })()}
 
                 {/* Section: Replies awaiting response */}
                 {!taskLoading && taskSection === 'replies' && (
@@ -2035,23 +1764,6 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                   <SectionTitle style={{ margin:0, flexShrink:0 }}>Live signals</SectionTitle>
                   <div style={{ display:'flex', alignItems:'center', gap:6, flex:1, justifyContent:'flex-end' }}>
                     <Select value={signalSort} onChange={setSignalSort} options={SIGNAL_SORT_OPTIONS} />
-                    {/* Outlook connection indicator */}
-                    {!outlookLoading && (
-                      outlookData.connected
-                        ? <span style={{ fontSize:10, color:'var(--text-tertiary)', display:'flex', alignItems:'center', gap:4, flexShrink:0 }}>
-                            <span style={{ width:6, height:6, borderRadius:'50%', background:'#22c55e', display:'inline-block' }}/>
-                            Outlook
-                          </span>
-                        : <button onClick={() => user?.id && (window.location.href = `/api/outlook-auth?userId=${user.id}`)}
-                            title="Connect Outlook to get accurate email send timestamps"
-                            style={{ flexShrink:0, display:'flex', alignItems:'center', gap:5,
-                              background:'var(--bg-secondary)', border:'1px solid var(--border)',
-                              borderRadius:'var(--radius)', padding:'5px 10px', fontSize:11,
-                              fontWeight:500, color:'var(--accent)', cursor:'pointer' }}>
-                            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M2 8l10 6 10-6"/></svg>
-                            Connect Outlook
-                          </button>
-                    )}
                     <button onClick={exportSignalsCSV} title="Export to CSV (bot opens excluded)"
                       style={{ flexShrink:0, display:'flex', alignItems:'center', gap:5, background:'var(--bg-secondary)', border:'1px solid var(--border)', borderRadius:'var(--radius)', padding:'5px 10px', fontSize:11, fontWeight:500, color:'var(--text-secondary)', cursor:'pointer' }}>
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
@@ -2097,22 +1809,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
 
                   const chain     = s.eventChain || []
                   const chainTs   = (type) => chain.find(e => e.type === type)?.timestamp || null
-                  // sentAt: HubSpot field → event chain → Outlook sent items lookup
-                  const _outlookSentAt = (() => {
-                    if (!outlookData.connected) return null
-                    const email = s.contact?.email?.toLowerCase()
-                    if (!email) return null
-                    const sent = outlookData.emails[email]
-                    if (!sent?.length) return null
-                    const activityTs = s.openedAt || s.clickedAt || s.repliedAt || chainTs('OPENED') || chainTs('CLICKED') || chainTs('REPLIED') || s.timestamp
-                    // Find most recent email sent ON OR BEFORE the activity
-                    if (activityTs) {
-                      const activity = new Date(activityTs).getTime()
-                      return sent.find(e => new Date(e.sentAt).getTime() <= activity + 7 * 24 * 60 * 60 * 1000)?.sentAt || null
-                    }
-                    return sent[0]?.sentAt || null
-                  })()
-                  const sentAt    = s.sentAt || chainTs('SENT') || _outlookSentAt || null
+                  const sentAt    = s.sentAt    || chainTs('SENT')    || null
                   const openedAt  = s.openedAt  || chainTs('OPENED')  || (s.eventType === 'OPEN'  ? s.timestamp : null)
                   const clickedAt = s.clickedAt || chainTs('CLICKED') || (s.eventType === 'CLICK' ? s.timestamp : null)
                   const repliedAt = s.repliedAt || chainTs('REPLIED') || null
@@ -2137,16 +1834,8 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                     )
                   }
 
-                  const isHP      = isHighPriority(s)
-                  const autoHP    = autoIsHP(s)
-                  const rowBg     = isHP ? 'rgba(217,119,6,.07)' : 'transparent'
-                  const rowBorder = isHP ? '1px solid rgba(217,119,6,.35)' : (!isLast ? '1px solid var(--border)' : 'none')
-
                   return (
-                    <div key={i} style={{ padding:'11px 10px', marginBottom: isHP ? 4 : 0,
-                      borderRadius: isHP ? 'var(--radius)' : 0,
-                      background: rowBg,
-                      border: rowBorder }}>
+                    <div key={i} style={{ padding:'11px 0', borderBottom: !isLast ? '1px solid var(--border)' : 'none' }}>
                       <div style={{ display:'flex', gap:10 }}>
 
                         {/* Icon */}
@@ -2162,39 +1851,14 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
 
                         <div style={{ flex:1, minWidth:0 }}>
 
-                          {/* Action label row — color coded + Gold Target toggle */}
-                          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:3 }}>
-                            <div style={{ fontSize:11, fontWeight:700, color:accentCol,
-                              textTransform:'uppercase', letterSpacing:'.05em' }}>
-                              {actionLabel}
-                              <span style={{ fontSize:10, fontWeight:500, marginLeft:6, textTransform:'none',
-                                letterSpacing:0, color: s.emailSource === 'sales' ? 'var(--blue)' : 'var(--text-tertiary)' }}>
-                                {s.emailSource === 'sales' ? '1:1' : 'Sequence'}
-                              </span>
-                            </div>
-                            {s.contactId && (
-                              <button
-                                onClick={e => { e.stopPropagation(); toggleHpOverride(s.contactId, isHP) }}
-                                title={isHP ? 'Remove High Priority' : 'Mark as High Priority'}
-                                style={{ display:'flex', alignItems:'center', gap:5, background:'none', border:'none',
-                                  cursor:'pointer', padding:'3px 6px', borderRadius:'var(--radius)',
-                                  color: isHP ? '#D97706' : 'var(--text-tertiary)',
-                                  background: isHP ? 'rgba(217,119,6,.1)' : 'transparent',
-                                  flexShrink:0 }}>
-                                <svg width="14" height="14" viewBox="0 0 24 24"
-                                  fill={isHP ? '#D97706' : 'none'}
-                                  stroke={isHP ? '#D97706' : 'currentColor'}
-                                  strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                  <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
-                                </svg>
-                                <span style={{ fontSize:10, fontWeight:600, letterSpacing:'.04em', textTransform:'uppercase' }}>
-                                  {isHP ? 'High Priority' : 'Gold Target'}
-                                </span>
-                                {!autoHP && isHP && (
-                                  <span style={{ fontSize:9, opacity:.7, fontStyle:'italic' }}>manual</span>
-                                )}
-                              </button>
-                            )}
+                          {/* Action label — color coded */}
+                          <div style={{ fontSize:11, fontWeight:700, color:accentCol,
+                            textTransform:'uppercase', letterSpacing:'.05em', marginBottom:3 }}>
+                            {actionLabel}
+                            <span style={{ fontSize:10, fontWeight:500, marginLeft:6, textTransform:'none',
+                              letterSpacing:0, color: s.emailSource === 'sales' ? 'var(--blue)' : 'var(--text-tertiary)' }}>
+                              {s.emailSource === 'sales' ? '1:1' : 'Sequence'}
+                            </span>
                           </div>
 
                           {/* Name */}
