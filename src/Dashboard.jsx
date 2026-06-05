@@ -852,9 +852,12 @@ function ContactIntelPanel({ user, safeFetch }) {
                           <div style={{ fontSize:10, fontWeight:600, color:'var(--text-tertiary)', letterSpacing:'.08em', marginBottom:8 }}>{group.label}</div>
                           <div style={{ display:'grid', gridTemplateColumns:`repeat(${Math.min(groupPersonas.length, 4)},1fr)`, gap:8 }}>
                             {groupPersonas.map(persona => {
-                              const crmContact = orgResults.existingContacts.find(c =>
-                                c.target_persona?.toLowerCase().includes(persona.toLowerCase()) ||
-                                persona.toLowerCase().includes((c.target_persona||'').toLowerCase().replace(/[^a-z ]/g,'').trim())
+                                    const crmContact = orgResults.existingContacts.find(c => {
+                              if (!c.target_persona?.trim()) return false
+                              const tp = c.target_persona.toLowerCase().trim()
+                              const p  = persona.toLowerCase()
+                              return tp.includes(p) || p.includes(tp)
+                            })
                               )
                               const gapResult = orgResults.personas[persona]
                               return <PersonaCard key={persona} persona={persona} crmContact={crmContact} gapResult={gapResult} />
