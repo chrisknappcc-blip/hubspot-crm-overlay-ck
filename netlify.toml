@@ -10,6 +10,9 @@ NODE_VERSION = "18"
 node_bundler = "esbuild"
 included_files = ["netlify/functions/utils/**"]
 
+[functions."contact-intel"]
+timeout = 26
+
 [[redirects]]
 from = "/api/hubspot/*"
 to = "/.netlify/functions/hubspot/:splat"
