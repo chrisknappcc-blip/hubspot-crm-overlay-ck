@@ -1296,7 +1296,6 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                             : 'Run Full CRM'}
                         </button>
                       </div>
-                    </div>
 
                     {/* ── Dry run preview results ── */}
                     {previewData && !previewData.error && (
