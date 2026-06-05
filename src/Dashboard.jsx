@@ -1370,7 +1370,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                         Preview error: {previewData.error}
                       </div>
                     )}
-                    </div>{/* end sync card */}
+                    </div>
                 )}
               </div>
             )}
