@@ -984,7 +984,6 @@ function ContactIntelPanel({ user, safeFetch }) {
                               const p  = persona.toLowerCase()
                               return tp.includes(p) || p.includes(tp)
                             })
-                              )
                               const gapResult = orgResults.personas[persona]
                               return <PersonaCard key={persona} persona={persona} crmContact={crmContact} gapResult={gapResult} />
                             })}
