@@ -1,17 +1,16 @@
 // ─── Cipher — Contact Intelligence ───────────────────────────────────────────
 // POST /api/contact-intel
-// Body: { name, title, org, domain?, mode: 'individual' }
+// Body: { name?, title?, org, domain? }
+// name OR title is required; org is always required.
 //
-// Researches a specific person using Claude + web_search.
-// Returns a structured profile with REAL data only — no hallucination.
-// Results are cached in Azure Blob for 24 hours.
+// Uses direct Anthropic fetch (no SDK) + web_search to research a person.
+// Results cached in Azure Blob for 24 hours.
 
-import Anthropic        from "@anthropic-ai/sdk";
 import { BlobServiceClient } from "@azure/storage-blob";
 
 const AZURE_ACCOUNT = "carepathiqdata";
 const CONTAINER     = "crm-tokens";
-const CACHE_TTL_MS  = 24 * 60 * 60 * 1000; // 24 hours
+const CACHE_TTL_MS  = 24 * 60 * 60 * 1000;
 
 const CORS = {
   "Access-Control-Allow-Origin":  "*",
@@ -19,7 +18,7 @@ const CORS = {
   "Access-Control-Allow-Headers": "Content-Type, Authorization",
 };
 
-function json(data, status = 200) {
+function jsonResp(data, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
     headers: { ...CORS, "Content-Type": "application/json" },
@@ -50,59 +49,56 @@ async function setBlob(name, data) {
 }
 
 // ── Cache key ─────────────────────────────────────────────────────────────────
-function cacheKey(name, org) {
-  const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 40);
-  return `ci-individual-${slug(name)}-${slug(org)}.json`;
+function cacheKey(name, title, org) {
+  const slug = (s) => (s||'').toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 40);
+  return `ci-${slug(name || title)}-${slug(org)}.json`;
 }
 
-// ── Claude prompt ─────────────────────────────────────────────────────────────
+// ── Prompt ────────────────────────────────────────────────────────────────────
 const SYSTEM = `You are a professional intelligence researcher for a B2B healthcare SaaS sales team (Care Continuity).
-Your job: find REAL, VERIFIED background information on healthcare executives to help a rep write a warm, personalized cold outreach email.
+Find REAL, VERIFIED background information on healthcare executives to help write personalized cold outreach.
 
-STRICT RULES:
-1. Use web_search at least 3 times before responding. Do not guess without searching first.
-2. Career history: ONLY include verified roles with sources. If you cannot confirm a role, do not invent one.
-3. recentContent: ONLY real URLs you found. Never fabricate titles, dates, or URLs.
-4. outreachIntel: This is the most important field. Be SPECIFIC — name a real initiative, award, publication, or priority you found. Generic advice is useless. Reference something the rep could mention in a first email.
-5. If you find little to nothing about the person, set confidence: "low" and return empty arrays rather than inventing content.
-6. Return ONLY valid JSON — no markdown fences, no preamble, no explanation after the JSON.`;
+RULES:
+1. Use web_search at least 3 times. Do not guess without searching.
+2. Career history: ONLY verified roles with sources. No invention.
+3. recentContent: ONLY real URLs you found. Never fabricate.
+4. outreachIntel: SPECIFIC — name a real initiative, award, or publication. Generic = useless.
+5. If little info found, set confidence: "low" and return empty arrays.
+6. Return ONLY valid JSON — no markdown, no preamble, no extra text.`;
 
 function buildPrompt(name, title, org, domain) {
+  const who = name ? `${name}${title ? `, ${title}` : ''}` : title;
   const domainHint = domain ? ` (domain: ${domain})` : "";
-  return `Research this person for a healthcare B2B sales team:
-Name: ${name}
-Title: ${title}
+  return `Research this healthcare executive for a sales team:
+${name ? `Name: ${name}` : ''}
+${title ? `Title: ${title}` : ''}
 Organization: ${org}${domainHint}
 
-Perform 3–5 web searches. Suggested queries:
-1. "${name}" "${org}" — verify their current role
-2. "${name}" press release OR article — find published content
-3. "${name}" "${org}" podcast OR speaker OR award — find engagements
-4. "${org}" "${title}" — cross-check the role if name search is thin
+Search queries to run:
+1. ${name ? `"${name}" "${org}"` : `"${title}" "${org}"`} — verify role
+2. ${name ? `"${name}"` : `"${org}" "${title}"`} press release OR article OR award
+3. ${name ? `"${name}"` : `"${org}" "${title}"`} podcast OR speaker OR conference
 
-Return a single JSON object in this exact shape:
-
+Return this JSON shape exactly:
 {
-  "name": "${name}",
-  "title": "${title}",
+  "name": "${name || '[name from search]'}",
+  "title": "${title || '[title from search]'}",
   "org": "${org}",
   "verifiedRole": true,
   "careerHistory": [
-    { "title": "Chief Medical Officer", "org": "Endeavor Health", "years": "2022–present", "summary": "Leads clinical strategy…" }
+    { "title": "Chief Medical Officer", "org": "Endeavor Health", "years": "2022–present", "summary": "Leads clinical strategy" }
   ],
   "recentContent": [
-    { "type": "press_release", "title": "Endeavor Health names new CMO", "date": "2022-04", "url": "https://…", "summary": "Appointed to lead…" }
+    { "type": "press_release", "title": "...", "date": "2024-03", "url": "https://...", "summary": "..." }
   ],
-  "orgContext": "2–3 sentences about this person's strategic priorities and how they fit into the org.",
-  "outreachIntel": "Specific, concrete talking points for cold outreach. What initiative are they leading? What award or publication can you reference? What challenge in their role maps to Care Continuity's value?",
+  "orgContext": "2–3 sentences about their strategic priorities.",
+  "outreachIntel": "Specific talking point for a cold email — reference a real initiative, award, or publication you found.",
   "confidence": "high",
   "sources": ["url1", "url2"]
 }
 
-Types for recentContent: press_release | article | award | podcast | presentation | other
-Confidence: high (found them clearly) | medium (partial info) | low (barely found them)
-careerHistory: most recent role first. Only include if verified — empty array if not found.
-recentContent: only real URLs you found — empty array if none found.`;
+Types: press_release | article | award | podcast | presentation | other
+Confidence: high | medium | low`;
 }
 
 // ── Parse Claude response ─────────────────────────────────────────────────────
@@ -120,57 +116,61 @@ export const config = { path: "/api/contact-intel" };
 
 export default async function handler(req) {
   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
-  if (req.method !== "POST") return json({ error: "POST only" }, 405);
+  if (req.method !== "POST") return jsonResp({ error: "POST only" }, 405);
 
   const body = await req.json().catch(() => ({}));
-  const { name, title = "", org, domain = "" } = body;
+  const { name = "", title = "", org = "", domain = "" } = body;
 
-  if (!name?.trim() || !org?.trim()) {
-    return json({ error: "name and org are required" }, 400);
+  if ((!name.trim() && !title.trim()) || !org.trim()) {
+    return jsonResp({ error: "At least a title and org are required" }, 400);
   }
 
-  // Serve from cache if fresh
-  const key    = cacheKey(name.trim(), org.trim());
+  // Cache check
+  const key    = cacheKey(name.trim(), title.trim(), org.trim());
   const cached = await getBlob(key);
   if (cached?.profile && cached?.cachedAt) {
     const age = Date.now() - new Date(cached.cachedAt).getTime();
-    if (age < CACHE_TTL_MS) return json({ ...cached, fromCache: true });
+    if (age < CACHE_TTL_MS) return jsonResp({ ...cached, fromCache: true });
   }
 
-  // Call Claude with web_search
-  const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-
-  let profile = null;
-  try {
-    const response = await client.messages.create({
+  // Direct Anthropic API call (no SDK)
+  const apiRes = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type":    "application/json",
+      "x-api-key":       process.env.ANTHROPIC_API_KEY,
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify({
       model:      "claude-haiku-4-5-20251001",
       max_tokens: 3000,
       system:     SYSTEM,
       tools:      [{ type: "web_search_20250305", name: "web_search" }],
       messages:   [{ role: "user", content: buildPrompt(name, title, org, domain) }],
-    });
+    }),
+  });
 
-    // Find the text content block
-    const textBlock = response.content.find(b => b.type === "text");
-    if (textBlock) profile = extractJson(textBlock.text);
-  } catch (e) {
-    console.error("[contact-intel] Claude error:", e.message);
-    return json({ error: "Research failed: " + e.message }, 500);
+  if (!apiRes.ok) {
+    const err = await apiRes.text();
+    console.error("[contact-intel] API error:", apiRes.status, err.slice(0, 200));
+    return jsonResp({ error: `Anthropic API error: ${apiRes.status}` }, 502);
   }
 
+  const apiData = await apiRes.json();
+
+  // Extract the text content block (ignore tool_use blocks)
+  const textBlock = (apiData.content || []).find(b => b.type === "text");
+  if (!textBlock?.text) {
+    return jsonResp({ error: "No text response from model" }, 500);
+  }
+
+  const profile = extractJson(textBlock.text);
   if (!profile) {
-    return json({ error: "Could not parse research results" }, 500);
+    return jsonResp({ error: "Could not parse research results" }, 500);
   }
 
-  const result = {
-    profile,
-    cachedAt:  new Date().toISOString(),
-    fromCache: false,
-  };
+  const result = { profile, cachedAt: new Date().toISOString(), fromCache: false };
+  setBlob(key, result).catch(e => console.error("[contact-intel] cache write:", e.message));
 
-  setBlob(key, result).catch(e =>
-    console.error("[contact-intel] cache write failed:", e.message)
-  );
-
-  return json(result);
+  return jsonResp(result);
 }
