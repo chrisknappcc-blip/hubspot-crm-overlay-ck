@@ -937,7 +937,7 @@ export const handler = async (event, context) => {
         const now     = Date.now();
         const sinceISO    = new Date(now - days * 24 * 60 * 60 * 1000).toISOString();
         const windowEnd   = new Date(now + days * 24 * 60 * 60 * 1000).toISOString();
-        const overdueFrom = sinceISO; // overdue window matches the days selector — no more stale April tasks
+        const overdueFrom = new Date(now - 90  * 24 * 60 * 60 * 1000).toISOString();
 
         const customFilters = buildCustomFilters(qp); // picks up assigned_bdr, territory etc.
 
@@ -975,24 +975,8 @@ export const handler = async (event, context) => {
         ];
         const selectedRepOwnerId = selectedOwnerIds.length === 1 ? selectedOwnerIds[0] : null;
 
-        // Build reply filter groups — BDR mode: only assigned_bdr (NOT hubspot_owner_id).
-        // AE ownership ≠ outreach responsibility. Using owner_id for BDR reps causes AE-owned
-        // contacts (e.g. Matt's accounts) to bleed into the BDR reply queue.
-        // In AE mode (owner_id only, no assigned_bdr): use hubspot_owner_id as normal.
-        const bdrValsForReply   = qp.assigned_bdr ? decodeURIComponent(qp.assigned_bdr).split(",").map(s=>s.trim()).filter(Boolean) : [];
-        const ownerValsForReply = qp.owner_id     ? String(qp.owner_id).split(",").map(s=>s.trim()).filter(Boolean)                 : [];
-        const replyRepGroups = bdrValsForReply.length > 0
-          ? [{ filters: bdrValsForReply.length === 1
-              ? [{ propertyName: "assigned_bdr", operator: "EQ", value: bdrValsForReply[0] }]
-              : [{ propertyName: "assigned_bdr", operator: "IN", values: bdrValsForReply }]
-            }]
-          : ownerValsForReply.length > 0
-          ? [{ filters: ownerValsForReply.length === 1
-              ? [{ propertyName: "hubspot_owner_id", operator: "EQ", value: ownerValsForReply[0] }]
-              : [{ propertyName: "hubspot_owner_id", operator: "IN", values: ownerValsForReply }]
-            }]
-          : buildFilterGroups(qp); // fallback: no explicit params, use default logic
-        const replyFilterGroups = replyRepGroups.flatMap(g => [
+        // Build filter groups for replies -- OR between assigned_bdr and hubspot_owner_id
+        const replyFilterGroups = buildFilterGroups(qp).flatMap(g => [
           { filters: [{ propertyName: "hs_sales_email_last_replied", operator: "GTE", value: sinceISO }, ...g.filters] },
           { filters: [{ propertyName: "hs_email_last_reply_date",    operator: "GTE", value: sinceISO }, ...g.filters] },
         ]);
@@ -1139,9 +1123,10 @@ export const handler = async (event, context) => {
               ? Object.entries(OWNER_NAME_TO_ID).find(([, id]) => id === String(contactOwnerId))?.[0] || null
               : null;
 
-            // Note: ownership cross-check removed — filterGroups already scope to the
-            // correct rep via assigned_bdr OR hubspot_owner_id. The double-check was
-            // incorrectly excluding BDR contacts whose hubspot_owner_id is an AE.
+            // If specific reps are selected, exclude contacts owned by anyone not in the list
+            if (selectedOwnerIds.length > 0 && contactOwnerId && !selectedOwnerIds.includes(String(contactOwnerId))) {
+              return null;
+            }
 
             const info = normalizeContact(c);
             return {
@@ -1160,26 +1145,14 @@ export const handler = async (event, context) => {
           .sort((a, b) => new Date(b.replyDate) - new Date(a.replyDate));
 
         // ── Section 2: Upcoming sequences (currently enrolled) ────────────────
-        // Sequences: show contacts currently enrolled where a sequence email fired in the window.
-        // Anchoring on hs_email_last_send_date (step fire date) not enrollment date —
-        // contacts enrolled 6 weeks ago but stepped last week should appear.
-        // Two OR groups: (1) recent email send, (2) recently enrolled (catches new additions).
-        const seqBaseGroups = buildFilterGroups(qp);
-        const seqFilterGroups = seqBaseGroups.flatMap(g => [
-          { filters: [...g.filters,
-              { propertyName: "hs_sequences_is_enrolled",  operator: "EQ",  value: "true" },
-              { propertyName: "hs_email_last_send_date",   operator: "GTE", value: sinceISO },
-          ]},
-          { filters: [...g.filters,
-              { propertyName: "hs_sequences_is_enrolled",          operator: "EQ",  value: "true" },
-              { propertyName: "hs_latest_sequence_enrolled_date",  operator: "GTE", value: sinceISO },
-          ]},
+        const seqFilterGroups = buildFilterGroups(qp, [
+          { propertyName: "hs_sequences_is_enrolled", operator: "EQ", value: "true" },
         ]);
         const sequencesData = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
           filterGroups: seqFilterGroups,
           properties: BASE_CONTACT_PROPS,
-          sorts:  [{ propertyName: "hs_email_last_send_date", direction: "DESCENDING" }],
-          limit:  50,
+          sorts:  [{ propertyName: "hs_latest_sequence_enrolled_date", direction: "ASCENDING" }],
+          limit:  200,
         }).catch(() => ({ results: [] }));
 
         const upcomingSequences = (sequencesData.results || []).map(c => {
@@ -4459,6 +4432,7 @@ export const handler = async (event, context) => {
         const forceRefresh = body.forceRefresh || false;
         const fullCrm      = body.fullCrm      || false;
         const crmCursor    = body.crmCursor    || null; // pagination cursor for full CRM mode
+        const dryRun       = body.dryRun       || false; // preview mode — no writes to HubSpot
 
         // All reps and their owner IDs
         const BDR_OWNER_IDS = {
@@ -4652,15 +4626,54 @@ export const handler = async (event, context) => {
           }
         }
 
-        // Step 6: Write updates to HubSpot in batch
+        // Step 6: Write updates to HubSpot (skipped in dry run)
         let updated = 0;
+        if (dryRun) {
+          // Build per-contact preview rows for display
+          const previewRows = contacts.map(contact => {
+            const p      = contact.properties || {};
+            const eng    = engagementOwners[contact.id];
+            const update = updates.find(u => u.id === contact.id);
+            const ownerName = eng?.ownerId ? (ALL_OWNER_ID_TO_NAME[eng.ownerId] || `Unknown (${eng.ownerId})`) : null;
+            const excluded  = eng?.ownerId ? EXCLUDED_FROM_PRIMARY.has(eng.ownerId) : false;
+            return {
+              contactId:            contact.id,
+              name:                 [p.firstname, p.lastname].filter(Boolean).join(' ') || '(no name)',
+              company:              p.company || '',
+              assignedBdr:          p.assigned_bdr || null,
+              currentRep:           p.primary_outreach_rep || null,
+              proposedRep:          update?.properties?.primary_outreach_rep || p.primary_outreach_rep || null,
+              wouldChange:          !!update,
+              hasEngagements:       !!(eng?.ownerId),
+              lastEngagementOwner:  ownerName,
+              lastEngagementExcluded: excluded,
+              lastEngagementTs:     eng?.ts ? new Date(eng.ts).toISOString().slice(0,10) : null,
+              skippedDnc:           (p.hs_email_optout==='true' || p.hs_email_optout===true) ||
+                                    ['yes','contract discussion','org yes - but not this market']
+                                      .includes((p.existing_customer||'').toLowerCase()),
+            };
+          });
+
+          const engHits    = previewRows.filter(r => r.hasEngagements).length;
+          const wouldChange = previewRows.filter(r => r.wouldChange).length;
+          console.log(`[sync-primary-rep] DRY RUN: ${wouldChange} would change, ${engHits}/${previewRows.length} had engagement data`);
+
+          return ok({
+            dryRun:          true,
+            done:            true,
+            preview:         previewRows,
+            wouldChange,
+            engagementHitRate: previewRows.length > 0 ? Math.round((engHits/previewRows.length)*100) : 0,
+            updated:         0,
+            skipped,
+            total,
+          });
+        }
+
         if (updates.length > 0) {
-          // HubSpot batch update accepts up to 100 at a time
           for (let i = 0; i < updates.length; i += 100) {
             const chunk = updates.slice(i, i + 100);
-            await hsPost(user.userId, "/crm/v3/objects/contacts/batch/update", {
-              inputs: chunk,
-            });
+            await hsPost(user.userId, "/crm/v3/objects/contacts/batch/update", { inputs: chunk });
             updated += chunk.length;
             if (i + 100 < updates.length) await new Promise(r => setTimeout(r, 200));
           }
