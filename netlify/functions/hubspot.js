@@ -4555,52 +4555,71 @@ export const handler = async (event, context) => {
         // the v3 emails object stores the sending rep correctly.
         await Promise.all(contactsNeedingEngagements.map(async contactId => {
           try {
+            // -- v3 emails search
             const emailData = await hsPost(user.userId, "/crm/v3/objects/emails/search", {
               filterGroups: [{
                 filters: [
-                  { propertyName: "associations.contact", operator: "EQ",  value: contactId },
-                  { propertyName: "hs_email_direction",   operator: "EQ",  value: "EMAIL" },
+                  { propertyName: "associations.contact", operator: "EQ", value: contactId },
                 ]
               }],
-              properties: ["hs_timestamp", "hubspot_owner_id", "hs_email_from_email"],
+              properties: ["hs_timestamp", "hubspot_owner_id", "hs_email_direction", "hs_email_from_email"],
               sorts:       [{ propertyName: "hs_timestamp", direction: "DESCENDING" }],
               limit:       5,
-            }).catch(() => ({ results: [] }));
+            }).catch(e => { console.log(`[sync] v3 emails error for ${contactId}: ${e.message}`); return { results: [] }; });
+
+            // -- v1 engagements as fallback (check ownerId AND metadata.from)
+            const engData = await hsGet(user.userId,
+              `/engagements/v1/engagements/associated/CONTACT/${contactId}/paged`,
+              { limit: 10 }
+            ).catch(() => ({ results: [] }));
+
+            // Log diagnostic for FIRST contact only
+            if (contactId === contactsNeedingEngagements[0]) {
+              console.log(`[sync-diag] contactId=${contactId}`);
+              console.log(`[sync-diag] v3 emails returned: ${emailData.results?.length ?? 0} records`);
+              if (emailData.results?.length) {
+                const first = emailData.results[0];
+                console.log(`[sync-diag] first email: direction=${first.properties?.hs_email_direction} owner=${first.properties?.hubspot_owner_id} from=${first.properties?.hs_email_from_email}`);
+              }
+              console.log(`[sync-diag] v1 engagements returned: ${engData.results?.length ?? 0} records`);
+              if (engData.results?.length) {
+                const first = engData.results[0];
+                console.log(`[sync-diag] first eng: type=${first.engagement?.type} ownerId=${first.engagement?.ownerId} from=${first.metadata?.from}`);
+              }
+            }
 
             let mostRecentTs    = 0;
             let mostRecentOwner = null;
 
+            // Check v3 email objects
             for (const email of (emailData.results || [])) {
+              if (email.properties?.hs_email_direction === "INCOMING_EMAIL") continue;
               const ts      = email.properties?.hs_timestamp
                 ? new Date(email.properties.hs_timestamp).getTime() : 0;
               const ownerId = String(email.properties?.hubspot_owner_id || "");
-              if (ts > mostRecentTs && ownerId) {
-                mostRecentTs    = ts;
-                mostRecentOwner = ownerId;
-              }
+              if (ts > mostRecentTs && ownerId) { mostRecentTs = ts; mostRecentOwner = ownerId; }
             }
 
-            // Also check calls and meetings via v3 CRM if no email owner found
+            // Fallback: v1 engagements — check ownerId and metadata.from
             if (!mostRecentOwner) {
-              for (const objType of ["calls", "meetings"]) {
-                const actData = await hsPost(user.userId, `/crm/v3/objects/${objType}/search`, {
-                  filterGroups: [{ filters: [
-                    { propertyName: "associations.contact", operator: "EQ", value: contactId }
-                  ]}],
-                  properties: ["hs_timestamp", "hubspot_owner_id"],
-                  sorts:      [{ propertyName: "hs_timestamp", direction: "DESCENDING" }],
-                  limit:      3,
-                }).catch(() => ({ results: [] }));
-                for (const act of (actData.results || [])) {
-                  const ts      = act.properties?.hs_timestamp
-                    ? new Date(act.properties.hs_timestamp).getTime() : 0;
-                  const ownerId = String(act.properties?.hubspot_owner_id || "");
-                  if (ts > mostRecentTs && ownerId) {
-                    mostRecentTs    = ts;
-                    mostRecentOwner = ownerId;
-                  }
-                }
-                if (mostRecentOwner) break;
+              const repEmailToOwnerId = Object.fromEntries([
+                ...Object.entries(BDR_OWNER_IDS).map(([name, id]) => {
+                  const emailUser = name.toLowerCase().replace(/\s+/g, '.');
+                  return [`${emailUser}@carecontinuity.com`, id];
+                }),
+                ...Object.entries(AE_OWNER_IDS).map(([name, id]) => {
+                  const emailUser = name.toLowerCase().replace(/\s+/g, '.');
+                  return [`${emailUser}@carecontinuity.com`, id];
+                }),
+              ]);
+              for (const eng of (engData.results || [])) {
+                if (!["EMAIL", "NOTE", "CALL"].includes(eng.engagement?.type)) continue;
+                const ts = eng.engagement?.createdAt || eng.engagement?.timestamp || 0;
+                const ownerId = String(eng.engagement?.ownerId || "");
+                // Try ownerId first, then sender email lookup
+                const fromEmail = (eng.metadata?.from || "").toLowerCase();
+                const resolvedOwner = ownerId || repEmailToOwnerId[fromEmail] || "";
+                if (ts > mostRecentTs && resolvedOwner) { mostRecentTs = ts; mostRecentOwner = resolvedOwner; }
               }
             }
 
