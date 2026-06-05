@@ -476,7 +476,7 @@ function ContactIntelPanel({ user, safeFetch }) {
     const n = (name || indName).trim()
     const t = (title || indTitle).trim()
     const o = (org  || indOrg).trim()
-    if (!n || !o) return
+    if ((!n && !t) || !o) return
     if (!name) { setIndLoading(true); setIndError(null); setIndResult(null) }
     try {
       const data = await safeFetch('/api/contact-intel', {
@@ -735,7 +735,7 @@ function ContactIntelPanel({ user, safeFetch }) {
                 </div>
               ))}
             </div>
-            <button onClick={()=>runIndividualResearch()} disabled={indLoading||!indName.trim()||!indOrg.trim()}
+            <button onClick={()=>runIndividualResearch()} disabled={indLoading||(!indName.trim()&&!indTitle.trim())||!indOrg.trim()}
               style={{ width:'100%', padding:'12px 0', display:'flex', alignItems:'center', justifyContent:'center', gap:8,
                 background: indLoading || !indName.trim() || !indOrg.trim() ? 'var(--bg-secondary)' : 'var(--accent)',
                 color: indLoading || !indName.trim() || !indOrg.trim() ? 'var(--text-tertiary)' : '#000',
