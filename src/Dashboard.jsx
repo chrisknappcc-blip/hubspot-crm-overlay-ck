@@ -416,15 +416,15 @@ function EmailSourcePill({ source }) {
 
 // ─── Main Dashboard ───────────────────────────────────────────────────────────
 // ─── Contact Intelligence Panel ───────────────────────────────────────────────
-const CI_ALL_PERSONAS = [
-  'Access/Patient Access','Ambulatory/Urgent Care','Business Development',
-  'Case Management','Chief Clinical Officer','Clinical Operations',
-  'Emergency Department','Executive/Leadership','Finance','Innovation',
-  'Medical','Medical Group','Medical Officer','Nursing Officer',
-  'Operating Officer','Patient Experience','Physician Executive',
-  'Population Health','Quality Officer','Service Line','Strategy',
-  'Value Based Care',
+// Persona hierarchy map groups — matches Gold Account visual layout
+const CI_MAP_GROUPS = [
+  { label: 'EXECUTIVE',              personas: ['Executive/Leadership','Operating Officer','Chief Clinical Officer'] },
+  { label: 'OFFICERS & VPS',         personas: ['Medical Officer','Nursing Officer','Physician Executive','Finance'] },
+  { label: 'STRATEGY & OPERATIONS',  personas: ['Strategy','Innovation','Business Development','Population Health','Value Based Care','Quality Officer'] },
+  { label: 'CLINICAL & SERVICE',     personas: ['Clinical Operations','Medical Group','Medical','Service Line','Emergency Department','Ambulatory/Urgent Care'] },
+  { label: 'PATIENT-FACING & ACCESS',personas: ['Access/Patient Access','Patient Experience','Case Management'] },
 ]
+const CI_ALL_PERSONAS = CI_MAP_GROUPS.flatMap(g => g.personas)
 const CI_PERSONA_GROUPS = {
   'C-Suite':    ['Executive/Leadership','Operating Officer','Medical Officer','Chief Clinical Officer','Finance','Strategy','Innovation','Business Development'],
   'Clinical':   ['Medical','Nursing Officer','Quality Officer','Emergency Department','Clinical Operations','Physician Executive','Medical Group','Ambulatory/Urgent Care'],
@@ -434,31 +434,35 @@ const CI_PERSONA_GROUPS = {
 const CI_CONTENT_ICONS = { press_release:'📰', article:'📄', award:'🏆', podcast:'🎙️', presentation:'📊', other:'🔗' }
 
 function ContactIntelPanel({ user, safeFetch }) {
-  const [ciTab, setCiTab]               = useState('individual')
+  const [ciTab, setCiTab]             = useState('individual')
 
-  // Individual Research
-  const [indName, setIndName]           = useState('')
-  const [indTitle, setIndTitle]         = useState('')
-  const [indOrg, setIndOrg]             = useState('')
-  const [indDomain, setIndDomain]       = useState('')
-  const [indLoading, setIndLoading]     = useState(false)
-  const [indResult, setIndResult]       = useState(null)
-  const [indError, setIndError]         = useState(null)
+  // ── Individual Research ─────────────────────────────────────────────────────
+  const [indName, setIndName]         = useState('')
+  const [indTitle, setIndTitle]       = useState('')
+  const [indOrg, setIndOrg]           = useState('')
+  const [indLoading, setIndLoading]   = useState(false)
+  const [indResult, setIndResult]     = useState(null)
+  const [indError, setIndError]       = useState(null)
 
-  // Org Intelligence
-  const [orgName, setOrgName]           = useState('')
-  const [orgDomain, setOrgDomain]       = useState('')
-  const [selPersonas, setSelPersonas]   = useState(new Set(CI_ALL_PERSONAS))
-  const [orgLoading, setOrgLoading]     = useState(false)
-  const [orgResults, setOrgResults]     = useState(null)  // { personas: {name: result}, existingContacts: [] }
-  const [orgError, setOrgError]         = useState(null)
-  const [orgProgress, setOrgProgress]   = useState('')
+  // ── Org Intelligence ────────────────────────────────────────────────────────
+  const [orgName, setOrgName]         = useState('')
+  const [orgDomain, setOrgDomain]     = useState('')
+  const [selPersonas, setSelPersonas] = useState(new Set(CI_ALL_PERSONAS))
+  const [orgLoading, setOrgLoading]   = useState(false)
+  const [orgResults, setOrgResults]   = useState(null)
+  const [orgError, setOrgError]       = useState(null)
+  const [orgProgress, setOrgProgress] = useState('')
 
-  // History
-  const [history, setHistory]           = useState(() => {
+  // ── Detail panel (right side) ───────────────────────────────────────────────
+  const [selCard, setSelCard]             = useState(null)   // { persona, name, title, source }
+  const [detailData, setDetailData]       = useState(null)
+  const [detailLoading, setDetailLoading] = useState(false)
+  const [detailError, setDetailError]     = useState(null)
+
+  // ── History ─────────────────────────────────────────────────────────────────
+  const [history, setHistory] = useState(() => {
     try { return JSON.parse(localStorage.getItem('cipher_ci_history') || '[]') } catch { return [] }
   })
-
   function saveHistory(entry) {
     setHistory(prev => {
       const next = [entry, ...prev.filter(h => h.id !== entry.id)].slice(0, 20)
@@ -467,367 +471,432 @@ function ContactIntelPanel({ user, safeFetch }) {
     })
   }
 
-  // ── Individual Research ────────────────────────────────────────────────────
-  async function runIndividualResearch() {
-    if (!indName.trim() || !indOrg.trim()) return
-    setIndLoading(true); setIndError(null); setIndResult(null)
+  // ── Individual Research fetch ───────────────────────────────────────────────
+  async function runIndividualResearch(name, title, org) {
+    const n = (name || indName).trim()
+    const t = (title || indTitle).trim()
+    const o = (org  || indOrg).trim()
+    if (!n || !o) return
+    if (!name) { setIndLoading(true); setIndError(null); setIndResult(null) }
     try {
       const data = await safeFetch('/api/contact-intel', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: indName.trim(), title: indTitle.trim(), org: indOrg.trim(), domain: indDomain.trim() }),
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: n, title: t, org: o }),
       })
       if (data?.error) throw new Error(data.error)
-      setIndResult(data)
-      saveHistory({ id: `ind-${indName}-${indOrg}`, type: 'individual', name: indName.trim(), title: indTitle.trim(), org: indOrg.trim(), ts: Date.now(), result: data })
+      if (!name) { setIndResult(data) }
+      saveHistory({ id:`ind-${n}-${o}`, type:'individual', name:n, title:t, org:o, ts:Date.now(), result:data })
+      return data
     } catch(e) {
-      setIndError(e.message)
+      if (!name) setIndError(e.message)
+      throw e
     } finally {
-      setIndLoading(false)
+      if (!name) setIndLoading(false)
     }
   }
 
-  // ── Org Intelligence ───────────────────────────────────────────────────────
-  function togglePersona(p) {
-    setSelPersonas(prev => { const n = new Set(prev); n.has(p) ? n.delete(p) : n.add(p); return n })
+  // ── Card click → detail panel ───────────────────────────────────────────────
+  async function openDetail(persona, person) {
+    if (!person?.name) return
+    setSelCard({ persona, ...person })
+    setDetailData(null); setDetailError(null); setDetailLoading(true)
+    try {
+      const data = await safeFetch('/api/contact-intel', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: person.name, title: person.title || '', org: orgResults?.orgName || '' }),
+      })
+      if (data?.error) throw new Error(data.error)
+      setDetailData(data)
+    } catch(e) {
+      setDetailError(e.message)
+    } finally {
+      setDetailLoading(false)
+    }
   }
-  function setGroup(groupKey) {
-    const group = CI_PERSONA_GROUPS[groupKey] || []
+
+  // ── Org Intel fetch ─────────────────────────────────────────────────────────
+  function togglePersona(p) {
+    setSelPersonas(prev => { const n=new Set(prev); n.has(p)?n.delete(p):n.add(p); return n })
+  }
+  function setGroup(g) {
+    const group = CI_PERSONA_GROUPS[g] || []
     setSelPersonas(prev => {
       const n = new Set(prev)
-      const allIn = group.every(p => n.has(p))
-      group.forEach(p => allIn ? n.delete(p) : n.add(p))
+      group.every(p=>n.has(p)) ? group.forEach(p=>n.delete(p)) : group.forEach(p=>n.add(p))
       return n
     })
   }
 
   async function runOrgIntel() {
     if (!orgName.trim()) return
-    setOrgLoading(true); setOrgError(null); setOrgResults(null); setOrgProgress('Looking up org in HubSpot…')
+    const personas = [...selPersonas]
+    if (!personas.length) return
+    setOrgLoading(true); setOrgError(null); setOrgResults(null); setOrgProgress('Looking up in HubSpot…')
+    setSelCard(null); setDetailData(null)
     try {
-      const personas = [...selPersonas]
-      if (personas.length === 0) throw new Error('Select at least one persona')
-
-      // Step 1: Get existing contacts for this org from HubSpot
       let existingContacts = []
       try {
-        const orgData = await safeFetch(`/api/hubspot/org-intel-contacts?orgName=${encodeURIComponent(orgName.trim())}&domain=${encodeURIComponent(orgDomain.trim())}`)
-        existingContacts = orgData?.contacts || []
-        setOrgProgress(`Found ${existingContacts.length} existing contacts — running gap search…`)
-      } catch { setOrgProgress('HubSpot lookup skipped — running gap search…') }
+        const d = await safeFetch(`/api/hubspot/org-intel-contacts?orgName=${encodeURIComponent(orgName.trim())}&domain=${encodeURIComponent(orgDomain.trim())}`)
+        existingContacts = d?.contacts || []
+        setOrgProgress(`Found ${existingContacts.length} CRM contacts — gap searching…`)
+      } catch { setOrgProgress('Searching personas…') }
 
-      // Step 2: Run gap search for each selected persona (batches of 3)
-      const results = {}
-      let remaining = [...personas]
-      while (remaining.length > 0) {
-        const batch = remaining.splice(0, 3)
-        setOrgProgress(`Searching ${batch.join(', ')}…`)
-        const batchRes = await safeFetch('/api/hubspot-gap-search', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            companyName: orgName.trim(),
-            domain:      orgDomain.trim() || null,
-            existingContacts,
-            missingPersonas: batch,
-            batchSize: batch.length,
-          }),
+      const found = {}
+      let rem = [...personas]
+      while (rem.length > 0) {
+        const batch = rem.splice(0, 3)
+        setOrgProgress(`Searching: ${batch.join(', ')}…`)
+        const r = await safeFetch('/api/hubspot-gap-search', {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ companyName:orgName.trim(), domain:orgDomain.trim()||null, existingContacts, missingPersonas:batch, batchSize:batch.length }),
         })
-        for (const found of (batchRes?.found || [])) {
-          results[found.persona] = found
-        }
-        if (remaining.length > 0) await new Promise(r => setTimeout(r, 500))
+        for (const f of (r?.found||[])) found[f.persona] = f
+        if (rem.length > 0) await new Promise(r=>setTimeout(r,500))
       }
 
-      const finalResult = { personas: results, existingContacts, orgName: orgName.trim(), ts: Date.now() }
-      setOrgResults(finalResult)
+      const result = { personas:found, existingContacts, orgName:orgName.trim(), ts:Date.now() }
+      setOrgResults(result)
       setOrgProgress('')
-      saveHistory({ id: `org-${orgName}`, type: 'org', org: orgName.trim(), personaCount: personas.length, ts: Date.now(), result: finalResult })
+      saveHistory({ id:`org-${orgName}`, type:'org', org:orgName.trim(), personaCount:personas.length, ts:Date.now(), result })
     } catch(e) {
-      setOrgError(e.message)
-      setOrgProgress('')
+      setOrgError(e.message); setOrgProgress('')
     } finally {
       setOrgLoading(false)
     }
   }
 
-  // ── Render ─────────────────────────────────────────────────────────────────
+  // ── Shared profile renderer ─────────────────────────────────────────────────
+  function ProfileView({ data, compact }) {
+    if (!data?.profile) return null
+    const p = data.profile
+    return (
+      <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
+        {/* Outreach Intel — always first */}
+        {p.outreachIntel && (
+          <div style={{ background:'rgba(59,130,246,.07)', border:'1px solid rgba(59,130,246,.2)', borderRadius:'var(--radius)', padding:14 }}>
+            <div style={{ fontSize:11, fontWeight:700, color:'var(--accent)', marginBottom:7, display:'flex', alignItems:'center', gap:5 }}>
+              <span>⚡</span> OUTREACH INTEL
+            </div>
+            <div style={{ fontSize:13, color:'var(--text-secondary)', lineHeight:1.65 }}>{p.outreachIntel}</div>
+          </div>
+        )}
+
+        {/* Career History */}
+        {p.careerHistory?.length > 0 && (
+          <div>
+            <div style={{ fontSize:11, fontWeight:600, color:'var(--text-tertiary)', marginBottom:8, letterSpacing:'.05em' }}>CAREER HISTORY</div>
+            {p.careerHistory.map((c,i) => (
+              <div key={i} style={{ display:'flex', gap:10, marginBottom:10 }}>
+                <div style={{ width:3, minHeight:40, background:i===0?'var(--accent)':'var(--border)', borderRadius:2, flexShrink:0, marginTop:2 }} />
+                <div>
+                  <div style={{ fontSize:13, fontWeight:600, color:'var(--text)' }}>{c.title}</div>
+                  <div style={{ fontSize:12, color:'var(--accent)' }}>{c.org}{c.years ? ` · ${c.years}` : ''}</div>
+                  {c.summary && <div style={{ fontSize:12, color:'var(--text-tertiary)', lineHeight:1.5, marginTop:2 }}>{c.summary}</div>}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Org Context */}
+        {p.orgContext && (
+          <div>
+            <div style={{ fontSize:11, fontWeight:600, color:'var(--text-tertiary)', marginBottom:6, letterSpacing:'.05em' }}>ORG CONTEXT</div>
+            <div style={{ fontSize:13, color:'var(--text-secondary)', lineHeight:1.6 }}>{p.orgContext}</div>
+          </div>
+        )}
+
+        {/* Recent Content */}
+        {p.recentContent?.length > 0 && (
+          <div>
+            <div style={{ fontSize:11, fontWeight:600, color:'var(--text-tertiary)', marginBottom:8, letterSpacing:'.05em' }}>RECENT CONTENT</div>
+            {p.recentContent.map((c,i) => (
+              <div key={i} style={{ marginBottom:8, paddingBottom:8, borderBottom: i<p.recentContent.length-1?'1px solid var(--border)':'none' }}>
+                <div style={{ display:'flex', alignItems:'center', gap:5, marginBottom:2 }}>
+                  <span style={{ fontSize:13 }}>{CI_CONTENT_ICONS[c.type]||'🔗'}</span>
+                  <span style={{ fontSize:10, color:'var(--text-tertiary)', textTransform:'uppercase' }}>{c.type?.replace(/_/g,' ')}{c.date?` · ${c.date}`:''}</span>
+                </div>
+                {c.url
+                  ? <a href={c.url} target="_blank" rel="noopener noreferrer" style={{ fontSize:13, color:'var(--accent)', textDecoration:'none', fontWeight:500 }}>{c.title}</a>
+                  : <div style={{ fontSize:13, color:'var(--text)', fontWeight:500 }}>{c.title}</div>}
+                {c.summary && <div style={{ fontSize:12, color:'var(--text-tertiary)', marginTop:2 }}>{c.summary}</div>}
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div style={{ fontSize:10, color:'var(--text-tertiary)', display:'flex', gap:10 }}>
+          <span>Confidence: <b style={{ color:p.confidence==='high'?'#16a34a':p.confidence==='medium'?'#D97706':'var(--red)' }}>{p.confidence}</b></span>
+          {data.fromCache && <span>· Cached</span>}
+          {p.sources?.length > 0 && <span>· {p.sources.length} source{p.sources.length>1?'s':''}</span>}
+        </div>
+      </div>
+    )
+  }
+
+  // ── Persona map card ─────────────────────────────────────────────────────────
+  function PersonaCard({ persona, crmContact, gapResult }) {
+    const person   = crmContact || gapResult
+    const status   = crmContact ? 'crm' : gapResult?.name ? 'gap' : 'empty'
+    const isActive = selCard?.persona === persona
+    const canClick = !!person?.name
+
+    const colors = {
+      crm:   { border:'#22c55e', bg:'rgba(34,197,94,.08)',  label:'#16a34a' },
+      gap:   { border:'var(--accent)', bg:'rgba(59,130,246,.06)', label:'var(--accent)' },
+      empty: { border:'rgba(239,68,68,.4)', bg:'rgba(239,68,68,.04)', label:'#ef4444' },
+    }
+    const c = colors[status]
+
+    return (
+      <div onClick={() => canClick && openDetail(persona, person)}
+        style={{ border:`1px solid ${isActive ? 'var(--accent)' : c.border}`,
+          background: isActive ? 'rgba(59,130,246,.12)' : c.bg,
+          borderRadius:'var(--radius)', padding:'10px 12px', cursor:canClick?'pointer':'default',
+          transition:'background .15s', minWidth:0,
+          boxShadow: isActive ? '0 0 0 2px rgba(59,130,246,.3)' : 'none' }}
+        onMouseEnter={e => { if(canClick && !isActive) e.currentTarget.style.background = status==='crm'?'rgba(34,197,94,.14)':status==='gap'?'rgba(59,130,246,.1)':c.bg }}
+        onMouseLeave={e => { if(!isActive) e.currentTarget.style.background = c.bg }}>
+        <div style={{ fontSize:10, color:'var(--text-tertiary)', letterSpacing:'.04em', marginBottom:4, fontWeight:500, textTransform:'uppercase' }}>
+          {persona}
+        </div>
+        {status !== 'empty' ? (
+          <>
+            <div style={{ fontSize:13, fontWeight:700, color:'var(--text)', lineHeight:1.3, marginBottom:2 }}>{person.name}</div>
+            {person.title && <div style={{ fontSize:11, color:'var(--text-secondary)', lineHeight:1.4 }}>{person.title}</div>}
+            <div style={{ display:'flex', gap:4, marginTop:5, flexWrap:'wrap' }}>
+              {status==='crm' && <span style={{ fontSize:9, background:'rgba(34,197,94,.15)', color:'#16a34a', borderRadius:8, padding:'1px 5px', fontWeight:600 }}>IN CRM</span>}
+              {status==='gap' && <span style={{ fontSize:9, background:'rgba(59,130,246,.12)', color:'var(--accent)', borderRadius:8, padding:'1px 5px', fontWeight:600 }}>GAP SEARCH</span>}
+              {gapResult?.confidence && status==='gap' && <span style={{ fontSize:9, color:'var(--text-tertiary)', borderRadius:8, padding:'1px 5px', border:'1px solid var(--border)' }}>{gapResult.confidence}</span>}
+              {person.linkedinUrl && <span style={{ fontSize:9, color:'var(--accent)' }}>↗ LI</span>}
+            </div>
+          </>
+        ) : (
+          <div style={{ fontSize:11, color:'#ef4444', marginTop:2 }}>∅ No match</div>
+        )}
+      </div>
+    )
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
   const hpCount = history.length
 
   return (
-    <div style={{ maxWidth:1100, margin:'0 auto', padding:'0 4px' }}>
+    <div style={{ maxWidth:1200, margin:'0 auto', padding:'0 4px' }}>
       {/* Header */}
-      <div style={{ marginBottom:20 }}>
+      <div style={{ marginBottom:18 }}>
         <div style={{ fontSize:22, fontWeight:700, color:'var(--text)', marginBottom:4 }}>Contact Intelligence</div>
-        <div style={{ fontSize:13, color:'var(--text-tertiary)' }}>Research any prospect or health system — powered by real web data, not guesswork.</div>
+        <div style={{ fontSize:13, color:'var(--text-tertiary)' }}>Research any prospect or health system — real web data, no guesswork.</div>
       </div>
 
       {/* Tab bar */}
       <div style={{ display:'flex', borderBottom:'1px solid var(--border)', marginBottom:20 }}>
-        {[
-          { key:'individual', label:'Individual Research' },
-          { key:'org',        label:'Org Intelligence' },
-          { key:'history',    label:`History${hpCount > 0 ? ` (${hpCount})` : ''}` },
-        ].map(t => (
-          <button key={t.key} onClick={() => setCiTab(t.key)}
-            style={{ padding:'10px 18px', fontSize:13, fontWeight: ciTab===t.key ? 600 : 400,
-              color: ciTab===t.key ? 'var(--accent)' : 'var(--text-tertiary)',
-              background:'none', border:'none',
-              borderBottom: ciTab===t.key ? '2px solid var(--accent)' : '2px solid transparent',
-              cursor:'pointer' }}>
+        {[{key:'individual',label:'Individual Research'},{key:'org',label:'Org Intelligence'},{key:'history',label:`History${hpCount>0?` (${hpCount})`:''}` }].map(t => (
+          <button key={t.key} onClick={()=>setCiTab(t.key)}
+            style={{ padding:'9px 18px', fontSize:13, fontWeight:ciTab===t.key?600:400,
+              color:ciTab===t.key?'var(--accent)':'var(--text-tertiary)', background:'none', border:'none',
+              borderBottom:ciTab===t.key?'2px solid var(--accent)':'2px solid transparent', cursor:'pointer' }}>
             {t.label}
           </button>
         ))}
       </div>
 
-      {/* ── Individual Research ── */}
+      {/* ── INDIVIDUAL RESEARCH ── */}
       {ciTab === 'individual' && (
         <div>
           <div style={{ background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius-lg)', padding:20, marginBottom:20 }}>
             <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr auto', gap:10, alignItems:'end' }}>
-              <div>
-                <div style={{ fontSize:11, color:'var(--text-tertiary)', marginBottom:4, fontWeight:500 }}>FULL NAME</div>
-                <input value={indName} onChange={e => setIndName(e.target.value)}
-                  placeholder="e.g. Lakshmi Halasyamani"
-                  style={{ width:'100%', padding:'8px 10px', background:'var(--bg-secondary)', border:'1px solid var(--border)', borderRadius:'var(--radius)', fontSize:13, color:'var(--text)', boxSizing:'border-box' }} />
-              </div>
-              <div>
-                <div style={{ fontSize:11, color:'var(--text-tertiary)', marginBottom:4, fontWeight:500 }}>TITLE / ROLE</div>
-                <input value={indTitle} onChange={e => setIndTitle(e.target.value)}
-                  placeholder="e.g. Chief Medical Officer"
-                  style={{ width:'100%', padding:'8px 10px', background:'var(--bg-secondary)', border:'1px solid var(--border)', borderRadius:'var(--radius)', fontSize:13, color:'var(--text)', boxSizing:'border-box' }} />
-              </div>
-              <div>
-                <div style={{ fontSize:11, color:'var(--text-tertiary)', marginBottom:4, fontWeight:500 }}>HEALTH SYSTEM</div>
-                <input value={indOrg} onChange={e => setIndOrg(e.target.value)}
-                  placeholder="e.g. Endeavor Health"
-                  style={{ width:'100%', padding:'8px 10px', background:'var(--bg-secondary)', border:'1px solid var(--border)', borderRadius:'var(--radius)', fontSize:13, color:'var(--text)', boxSizing:'border-box' }} />
-              </div>
-              <button onClick={runIndividualResearch} disabled={indLoading || !indName.trim() || !indOrg.trim()}
-                style={{ padding:'8px 20px', background: indLoading ? 'var(--bg-secondary)' : 'var(--accent)',
-                  color: indLoading ? 'var(--text-tertiary)' : '#fff', border:'none', borderRadius:'var(--radius)',
-                  fontSize:13, fontWeight:600, cursor: indLoading ? 'not-allowed' : 'pointer', whiteSpace:'nowrap' }}>
+              {[['FULL NAME','e.g. Lakshmi Halasyamani',indName,setIndName],
+                ['TITLE / ROLE','e.g. Chief Medical Officer',indTitle,setIndTitle],
+                ['HEALTH SYSTEM','e.g. Endeavor Health',indOrg,setIndOrg],
+              ].map(([label,ph,val,set]) => (
+                <div key={label}>
+                  <div style={{ fontSize:11, color:'var(--text-tertiary)', marginBottom:4, fontWeight:500 }}>{label}</div>
+                  <input value={val} onChange={e=>set(e.target.value)} placeholder={ph}
+                    onKeyDown={e=>e.key==='Enter' && runIndividualResearch()}
+                    style={{ width:'100%', padding:'8px 10px', background:'var(--bg-secondary)', border:'1px solid var(--border)', borderRadius:'var(--radius)', fontSize:13, color:'var(--text)', boxSizing:'border-box' }} />
+                </div>
+              ))}
+              <button onClick={()=>runIndividualResearch()} disabled={indLoading||!indName.trim()||!indOrg.trim()}
+                style={{ padding:'8px 20px', background:indLoading?'var(--bg-secondary)':'var(--accent)',
+                  color:indLoading?'var(--text-tertiary)':'#fff', border:'none', borderRadius:'var(--radius)',
+                  fontSize:13, fontWeight:600, cursor:indLoading?'not-allowed':'pointer', whiteSpace:'nowrap' }}>
                 {indLoading ? '⟳ Researching…' : 'Research'}
               </button>
             </div>
           </div>
 
-          {indError && (
-            <div style={{ padding:12, background:'rgba(239,68,68,.08)', border:'1px solid var(--red)', borderRadius:'var(--radius)', color:'var(--red)', fontSize:13, marginBottom:16 }}>
-              {indError}
-            </div>
-          )}
+          {indError && <div style={{ padding:12, background:'rgba(239,68,68,.08)', border:'1px solid rgba(239,68,68,.3)', borderRadius:'var(--radius)', color:'#ef4444', fontSize:13, marginBottom:16 }}>{indError}</div>}
 
           {indResult?.profile && (() => {
             const p = indResult.profile
             return (
-              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16 }}>
-                {/* Career History */}
-                <div style={{ background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius-lg)', padding:18 }}>
-                  <div style={{ fontSize:13, fontWeight:700, color:'var(--text)', marginBottom:14, display:'flex', alignItems:'center', gap:8 }}>
-                    <span>Career History</span>
-                    {p.verifiedRole && <span style={{ fontSize:10, background:'rgba(34,197,94,.12)', color:'#16a34a', borderRadius:10, padding:'2px 7px' }}>Verified</span>}
+              <div>
+                <div style={{ background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius-lg)', padding:'14px 18px', marginBottom:16, display:'flex', alignItems:'center', gap:14 }}>
+                  <div style={{ flex:1 }}>
+                    <div style={{ fontSize:18, fontWeight:700, color:'var(--text)' }}>{p.name}</div>
+                    {p.title && <div style={{ fontSize:13, color:'var(--text-secondary)' }}>{p.title} · <span style={{ color:'var(--accent)' }}>{p.org}</span></div>}
                   </div>
-                  {(p.careerHistory?.length > 0) ? p.careerHistory.map((c, i) => (
-                    <div key={i} style={{ display:'flex', gap:12, marginBottom:14, paddingBottom: i < p.careerHistory.length-1 ? 14 : 0,
-                      borderBottom: i < p.careerHistory.length-1 ? '1px solid var(--border)' : 'none' }}>
-                      <div style={{ width:3, background: i===0 ? 'var(--accent)' : 'var(--border)', borderRadius:2, flexShrink:0 }} />
-                      <div>
-                        <div style={{ fontSize:13, fontWeight:600, color:'var(--text)' }}>{c.title}</div>
-                        <div style={{ fontSize:12, color:'var(--accent)', marginBottom:3 }}>{c.org} · <span style={{ color:'var(--text-tertiary)' }}>{c.years}</span></div>
-                        {c.summary && <div style={{ fontSize:12, color:'var(--text-secondary)', lineHeight:1.5 }}>{c.summary}</div>}
-                      </div>
-                    </div>
-                  )) : (
-                    <div style={{ fontSize:12, color:'var(--text-tertiary)', fontStyle:'italic' }}>No verified career history found.</div>
-                  )}
+                  <div style={{ display:'flex', gap:6 }}>
+                    {p.verifiedRole && <span style={{ fontSize:11, background:'rgba(34,197,94,.12)', color:'#16a34a', borderRadius:10, padding:'2px 8px', fontWeight:500 }}>Verified</span>}
+                    <span style={{ fontSize:11, background:'var(--bg-secondary)', border:'1px solid var(--border)', borderRadius:10, padding:'2px 8px', color:'var(--text-tertiary)' }}>
+                      Confidence: {p.confidence}
+                    </span>
+                  </div>
                 </div>
-
-                {/* Right column */}
-                <div style={{ display:'flex', flexDirection:'column', gap:16 }}>
-                  {/* Outreach Intel */}
-                  {p.outreachIntel && (
-                    <div style={{ background:'rgba(59,130,246,.06)', border:'1px solid rgba(59,130,246,.2)', borderRadius:'var(--radius-lg)', padding:18 }}>
-                      <div style={{ fontSize:13, fontWeight:700, color:'var(--text)', marginBottom:10, display:'flex', alignItems:'center', gap:6 }}>
-                        <span>⚡</span><span>Outreach Intel</span>
-                      </div>
-                      <div style={{ fontSize:13, color:'var(--text-secondary)', lineHeight:1.65 }}>{p.outreachIntel}</div>
-                    </div>
-                  )}
-
-                  {/* Org Context */}
-                  {p.orgContext && (
-                    <div style={{ background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius-lg)', padding:18 }}>
-                      <div style={{ fontSize:13, fontWeight:700, color:'var(--text)', marginBottom:8 }}>Org Context</div>
-                      <div style={{ fontSize:13, color:'var(--text-secondary)', lineHeight:1.6 }}>{p.orgContext}</div>
-                    </div>
-                  )}
-
-                  {/* Recent Content */}
-                  {p.recentContent?.length > 0 && (
-                    <div style={{ background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius-lg)', padding:18 }}>
-                      <div style={{ fontSize:13, fontWeight:700, color:'var(--text)', marginBottom:12 }}>Recent Content ({p.recentContent.length})</div>
-                      {p.recentContent.map((c, i) => (
-                        <div key={i} style={{ marginBottom:10, paddingBottom:10, borderBottom: i < p.recentContent.length-1 ? '1px solid var(--border)' : 'none' }}>
-                          <div style={{ display:'flex', alignItems:'center', gap:6, marginBottom:3 }}>
-                            <span style={{ fontSize:14 }}>{CI_CONTENT_ICONS[c.type] || '🔗'}</span>
-                            <span style={{ fontSize:11, color:'var(--text-tertiary)', textTransform:'uppercase', letterSpacing:'.04em' }}>{c.type?.replace(/_/g,' ')} {c.date ? `· ${c.date}` : ''}</span>
-                          </div>
-                          {c.url
-                            ? <a href={c.url} target="_blank" rel="noopener noreferrer" style={{ fontSize:13, color:'var(--accent)', textDecoration:'none', fontWeight:500 }}>{c.title}</a>
-                            : <div style={{ fontSize:13, color:'var(--text)', fontWeight:500 }}>{c.title}</div>
-                          }
-                          {c.summary && <div style={{ fontSize:12, color:'var(--text-tertiary)', marginTop:2 }}>{c.summary}</div>}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-
-                {/* Confidence + cache note */}
-                <div style={{ gridColumn:'1/-1', fontSize:11, color:'var(--text-tertiary)', display:'flex', gap:10 }}>
-                  <span>Confidence: <b style={{ color: p.confidence==='high' ? '#16a34a' : p.confidence==='medium' ? '#D97706' : 'var(--red)' }}>{p.confidence}</b></span>
-                  {indResult.fromCache && <span>· Cached result</span>}
-                  {p.sources?.length > 0 && <span>· {p.sources.length} source{p.sources.length !== 1 ? 's' : ''}</span>}
-                </div>
+                <ProfileView data={indResult} />
               </div>
             )
           })()}
         </div>
       )}
 
-      {/* ── Org Intelligence ── */}
+      {/* ── ORG INTELLIGENCE ── */}
       {ciTab === 'org' && (
         <div>
-          {/* Org form */}
+          {/* Form */}
           <div style={{ background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius-lg)', padding:20, marginBottom:16 }}>
             <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr', gap:10, marginBottom:14 }}>
               <div>
                 <div style={{ fontSize:11, color:'var(--text-tertiary)', marginBottom:4, fontWeight:500 }}>HEALTH SYSTEM NAME</div>
-                <input value={orgName} onChange={e => setOrgName(e.target.value)}
+                <input value={orgName} onChange={e=>setOrgName(e.target.value)}
+                  onKeyDown={e=>e.key==='Enter' && runOrgIntel()}
                   placeholder="e.g. Atrium Health"
                   style={{ width:'100%', padding:'8px 10px', background:'var(--bg-secondary)', border:'1px solid var(--border)', borderRadius:'var(--radius)', fontSize:13, color:'var(--text)', boxSizing:'border-box' }} />
               </div>
               <div>
                 <div style={{ fontSize:11, color:'var(--text-tertiary)', marginBottom:4, fontWeight:500 }}>DOMAIN (OPTIONAL)</div>
-                <input value={orgDomain} onChange={e => setOrgDomain(e.target.value)}
-                  placeholder="e.g. atriumhealth.org"
+                <input value={orgDomain} onChange={e=>setOrgDomain(e.target.value)} placeholder="e.g. atriumhealth.org"
                   style={{ width:'100%', padding:'8px 10px', background:'var(--bg-secondary)', border:'1px solid var(--border)', borderRadius:'var(--radius)', fontSize:13, color:'var(--text)', boxSizing:'border-box' }} />
               </div>
             </div>
 
             {/* Persona selector */}
             <div style={{ marginBottom:12 }}>
-              <div style={{ fontSize:11, color:'var(--text-tertiary)', marginBottom:8, fontWeight:500, display:'flex', alignItems:'center', gap:8 }}>
-                PERSONAS TO SEARCH
-                <span style={{ color:'var(--accent)', fontSize:11 }}>{selPersonas.size} selected</span>
+              <div style={{ fontSize:11, color:'var(--text-tertiary)', marginBottom:6, fontWeight:500, display:'flex', alignItems:'center', gap:8 }}>
+                PERSONAS TO SEARCH <span style={{ color:'var(--accent)' }}>{selPersonas.size} selected</span>
               </div>
-              {/* Quick select buttons */}
-              <div style={{ display:'flex', gap:6, flexWrap:'wrap', marginBottom:10 }}>
-                <button onClick={() => setSelPersonas(new Set(CI_ALL_PERSONAS))}
-                  style={{ padding:'4px 10px', fontSize:11, background:'var(--bg-secondary)', border:'1px solid var(--border)', borderRadius:20, cursor:'pointer', color:'var(--text-secondary)', fontWeight:500 }}>
+              <div style={{ display:'flex', gap:6, flexWrap:'wrap', marginBottom:8 }}>
+                <button onClick={()=>setSelPersonas(new Set(CI_ALL_PERSONAS))}
+                  style={{ padding:'3px 10px', fontSize:11, background:'var(--bg-secondary)', border:'1px solid var(--border)', borderRadius:20, cursor:'pointer', color:'var(--text-secondary)', fontWeight:500 }}>
                   All 22
                 </button>
                 {Object.keys(CI_PERSONA_GROUPS).map(g => {
-                  const group = CI_PERSONA_GROUPS[g]
-                  const allIn = group.every(p => selPersonas.has(p))
+                  const allIn = CI_PERSONA_GROUPS[g].every(p=>selPersonas.has(p))
                   return (
-                    <button key={g} onClick={() => setGroup(g)}
-                      style={{ padding:'4px 10px', fontSize:11, cursor:'pointer', fontWeight:500,
-                        background: allIn ? 'var(--accent)' : 'var(--bg-secondary)',
-                        color:      allIn ? '#fff' : 'var(--text-secondary)',
-                        border: `1px solid ${allIn ? 'var(--accent)' : 'var(--border)'}`,
-                        borderRadius:20 }}>
+                    <button key={g} onClick={()=>setGroup(g)}
+                      style={{ padding:'3px 10px', fontSize:11, cursor:'pointer', fontWeight:500, borderRadius:20,
+                        background:allIn?'var(--accent)':'var(--bg-secondary)', color:allIn?'#fff':'var(--text-secondary)',
+                        border:`1px solid ${allIn?'var(--accent)':'var(--border)'}` }}>
                       {g}
                     </button>
                   )
                 })}
-                <button onClick={() => setSelPersonas(new Set())}
-                  style={{ padding:'4px 10px', fontSize:11, background:'none', border:'1px solid var(--border)', borderRadius:20, cursor:'pointer', color:'var(--text-tertiary)' }}>
+                <button onClick={()=>setSelPersonas(new Set())}
+                  style={{ padding:'3px 10px', fontSize:11, background:'none', border:'1px solid var(--border)', borderRadius:20, cursor:'pointer', color:'var(--text-tertiary)' }}>
                   Clear
                 </button>
               </div>
-              {/* Individual checkboxes */}
-              <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:'4px 8px' }}>
+              <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:'3px 8px' }}>
                 {CI_ALL_PERSONAS.map(p => (
-                  <label key={p} style={{ display:'flex', alignItems:'center', gap:5, fontSize:11, color: selPersonas.has(p) ? 'var(--text)' : 'var(--text-tertiary)', cursor:'pointer' }}>
-                    <input type="checkbox" checked={selPersonas.has(p)} onChange={() => togglePersona(p)}
-                      style={{ accentColor:'var(--accent)', width:12, height:12 }} />
+                  <label key={p} style={{ display:'flex', alignItems:'center', gap:5, fontSize:11, color:selPersonas.has(p)?'var(--text)':'var(--text-tertiary)', cursor:'pointer' }}>
+                    <input type="checkbox" checked={selPersonas.has(p)} onChange={()=>togglePersona(p)} style={{ accentColor:'var(--accent)', width:12, height:12 }} />
                     {p}
                   </label>
                 ))}
               </div>
             </div>
 
-            <button onClick={runOrgIntel} disabled={orgLoading || !orgName.trim() || selPersonas.size === 0}
-              style={{ padding:'9px 24px', background: orgLoading ? 'var(--bg-secondary)' : 'var(--accent)',
-                color: orgLoading ? 'var(--text-tertiary)' : '#fff', border:'none', borderRadius:'var(--radius)',
-                fontSize:13, fontWeight:600, cursor: orgLoading ? 'not-allowed' : 'pointer' }}>
-              {orgLoading ? `⟳ ${orgProgress || 'Running…'}` : `Research ${selPersonas.size} personas`}
+            <button onClick={runOrgIntel} disabled={orgLoading||!orgName.trim()||!selPersonas.size}
+              style={{ padding:'9px 24px', background:orgLoading?'var(--bg-secondary)':'var(--accent)',
+                color:orgLoading?'var(--text-tertiary)':'#fff', border:'none', borderRadius:'var(--radius)',
+                fontSize:13, fontWeight:600, cursor:orgLoading?'not-allowed':'pointer' }}>
+              {orgLoading ? `⟳ ${orgProgress||'Running…'}` : `Research ${selPersonas.size} personas`}
             </button>
           </div>
 
-          {orgError && (
-            <div style={{ padding:12, background:'rgba(239,68,68,.08)', border:'1px solid var(--red)', borderRadius:'var(--radius)', color:'var(--red)', fontSize:13, marginBottom:16 }}>
-              {orgError}
-            </div>
-          )}
+          {orgError && <div style={{ padding:12, background:'rgba(239,68,68,.08)', border:'1px solid rgba(239,68,68,.3)', borderRadius:'var(--radius)', color:'#ef4444', fontSize:13, marginBottom:16 }}>{orgError}</div>}
 
+          {/* ── Results ── */}
           {orgResults && (() => {
-            const found   = Object.entries(orgResults.personas).filter(([, v]) => v?.name)
-            const notFound = [...selPersonas].filter(p => !orgResults.personas[p]?.name)
-            return (
-              <div>
-                <div style={{ fontSize:13, color:'var(--text-tertiary)', marginBottom:14 }}>
-                  <b style={{ color:'var(--text)' }}>{orgResults.orgName}</b> — {found.length} found · {notFound.length} not found · {orgResults.existingContacts?.length || 0} existing CRM contacts
-                </div>
+            const coveredCount = CI_ALL_PERSONAS.filter(p => {
+              const crm = orgResults.existingContacts.find(c => c.target_persona?.toLowerCase().includes(p.toLowerCase()))
+              return !!(crm || orgResults.personas[p]?.name)
+            }).length
 
-                {/* Found personas */}
-                {found.length > 0 && (
-                  <div style={{ background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius-lg)', padding:18, marginBottom:14 }}>
-                    <div style={{ fontSize:13, fontWeight:700, color:'var(--text)', marginBottom:14 }}>
-                      Found ({found.length})
+            return (
+              <div style={{ display:'flex', gap:16, alignItems:'flex-start' }}>
+                {/* Persona map (left, shrinks when detail open) */}
+                <div style={{ flex: selCard ? '0 0 58%' : '1 1 100%', transition:'flex .2s' }}>
+                  {/* Company header */}
+                  <div style={{ background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius-lg)', padding:'14px 18px', marginBottom:14, display:'flex', alignItems:'center', gap:14 }}>
+                    <div style={{ flex:1 }}>
+                      <div style={{ fontSize:18, fontWeight:700, color:'var(--text)' }}>{orgResults.orgName}</div>
+                      <div style={{ fontSize:12, color:'var(--text-tertiary)', marginTop:2 }}>
+                        {coveredCount}/{CI_ALL_PERSONAS.length} personas covered · {orgResults.existingContacts.length} CRM contacts
+                      </div>
                     </div>
-                    <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))', gap:10 }}>
-                      {found.map(([persona, result]) => (
-                        <div key={persona} style={{ background:'var(--bg-secondary)', border:'1px solid var(--border)', borderRadius:'var(--radius)', padding:12 }}>
-                          <div style={{ fontSize:10, color:'var(--text-tertiary)', textTransform:'uppercase', letterSpacing:'.05em', marginBottom:4 }}>{persona}</div>
-                          <div style={{ fontSize:14, fontWeight:600, color:'var(--text)' }}>{result.name}</div>
-                          {result.title && <div style={{ fontSize:12, color:'var(--text-secondary)', marginTop:2 }}>{result.title}</div>}
-                          <div style={{ display:'flex', gap:6, marginTop:6, flexWrap:'wrap' }}>
-                            {result.alreadyInCRM && (
-                              <span style={{ fontSize:10, background:'rgba(34,197,94,.12)', color:'#16a34a', borderRadius:10, padding:'1px 6px' }}>In CRM</span>
-                            )}
-                            {result.confidence && (
-                              <span style={{ fontSize:10, background:'var(--accent-light)', color:'var(--accent-text)', borderRadius:10, padding:'1px 6px' }}>{result.confidence}</span>
-                            )}
-                            {result.linkedinUrl && (
-                              <a href={result.linkedinUrl} target="_blank" rel="noopener noreferrer"
-                                style={{ fontSize:10, color:'var(--accent)', textDecoration:'none' }}>LinkedIn →</a>
-                            )}
-                          </div>
-                          {result.titleFitReasoning && (
-                            <div style={{ fontSize:11, color:'var(--text-tertiary)', marginTop:4, fontStyle:'italic' }}>{result.titleFitReasoning}</div>
-                          )}
-                        </div>
-                      ))}
+                    <div style={{ display:'flex', gap:6 }}>
+                      <span style={{ fontSize:12, background:'rgba(34,197,94,.1)', color:'#16a34a', borderRadius:8, padding:'3px 10px', fontWeight:500 }}>{coveredCount} covered</span>
+                      <span style={{ fontSize:12, background:'rgba(239,68,68,.08)', color:'#ef4444', borderRadius:8, padding:'3px 10px', fontWeight:500 }}>{CI_ALL_PERSONAS.length - coveredCount} gaps</span>
                     </div>
                   </div>
-                )}
 
-                {/* Not found */}
-                {notFound.length > 0 && (
-                  <div style={{ background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius-lg)', padding:18 }}>
-                    <div style={{ fontSize:13, fontWeight:700, color:'var(--text)', marginBottom:10 }}>
-                      Not Found ({notFound.length})
+                  {/* Persona map by group */}
+                  <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
+                    {CI_MAP_GROUPS.map(group => {
+                      const groupPersonas = group.personas.filter(p => selPersonas.has(p))
+                      if (!groupPersonas.length) return null
+                      return (
+                        <div key={group.label}>
+                          <div style={{ fontSize:10, fontWeight:600, color:'var(--text-tertiary)', letterSpacing:'.08em', marginBottom:8 }}>{group.label}</div>
+                          <div style={{ display:'grid', gridTemplateColumns:`repeat(${Math.min(groupPersonas.length, 4)},1fr)`, gap:8 }}>
+                            {groupPersonas.map(persona => {
+                              const crmContact = orgResults.existingContacts.find(c =>
+                                c.target_persona?.toLowerCase().includes(persona.toLowerCase()) ||
+                                persona.toLowerCase().includes((c.target_persona||'').toLowerCase().replace(/[^a-z ]/g,'').trim())
+                              )
+                              const gapResult = orgResults.personas[persona]
+                              return <PersonaCard key={persona} persona={persona} crmContact={crmContact} gapResult={gapResult} />
+                            })}
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+
+                  {selCard && (
+                    <div style={{ marginTop:12, fontSize:11, color:'var(--text-tertiary)', textAlign:'center' }}>
+                      Click any card to research that contact
                     </div>
-                    <div style={{ display:'flex', flexWrap:'wrap', gap:6 }}>
-                      {notFound.map(p => (
-                        <span key={p} style={{ fontSize:11, padding:'3px 9px', background:'var(--bg-secondary)', border:'1px solid var(--border)', borderRadius:20, color:'var(--text-tertiary)' }}>
-                          {p}
-                        </span>
-                      ))}
+                  )}
+                </div>
+
+                {/* Detail panel (right) */}
+                {selCard && (
+                  <div style={{ flex:'0 0 40%', background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius-lg)', padding:18, position:'sticky', top:60, maxHeight:'calc(100vh - 80px)', overflowY:'auto' }}>
+                    <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', marginBottom:14 }}>
+                      <div>
+                        <div style={{ fontSize:10, color:'var(--text-tertiary)', letterSpacing:'.05em', marginBottom:3 }}>{selCard.persona}</div>
+                        <div style={{ fontSize:16, fontWeight:700, color:'var(--text)' }}>{selCard.name}</div>
+                        {selCard.title && <div style={{ fontSize:12, color:'var(--text-secondary)', marginTop:2 }}>{selCard.title}</div>}
+                        <div style={{ display:'flex', gap:5, marginTop:6 }}>
+                          {selCard.source === 'crm' && <span style={{ fontSize:10, background:'rgba(34,197,94,.12)', color:'#16a34a', borderRadius:8, padding:'1px 6px', fontWeight:600 }}>IN CRM</span>}
+                          {selCard.alreadyInCRM && <span style={{ fontSize:10, background:'rgba(34,197,94,.12)', color:'#16a34a', borderRadius:8, padding:'1px 6px', fontWeight:600 }}>IN CRM</span>}
+                          {selCard.linkedinUrl && <a href={selCard.linkedinUrl} target="_blank" rel="noopener noreferrer" style={{ fontSize:10, color:'var(--accent)' }}>LinkedIn →</a>}
+                        </div>
+                      </div>
+                      <button onClick={()=>{setSelCard(null);setDetailData(null)}}
+                        style={{ background:'none', border:'none', color:'var(--text-tertiary)', cursor:'pointer', fontSize:16, padding:'0 4px' }}>✕</button>
                     </div>
+
+                    {detailLoading && (
+                      <div style={{ textAlign:'center', padding:'30px 0', color:'var(--text-tertiary)', fontSize:13 }}>
+                        ⟳ Researching {selCard.name}…
+                      </div>
+                    )}
+                    {detailError && <div style={{ color:'#ef4444', fontSize:12, padding:'8px 0' }}>{detailError}</div>}
+                    {detailData && <ProfileView data={detailData} />}
                   </div>
                 )}
               </div>
@@ -836,36 +905,35 @@ function ContactIntelPanel({ user, safeFetch }) {
         </div>
       )}
 
-      {/* ── History ── */}
+      {/* ── HISTORY ── */}
       {ciTab === 'history' && (
         <div>
-          {history.length === 0 ? (
+          {!history.length ? (
             <div style={{ textAlign:'center', padding:'40px 0', color:'var(--text-tertiary)', fontSize:13 }}>
-              No searches yet. Run an Individual Research or Org Intelligence search to see history here.
+              No searches yet. Run Individual Research or Org Intelligence to see history here.
             </div>
           ) : (
             <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
-              {history.map((h, i) => (
-                <div key={i}
-                  onClick={() => {
-                    if (h.type === 'individual') { setCiTab('individual'); setIndName(h.name); setIndTitle(h.title||''); setIndOrg(h.org); setIndResult(h.result) }
-                    else if (h.type === 'org') { setCiTab('org'); setOrgName(h.org); setOrgResults(h.result) }
-                  }}
+              {history.map((h,i) => (
+                <div key={i} onClick={() => {
+                  if (h.type==='individual') { setCiTab('individual'); setIndName(h.name); setIndTitle(h.title||''); setIndOrg(h.org); setIndResult(h.result) }
+                  else { setCiTab('org'); setOrgName(h.org); setOrgResults(h.result) }
+                }}
                   style={{ padding:'12px 14px', background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius)', cursor:'pointer', display:'flex', justifyContent:'space-between', alignItems:'center' }}
-                  onMouseEnter={e => e.currentTarget.style.background='var(--bg-secondary)'}
-                  onMouseLeave={e => e.currentTarget.style.background='var(--bg-panel)'}>
+                  onMouseEnter={e=>e.currentTarget.style.background='var(--bg-secondary)'}
+                  onMouseLeave={e=>e.currentTarget.style.background='var(--bg-panel)'}>
                   <div>
                     <div style={{ fontSize:12, fontWeight:600, color:'var(--text)' }}>
-                      {h.type === 'individual' ? `${h.name} · ${h.org}` : `${h.org} (${h.personaCount} personas)`}
+                      {h.type==='individual' ? `${h.name} · ${h.org}` : `${h.org} (${h.personaCount} personas)`}
                     </div>
                     <div style={{ fontSize:11, color:'var(--text-tertiary)', marginTop:2 }}>
-                      {h.type === 'individual' ? 'Individual Research' : 'Org Intelligence'} · {timeAgo(h.ts)}
+                      {h.type==='individual'?'Individual Research':'Org Intelligence'} · {timeAgo(h.ts)}
                     </div>
                   </div>
-                  <span style={{ fontSize:11, color:'var(--text-tertiary)' }}>Click to restore →</span>
+                  <span style={{ fontSize:11, color:'var(--text-tertiary)' }}>Restore →</span>
                 </div>
               ))}
-              <button onClick={() => { setHistory([]); localStorage.removeItem('cipher_ci_history') }}
+              <button onClick={()=>{setHistory([]);localStorage.removeItem('cipher_ci_history')}}
                 style={{ marginTop:4, padding:'6px 12px', background:'none', border:'1px solid var(--border)', borderRadius:'var(--radius)', fontSize:11, color:'var(--text-tertiary)', cursor:'pointer' }}>
                 Clear history
               </button>
