@@ -56,13 +56,16 @@ function cacheKey(name, org) {
 }
 
 // ── Claude prompt ─────────────────────────────────────────────────────────────
-const SYSTEM = `You are a professional intelligence researcher for a B2B healthcare sales team.
-Your job is to find REAL, VERIFIED background information on healthcare executives.
-RULES:
-- Only include information you verified through web search — never guess or hallucinate.
-- Career history: only include roles you actually found in search results with sources.
-- If you cannot verify something, omit it rather than guessing.
-- Return ONLY valid JSON with no markdown fences, no preamble, no trailing text.`;
+const SYSTEM = `You are a professional intelligence researcher for a B2B healthcare SaaS sales team (Care Continuity).
+Your job: find REAL, VERIFIED background information on healthcare executives to help a rep write a warm, personalized cold outreach email.
+
+STRICT RULES:
+1. Use web_search at least 3 times before responding. Do not guess without searching first.
+2. Career history: ONLY include verified roles with sources. If you cannot confirm a role, do not invent one.
+3. recentContent: ONLY real URLs you found. Never fabricate titles, dates, or URLs.
+4. outreachIntel: This is the most important field. Be SPECIFIC — name a real initiative, award, publication, or priority you found. Generic advice is useless. Reference something the rep could mention in a first email.
+5. If you find little to nothing about the person, set confidence: "low" and return empty arrays rather than inventing content.
+6. Return ONLY valid JSON — no markdown fences, no preamble, no explanation after the JSON.`;
 
 function buildPrompt(name, title, org, domain) {
   const domainHint = domain ? ` (domain: ${domain})` : "";
@@ -140,8 +143,8 @@ export default async function handler(req) {
   let profile = null;
   try {
     const response = await client.messages.create({
-      model:      "claude-haiku-4-5-20251001",
-      max_tokens: 2000,
+      model:      "claude-sonnet-4-5",
+      max_tokens: 3000,
       system:     SYSTEM,
       tools:      [{ type: "web_search_20250305", name: "web_search" }],
       messages:   [{ role: "user", content: buildPrompt(name, title, org, domain) }],
