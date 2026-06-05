@@ -513,6 +513,8 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
     try { return JSON.parse(localStorage.getItem('cipher_hp_overrides') || '{}') }
     catch { return {} }
   })
+  const [outlookData, setOutlookData]       = useState({ connected: false, emails: {} })
+  const [outlookLoading, setOutlookLoading] = useState(false)
 
   const fetchTodos = useCallback(async () => {
     setTodoLoading(true)
@@ -1018,6 +1020,26 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
 
   useEffect(() => { fetchData() }, [fetchData])
   useEffect(() => { fetchTodos(); syncTodos() }, [fetchTodos, syncTodos])
+
+  // ── Load Outlook sent emails for sentAt resolution ────────────────────────
+  useEffect(() => {
+    if (!user?.id) return
+    setOutlookLoading(true)
+    safeFetch(`/api/outlook-emails?userId=${user.id}&days=30`)
+      .then(data => { if (data) setOutlookData(data) })
+      .catch(e => console.error('[outlook] load failed:', e.message))
+      .finally(() => setOutlookLoading(false))
+
+    // Check for ?outlook_connected=1 or ?outlook_error=... in URL
+    const params = new URLSearchParams(window.location.search)
+    if (params.has('outlook_connected')) {
+      window.history.replaceState({}, '', window.location.pathname)
+    }
+    if (params.has('outlook_error')) {
+      console.error('[outlook] OAuth error:', params.get('outlook_error'))
+      window.history.replaceState({}, '', window.location.pathname)
+    }
+  }, [user?.id])
 
   // ── Auto-create / update High Priority To-Dos from Gold Target signals ──────
   // todoItemsRef: snapshot so the HP effect doesn't re-fire every time a todo is added
@@ -2013,6 +2035,23 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                   <SectionTitle style={{ margin:0, flexShrink:0 }}>Live signals</SectionTitle>
                   <div style={{ display:'flex', alignItems:'center', gap:6, flex:1, justifyContent:'flex-end' }}>
                     <Select value={signalSort} onChange={setSignalSort} options={SIGNAL_SORT_OPTIONS} />
+                    {/* Outlook connection indicator */}
+                    {!outlookLoading && (
+                      outlookData.connected
+                        ? <span style={{ fontSize:10, color:'var(--text-tertiary)', display:'flex', alignItems:'center', gap:4, flexShrink:0 }}>
+                            <span style={{ width:6, height:6, borderRadius:'50%', background:'#22c55e', display:'inline-block' }}/>
+                            Outlook
+                          </span>
+                        : <button onClick={() => user?.id && (window.location.href = `/api/outlook-auth?userId=${user.id}`)}
+                            title="Connect Outlook to get accurate email send timestamps"
+                            style={{ flexShrink:0, display:'flex', alignItems:'center', gap:5,
+                              background:'var(--bg-secondary)', border:'1px solid var(--border)',
+                              borderRadius:'var(--radius)', padding:'5px 10px', fontSize:11,
+                              fontWeight:500, color:'var(--accent)', cursor:'pointer' }}>
+                            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M2 8l10 6 10-6"/></svg>
+                            Connect Outlook
+                          </button>
+                    )}
                     <button onClick={exportSignalsCSV} title="Export to CSV (bot opens excluded)"
                       style={{ flexShrink:0, display:'flex', alignItems:'center', gap:5, background:'var(--bg-secondary)', border:'1px solid var(--border)', borderRadius:'var(--radius)', padding:'5px 10px', fontSize:11, fontWeight:500, color:'var(--text-secondary)', cursor:'pointer' }}>
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
@@ -2058,7 +2097,22 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
 
                   const chain     = s.eventChain || []
                   const chainTs   = (type) => chain.find(e => e.type === type)?.timestamp || null
-                  const sentAt    = s.sentAt    || chainTs('SENT')    || null
+                  // sentAt: HubSpot field → event chain → Outlook sent items lookup
+                  const _outlookSentAt = (() => {
+                    if (!outlookData.connected) return null
+                    const email = s.contact?.email?.toLowerCase()
+                    if (!email) return null
+                    const sent = outlookData.emails[email]
+                    if (!sent?.length) return null
+                    const activityTs = s.openedAt || s.clickedAt || s.repliedAt || chainTs('OPENED') || chainTs('CLICKED') || chainTs('REPLIED') || s.timestamp
+                    // Find most recent email sent ON OR BEFORE the activity
+                    if (activityTs) {
+                      const activity = new Date(activityTs).getTime()
+                      return sent.find(e => new Date(e.sentAt).getTime() <= activity + 7 * 24 * 60 * 60 * 1000)?.sentAt || null
+                    }
+                    return sent[0]?.sentAt || null
+                  })()
+                  const sentAt    = s.sentAt || chainTs('SENT') || _outlookSentAt || null
                   const openedAt  = s.openedAt  || chainTs('OPENED')  || (s.eventType === 'OPEN'  ? s.timestamp : null)
                   const clickedAt = s.clickedAt || chainTs('CLICKED') || (s.eventType === 'CLICK' ? s.timestamp : null)
                   const repliedAt = s.repliedAt || chainTs('REPLIED') || null
