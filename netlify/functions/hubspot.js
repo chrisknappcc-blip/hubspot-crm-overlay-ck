@@ -4530,7 +4530,8 @@ export const handler = async (event, context) => {
         const contactData = await hsPost(user.userId, "/crm/v3/objects/contacts/batch/read", {
           inputs: batchIds.map(id => ({ id })),
           properties: ["assigned_bdr", "primary_outreach_rep", "hubspot_owner_id",
-                       "hs_email_optout", "existing_customer"],
+                       "hs_email_optout", "existing_customer",
+                       "firstname", "lastname", "company"],   // needed for dry run display
         }).catch(() => ({ results: [] }));
 
         const contacts = contactData.results || [];
@@ -4549,27 +4550,61 @@ export const handler = async (event, context) => {
 
         const engagementOwners = {};
 
+        // Use v3 CRM emails endpoint — returns outbound emails with hubspot_owner_id populated.
+        // The v1 engagements endpoint returns ownerId: null for Outlook/Exchange-synced emails;
+        // the v3 emails object stores the sending rep correctly.
         await Promise.all(contactsNeedingEngagements.map(async contactId => {
           try {
-            // Single call returns all engagement types sorted by most recent
-            const data = await hsGet(user.userId,
-              `/engagements/v1/engagements/associated/contact/${contactId}/paged`,
-              { limit: 5, count: 5 }
-            ).catch(() => ({ results: [] }));
+            const emailData = await hsPost(user.userId, "/crm/v3/objects/emails/search", {
+              filterGroups: [{
+                filters: [
+                  { propertyName: "associations.contact", operator: "EQ",  value: contactId },
+                  { propertyName: "hs_email_direction",   operator: "EQ",  value: "EMAIL" },
+                ]
+              }],
+              properties: ["hs_timestamp", "hubspot_owner_id", "hs_email_from_email"],
+              sorts:       [{ propertyName: "hs_timestamp", direction: "DESCENDING" }],
+              limit:       5,
+            }).catch(() => ({ results: [] }));
 
             let mostRecentTs    = 0;
             let mostRecentOwner = null;
 
-            for (const eng of (data.results || [])) {
-              const ts      = eng.engagement?.lastUpdated || eng.engagement?.timestamp || 0;
-              const ownerId = String(eng.engagement?.ownerId || "");
+            for (const email of (emailData.results || [])) {
+              const ts      = email.properties?.hs_timestamp
+                ? new Date(email.properties.hs_timestamp).getTime() : 0;
+              const ownerId = String(email.properties?.hubspot_owner_id || "");
               if (ts > mostRecentTs && ownerId) {
                 mostRecentTs    = ts;
                 mostRecentOwner = ownerId;
               }
             }
 
-            engagementOwners[contactId] = { ownerId: mostRecentOwner, ts: mostRecentTs };
+            // Also check calls and meetings via v3 CRM if no email owner found
+            if (!mostRecentOwner) {
+              for (const objType of ["calls", "meetings"]) {
+                const actData = await hsPost(user.userId, `/crm/v3/objects/${objType}/search`, {
+                  filterGroups: [{ filters: [
+                    { propertyName: "associations.contact", operator: "EQ", value: contactId }
+                  ]}],
+                  properties: ["hs_timestamp", "hubspot_owner_id"],
+                  sorts:      [{ propertyName: "hs_timestamp", direction: "DESCENDING" }],
+                  limit:      3,
+                }).catch(() => ({ results: [] }));
+                for (const act of (actData.results || [])) {
+                  const ts      = act.properties?.hs_timestamp
+                    ? new Date(act.properties.hs_timestamp).getTime() : 0;
+                  const ownerId = String(act.properties?.hubspot_owner_id || "");
+                  if (ts > mostRecentTs && ownerId) {
+                    mostRecentTs    = ts;
+                    mostRecentOwner = ownerId;
+                  }
+                }
+                if (mostRecentOwner) break;
+              }
+            }
+
+            engagementOwners[contactId] = { ownerId: mostRecentOwner || null, ts: mostRecentTs };
           } catch {
             engagementOwners[contactId] = { ownerId: null, ts: 0 };
           }
