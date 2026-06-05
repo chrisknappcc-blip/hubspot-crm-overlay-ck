@@ -565,70 +565,64 @@ function ContactIntelPanel({ user, safeFetch }) {
     }
   }
 
-  // ── Shared profile renderer ─────────────────────────────────────────────────
-  function ProfileView({ data, compact }) {
+  // ── Shared profile renderer (used in Org Intel detail panel) ─────────────────
+  function ProfileView({ data }) {
     if (!data?.profile) return null
     const p = data.profile
     return (
-      <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
-        {/* Outreach Intel — always first */}
+      <div style={{ display:'flex', flexDirection:'column', gap:18 }}>
         {p.outreachIntel && (
-          <div style={{ background:'rgba(59,130,246,.07)', border:'1px solid rgba(59,130,246,.2)', borderRadius:'var(--radius)', padding:14 }}>
-            <div style={{ fontSize:11, fontWeight:700, color:'var(--accent)', marginBottom:7, display:'flex', alignItems:'center', gap:5 }}>
-              <span>⚡</span> OUTREACH INTEL
+          <div>
+            <div style={{ fontSize:10, fontWeight:700, letterSpacing:'.1em', color:'var(--text-tertiary)', marginBottom:8 }}>OUTREACH INTEL</div>
+            <div style={{ background:'rgba(59,130,246,.06)', border:'1px solid rgba(59,130,246,.15)', borderRadius:8, padding:12 }}>
+              <div style={{ fontSize:13, color:'var(--text-secondary)', lineHeight:1.65 }}>{p.outreachIntel}</div>
             </div>
-            <div style={{ fontSize:13, color:'var(--text-secondary)', lineHeight:1.65 }}>{p.outreachIntel}</div>
           </div>
         )}
-
-        {/* Career History */}
         {p.careerHistory?.length > 0 && (
           <div>
-            <div style={{ fontSize:11, fontWeight:600, color:'var(--text-tertiary)', marginBottom:8, letterSpacing:'.05em' }}>CAREER HISTORY</div>
+            <div style={{ fontSize:10, fontWeight:700, letterSpacing:'.1em', color:'var(--text-tertiary)', marginBottom:10 }}>CAREER HISTORY</div>
             {p.careerHistory.map((c,i) => (
-              <div key={i} style={{ display:'flex', gap:10, marginBottom:10 }}>
-                <div style={{ width:3, minHeight:40, background:i===0?'var(--accent)':'var(--border)', borderRadius:2, flexShrink:0, marginTop:2 }} />
+              <div key={i} style={{ display:'flex', gap:0, marginBottom:12 }}>
+                <div style={{ width:3, background:i===0?'var(--accent)':'var(--border)', borderRadius:2, flexShrink:0, marginRight:12, marginTop:2 }} />
                 <div>
-                  <div style={{ fontSize:13, fontWeight:600, color:'var(--text)' }}>{c.title}</div>
-                  <div style={{ fontSize:12, color:'var(--accent)' }}>{c.org}{c.years ? ` · ${c.years}` : ''}</div>
-                  {c.summary && <div style={{ fontSize:12, color:'var(--text-tertiary)', lineHeight:1.5, marginTop:2 }}>{c.summary}</div>}
+                  <div style={{ fontSize:13, fontWeight:700, color:'var(--text)' }}>{c.title}</div>
+                  <div style={{ display:'flex', alignItems:'center', gap:6, marginTop:2 }}>
+                    <span style={{ fontSize:12, color:'var(--accent)', fontWeight:500 }}>{c.org}</span>
+                    {c.years && <span style={{ fontSize:10, color:'var(--text-tertiary)', background:'var(--bg-secondary)', borderRadius:20, padding:'1px 6px' }}>{c.years}</span>}
+                  </div>
+                  {c.summary && <div style={{ fontSize:12, color:'var(--text-tertiary)', lineHeight:1.5, marginTop:3 }}>{c.summary}</div>}
                 </div>
               </div>
             ))}
           </div>
         )}
-
-        {/* Org Context */}
         {p.orgContext && (
           <div>
-            <div style={{ fontSize:11, fontWeight:600, color:'var(--text-tertiary)', marginBottom:6, letterSpacing:'.05em' }}>ORG CONTEXT</div>
+            <div style={{ fontSize:10, fontWeight:700, letterSpacing:'.1em', color:'var(--text-tertiary)', marginBottom:8 }}>ORG CONTEXT</div>
             <div style={{ fontSize:13, color:'var(--text-secondary)', lineHeight:1.6 }}>{p.orgContext}</div>
           </div>
         )}
-
-        {/* Recent Content */}
         {p.recentContent?.length > 0 && (
           <div>
-            <div style={{ fontSize:11, fontWeight:600, color:'var(--text-tertiary)', marginBottom:8, letterSpacing:'.05em' }}>RECENT CONTENT</div>
+            <div style={{ fontSize:10, fontWeight:700, letterSpacing:'.1em', color:'var(--text-tertiary)', marginBottom:8 }}>RECENT CONTENT</div>
             {p.recentContent.map((c,i) => (
-              <div key={i} style={{ marginBottom:8, paddingBottom:8, borderBottom: i<p.recentContent.length-1?'1px solid var(--border)':'none' }}>
-                <div style={{ display:'flex', alignItems:'center', gap:5, marginBottom:2 }}>
-                  <span style={{ fontSize:13 }}>{CI_CONTENT_ICONS[c.type]||'🔗'}</span>
+              <div key={i} style={{ marginBottom:10, paddingBottom:10, borderBottom:i<p.recentContent.length-1?'1px solid var(--border)':'none' }}>
+                <div style={{ display:'flex', alignItems:'center', gap:5, marginBottom:3 }}>
+                  <span style={{ fontSize:12 }}>{CI_CONTENT_ICONS[c.type]||'🔗'}</span>
                   <span style={{ fontSize:10, color:'var(--text-tertiary)', textTransform:'uppercase' }}>{c.type?.replace(/_/g,' ')}{c.date?` · ${c.date}`:''}</span>
                 </div>
                 {c.url
-                  ? <a href={c.url} target="_blank" rel="noopener noreferrer" style={{ fontSize:13, color:'var(--accent)', textDecoration:'none', fontWeight:500 }}>{c.title}</a>
-                  : <div style={{ fontSize:13, color:'var(--text)', fontWeight:500 }}>{c.title}</div>}
-                {c.summary && <div style={{ fontSize:12, color:'var(--text-tertiary)', marginTop:2 }}>{c.summary}</div>}
+                  ? <a href={c.url} target="_blank" rel="noopener noreferrer" style={{ fontSize:12, color:'var(--accent)', textDecoration:'none', fontWeight:600 }}>{c.title}</a>
+                  : <div style={{ fontSize:12, color:'var(--text)', fontWeight:600 }}>{c.title}</div>}
+                {c.summary && <div style={{ fontSize:11, color:'var(--text-tertiary)', marginTop:2 }}>{c.summary}</div>}
               </div>
             ))}
           </div>
         )}
-
-        <div style={{ fontSize:10, color:'var(--text-tertiary)', display:'flex', gap:10 }}>
+        <div style={{ fontSize:10, color:'var(--text-tertiary)', display:'flex', gap:8 }}>
           <span>Confidence: <b style={{ color:p.confidence==='high'?'#16a34a':p.confidence==='medium'?'#D97706':'var(--red)' }}>{p.confidence}</b></span>
           {data.fromCache && <span>· Cached</span>}
-          {p.sources?.length > 0 && <span>· {p.sources.length} source{p.sources.length>1?'s':''}</span>}
         </div>
       </div>
     )
@@ -704,47 +698,179 @@ function ContactIntelPanel({ user, safeFetch }) {
       {/* ── INDIVIDUAL RESEARCH ── */}
       {ciTab === 'individual' && (
         <div>
-          <div style={{ background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius-lg)', padding:20, marginBottom:20 }}>
-            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr auto', gap:10, alignItems:'end' }}>
-              {[['FULL NAME','e.g. Lakshmi Halasyamani',indName,setIndName],
+          {/* Hero section — matches original app aesthetic */}
+          {!indResult && !indLoading && (
+            <div style={{ marginBottom:32, paddingTop:8 }}>
+              <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:16 }}>
+                <div style={{ width:32, height:2, background:'var(--accent)' }} />
+                <span style={{ fontSize:11, letterSpacing:'.1em', color:'var(--accent)', fontWeight:600 }}>
+                  🎯 INDIVIDUAL PROSPECT INTELLIGENCE
+                </span>
+              </div>
+              <div style={{ fontSize:36, fontWeight:800, color:'var(--text)', lineHeight:1.15, marginBottom:12 }}>
+                Research any{' '}
+                <em style={{ color:'var(--accent)', fontStyle:'italic', fontWeight:800 }}>prospect</em>
+                <br />in seconds.
+              </div>
+              <div style={{ fontSize:14, color:'var(--text-tertiary)', maxWidth:560, lineHeight:1.65 }}>
+                Pull press releases, articles, awards, podcasts, presentations, and full background profiles for any healthcare executive.
+              </div>
+            </div>
+          )}
+
+          {/* Search card */}
+          <div style={{ background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:16, padding:24, marginBottom:24, maxWidth: indResult ? '100%' : 700 }}>
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:12, marginBottom:14 }}>
+              {[['FULL NAME','e.g. Dr. Jane Smith',indName,setIndName],
                 ['TITLE / ROLE','e.g. Chief Medical Officer',indTitle,setIndTitle],
-                ['HEALTH SYSTEM','e.g. Endeavor Health',indOrg,setIndOrg],
+                ['HEALTH SYSTEM','e.g. Mayo Clinic',indOrg,setIndOrg],
               ].map(([label,ph,val,set]) => (
                 <div key={label}>
-                  <div style={{ fontSize:11, color:'var(--text-tertiary)', marginBottom:4, fontWeight:500 }}>{label}</div>
+                  <div style={{ fontSize:10, color:'var(--text-tertiary)', marginBottom:6, fontWeight:600, letterSpacing:'.06em' }}>{label}</div>
                   <input value={val} onChange={e=>set(e.target.value)} placeholder={ph}
                     onKeyDown={e=>e.key==='Enter' && runIndividualResearch()}
-                    style={{ width:'100%', padding:'8px 10px', background:'var(--bg-secondary)', border:'1px solid var(--border)', borderRadius:'var(--radius)', fontSize:13, color:'var(--text)', boxSizing:'border-box' }} />
+                    style={{ width:'100%', padding:'10px 12px', background:'var(--bg-secondary)', border:'1px solid var(--border)',
+                      borderRadius:8, fontSize:13, color:'var(--text)', boxSizing:'border-box',
+                      outline:'none' }} />
                 </div>
               ))}
-              <button onClick={()=>runIndividualResearch()} disabled={indLoading||!indName.trim()||!indOrg.trim()}
-                style={{ padding:'8px 20px', background:indLoading?'var(--bg-secondary)':'var(--accent)',
-                  color:indLoading?'var(--text-tertiary)':'#fff', border:'none', borderRadius:'var(--radius)',
-                  fontSize:13, fontWeight:600, cursor:indLoading?'not-allowed':'pointer', whiteSpace:'nowrap' }}>
-                {indLoading ? '⟳ Researching…' : 'Research'}
-              </button>
             </div>
+            <button onClick={()=>runIndividualResearch()} disabled={indLoading||!indName.trim()||!indOrg.trim()}
+              style={{ width:'100%', padding:'12px 0', display:'flex', alignItems:'center', justifyContent:'center', gap:8,
+                background: indLoading || !indName.trim() || !indOrg.trim() ? 'var(--bg-secondary)' : 'var(--accent)',
+                color: indLoading || !indName.trim() || !indOrg.trim() ? 'var(--text-tertiary)' : '#000',
+                border:'none', borderRadius:8, fontSize:14, fontWeight:700,
+                cursor: indLoading || !indName.trim() || !indOrg.trim() ? 'not-allowed' : 'pointer',
+                transition:'background .15s' }}>
+              {indLoading
+                ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Researching…</>
+                : <><span>🔍</span> Research this person</>
+              }
+            </button>
           </div>
 
-          {indError && <div style={{ padding:12, background:'rgba(239,68,68,.08)', border:'1px solid rgba(239,68,68,.3)', borderRadius:'var(--radius)', color:'#ef4444', fontSize:13, marginBottom:16 }}>{indError}</div>}
+          {indError && (
+            <div style={{ padding:14, background:'rgba(239,68,68,.08)', border:'1px solid rgba(239,68,68,.3)', borderRadius:10, color:'#ef4444', fontSize:13, marginBottom:20 }}>
+              {indError}
+            </div>
+          )}
 
           {indResult?.profile && (() => {
             const p = indResult.profile
+            const contentTypes = p.recentContent?.reduce((acc,c) => {
+              acc[c.type] = (acc[c.type]||0)+1; return acc
+            }, {}) || {}
+            const total = p.recentContent?.length || 0
+            const [activeFilter, setActiveFilter] = React.useState('all')
+
             return (
               <div>
-                <div style={{ background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius-lg)', padding:'14px 18px', marginBottom:16, display:'flex', alignItems:'center', gap:14 }}>
-                  <div style={{ flex:1 }}>
-                    <div style={{ fontSize:18, fontWeight:700, color:'var(--text)' }}>{p.name}</div>
-                    {p.title && <div style={{ fontSize:13, color:'var(--text-secondary)' }}>{p.title} · <span style={{ color:'var(--accent)' }}>{p.org}</span></div>}
+                {/* Person header */}
+                <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', marginBottom:24, paddingBottom:20, borderBottom:'1px solid var(--border)' }}>
+                  <div>
+                    <div style={{ fontSize:28, fontWeight:800, color:'var(--text)', marginBottom:4 }}>{p.name}</div>
+                    <div style={{ fontSize:14, color:'var(--text-secondary)' }}>
+                      {p.title}{p.org ? <> · <span style={{ color:'var(--accent)' }}>{p.org}</span></> : ''}
+                    </div>
                   </div>
-                  <div style={{ display:'flex', gap:6 }}>
-                    {p.verifiedRole && <span style={{ fontSize:11, background:'rgba(34,197,94,.12)', color:'#16a34a', borderRadius:10, padding:'2px 8px', fontWeight:500 }}>Verified</span>}
-                    <span style={{ fontSize:11, background:'var(--bg-secondary)', border:'1px solid var(--border)', borderRadius:10, padding:'2px 8px', color:'var(--text-tertiary)' }}>
-                      Confidence: {p.confidence}
+                  <div style={{ display:'flex', gap:6, flexShrink:0 }}>
+                    {p.verifiedRole && <span style={{ fontSize:11, background:'rgba(34,197,94,.12)', color:'#16a34a', borderRadius:20, padding:'3px 10px', fontWeight:600 }}>✓ Verified</span>}
+                    <span style={{ fontSize:11, background:'var(--bg-secondary)', border:'1px solid var(--border)', borderRadius:20, padding:'3px 10px', color:'var(--text-tertiary)' }}>
+                      {p.confidence} confidence
                     </span>
+                    <button onClick={()=>{setIndResult(null)}}
+                      style={{ fontSize:11, background:'none', border:'1px solid var(--border)', borderRadius:20, padding:'3px 10px', color:'var(--text-tertiary)', cursor:'pointer' }}>
+                      New search
+                    </button>
                   </div>
                 </div>
-                <ProfileView data={indResult} />
+
+                <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:24 }}>
+                  {/* Left col: career + content */}
+                  <div>
+                    {/* Career history */}
+                    {p.careerHistory?.length > 0 && (
+                      <div style={{ marginBottom:28 }}>
+                        <div style={{ fontSize:11, fontWeight:700, letterSpacing:'.1em', color:'var(--text-tertiary)', marginBottom:16 }}>CAREER HISTORY</div>
+                        {p.careerHistory.map((c,i) => (
+                          <div key={i} style={{ display:'flex', gap:0, marginBottom:16 }}>
+                            <div style={{ width:3, background: i===0 ? 'var(--accent)' : 'var(--border)', borderRadius:2, flexShrink:0, marginRight:14, marginTop:2 }} />
+                            <div>
+                              <div style={{ fontSize:14, fontWeight:700, color:'var(--text)' }}>{c.title}</div>
+                              <div style={{ display:'flex', alignItems:'center', gap:8, marginTop:2, marginBottom:4 }}>
+                                <span style={{ fontSize:13, color:'var(--accent)', fontWeight:500 }}>{c.org}</span>
+                                {c.years && <span style={{ fontSize:11, color:'var(--text-tertiary)', background:'var(--bg-secondary)', borderRadius:20, padding:'1px 8px' }}>{c.years}</span>}
+                              </div>
+                              {c.summary && <div style={{ fontSize:13, color:'var(--text-tertiary)', lineHeight:1.55 }}>{c.summary}</div>}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Recent content with filter pills */}
+                    {total > 0 && (
+                      <div>
+                        <div style={{ fontSize:11, fontWeight:700, letterSpacing:'.1em', color:'var(--text-tertiary)', marginBottom:12 }}>RECENT CONTENT</div>
+                        <div style={{ display:'flex', gap:6, flexWrap:'wrap', marginBottom:14 }}>
+                          {[['all', `All ${total}`], ...Object.entries(contentTypes).map(([k,v]) => [k, `${k.replace(/_/g,' ')} ${v}`])].map(([type, label]) => (
+                            <button key={type} onClick={()=>setActiveFilter(type)}
+                              style={{ padding:'3px 10px', fontSize:11, borderRadius:20, border:'1px solid var(--border)', cursor:'pointer', fontWeight:500,
+                                background: activeFilter===type ? 'var(--accent)' : 'var(--bg-secondary)',
+                                color: activeFilter===type ? '#000' : 'var(--text-secondary)' }}>
+                              {label}
+                            </button>
+                          ))}
+                        </div>
+                        {p.recentContent.filter(c => activeFilter==='all' || c.type===activeFilter).map((c,i) => (
+                          <div key={i} style={{ marginBottom:12, paddingBottom:12, borderBottom:'1px solid var(--border)' }}>
+                            <div style={{ display:'flex', alignItems:'center', gap:6, marginBottom:4 }}>
+                              <span style={{ fontSize:13 }}>{CI_CONTENT_ICONS[c.type]||'🔗'}</span>
+                              <span style={{ fontSize:10, color:'var(--text-tertiary)', textTransform:'uppercase', letterSpacing:'.05em' }}>
+                                {c.type?.replace(/_/g,' ')}{c.date ? ` · ${c.date}` : ''}
+                              </span>
+                            </div>
+                            {c.url
+                              ? <a href={c.url} target="_blank" rel="noopener noreferrer" style={{ fontSize:13, color:'var(--accent)', textDecoration:'none', fontWeight:600, lineHeight:1.4, display:'block' }}>{c.title}</a>
+                              : <div style={{ fontSize:13, color:'var(--text)', fontWeight:600 }}>{c.title}</div>}
+                            {c.summary && <div style={{ fontSize:12, color:'var(--text-tertiary)', marginTop:3, lineHeight:1.5 }}>{c.summary}</div>}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Right col: outreach intel + org context */}
+                  <div>
+                    {p.outreachIntel && (
+                      <div style={{ marginBottom:24 }}>
+                        <div style={{ fontSize:11, fontWeight:700, letterSpacing:'.1em', color:'var(--text-tertiary)', marginBottom:12 }}>OUTREACH INTEL</div>
+                        <div style={{ background:'rgba(59,130,246,.06)', border:'1px solid rgba(59,130,246,.15)', borderRadius:10, padding:16 }}>
+                          <div style={{ fontSize:13, color:'var(--text-secondary)', lineHeight:1.7 }}>{p.outreachIntel}</div>
+                        </div>
+                      </div>
+                    )}
+                    {p.orgContext && (
+                      <div>
+                        <div style={{ fontSize:11, fontWeight:700, letterSpacing:'.1em', color:'var(--text-tertiary)', marginBottom:12 }}>HEALTH SYSTEM INTEL</div>
+                        <div style={{ background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:10, padding:16 }}>
+                          <div style={{ fontSize:13, color:'var(--text-secondary)', lineHeight:1.7 }}>{p.orgContext}</div>
+                        </div>
+                      </div>
+                    )}
+                    {p.sources?.length > 0 && (
+                      <div style={{ marginTop:16 }}>
+                        <div style={{ fontSize:11, fontWeight:700, letterSpacing:'.1em', color:'var(--text-tertiary)', marginBottom:8 }}>SOURCES</div>
+                        {p.sources.slice(0,3).map((s,i) => (
+                          <a key={i} href={s} target="_blank" rel="noopener noreferrer"
+                            style={{ display:'block', fontSize:11, color:'var(--accent)', marginBottom:4, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', textDecoration:'none', opacity:.75 }}>
+                            {s}
+                          </a>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
               </div>
             )
           })()}
