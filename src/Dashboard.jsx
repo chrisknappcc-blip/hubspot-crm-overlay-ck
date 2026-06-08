@@ -1696,7 +1696,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
   useEffect(() => {
     if (!user?.id) return
     setOutlookLoading(true)
-    safeFetch(`/api/outlook-emails?userId=${user.id}&days=60`)
+    safeFetch(`/api/outlook-emails?userId=${user.id}&days=30`)
       .then(data => { if (data) setOutlookData(data) })
       .catch(e => console.error('[outlook] load failed:', e.message))
       .finally(() => setOutlookLoading(false))
@@ -1820,8 +1820,8 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
       eventType:  s.eventType,
       emailSource:s.emailSource || null,
       sentAt:     s.sentAt    || chainTs('SENT')    || null,
-      openedAt:   s.openedAt  || chainTs('OPENED')  || s.timestamp || null,
-      clickedAt:  s.clickedAt || chainTs('CLICKED') || s.timestamp || null,
+      openedAt:   s.openedAt  || chainTs('OPENED')  || (isMkt && s.eventType === 'OPEN'  ? s.timestamp : null),
+      clickedAt:  s.clickedAt || chainTs('CLICKED') || (isMkt && s.eventType === 'CLICK' ? s.timestamp : null),
       repliedAt:  s.repliedAt || chainTs('REPLIED') || null,
       subject:    s.subject   || null,
       campaignId: s.campaignId|| null,
@@ -2070,7 +2070,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                           <table style={{ width:'100%', borderCollapse:'collapse', fontSize:11 }}>
                             <thead>
                               <tr style={{ background:'var(--bg-secondary)', position:'sticky', top:0 }}>
-                                {['Contact','Company','Assigned BDR','Current Rep','Proposed Rep','Last Engagement','Eng. Owner'].map(h => (
+                                {['Contact','Company','Assigned BDR','Contact Owner','Current Rep','Proposed Rep','Source','Last Engagement','Eng. Owner'].map(h => (
                                   <th key={h} style={{ padding:'6px 10px', textAlign:'left',
                                     color:'var(--text-tertiary)', fontWeight:500,
                                     borderBottom:'1px solid var(--border)' }}>{h}</th>
@@ -2086,12 +2086,20 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                                   <td style={{ padding:'5px 10px', color:'var(--text)' }}>{row.name}</td>
                                   <td style={{ padding:'5px 10px', color:'var(--text-secondary)' }}>{row.company}</td>
                                   <td style={{ padding:'5px 10px', color:'var(--text-tertiary)' }}>{row.assignedBdr || '—'}</td>
+                                  <td style={{ padding:'5px 10px', color:'var(--text-tertiary)' }}>{row.contactOwner || '—'}</td>
                                   <td style={{ padding:'5px 10px', color:'var(--text-tertiary)' }}>{row.currentRep || '—'}</td>
                                   <td style={{ padding:'5px 10px',
                                     color: row.wouldChange ? 'var(--accent)' : 'var(--text-tertiary)',
                                     fontWeight: row.wouldChange ? 600 : 400 }}>
                                     {row.proposedRep || '—'}
                                     {row.wouldChange && <span style={{ marginLeft:4, fontSize:9, opacity:.6 }}>↑ change</span>}
+                                  </td>
+                                  <td style={{ padding:'5px 10px', fontSize:10,
+                                    color: row.repSource==='engagement' ? 'var(--accent)' : row.repSource==='contact_owner' ? '#D97706' : 'var(--text-tertiary)' }}>
+                                    {row.repSource === 'engagement' ? '⚡ engagement'
+                                      : row.repSource === 'assigned_bdr' ? '👤 BDR assigned'
+                                      : row.repSource === 'contact_owner' ? '🏠 owner'
+                                      : '—'}
                                   </td>
                                   <td style={{ padding:'5px 10px', color:'var(--text-tertiary)' }}>
                                     {row.lastEngagementTs || (row.skippedDnc ? 'DNC/skip' : 'none')}
@@ -2660,7 +2668,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                     return sent.find(e => new Date(e.sentAt).getTime() < anchor)?.sentAt || null
                   })()
                   const sentAt    = s.sentAt || chainTs('SENT') || _outlookSentAt || null
-                  const openedAt  = s.openedAt  || chainTs('OPENED')  || s.timestamp || null  // s.timestamp = event time, always valid for the Opened row
+                  const openedAt  = s.openedAt  || chainTs('OPENED')  || (s.eventType === 'OPEN'  ? s.timestamp : null)
                   const clickedAt = s.clickedAt || chainTs('CLICKED') || (s.eventType === 'CLICK' ? s.timestamp : null)
                   const repliedAt = s.repliedAt || chainTs('REPLIED') || null
                   const emailName = cleanSubject(s.subject, s.campaignId)
