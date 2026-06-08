@@ -2650,12 +2650,14 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                     if (!email) return null
                     const sent = outlookData.emails[email]
                     if (!sent?.length) return null
-                    const activityTs = s.openedAt || s.clickedAt || s.repliedAt || chainTs('OPENED') || chainTs('CLICKED') || s.timestamp
-                    if (activityTs) {
-                      const activity = new Date(activityTs).getTime()
-                      return sent.find(e => new Date(e.sentAt).getTime() <= activity)?.sentAt || null
-                    }
-                    return sent[0]?.sentAt || null
+                    // Use PRIMARY event timestamp as anchor — find the email sent before THIS event
+                    const primaryTs =
+                      s.eventType === 'REPLIED' ? (s.repliedAt || chainTs('REPLIED'))
+                      : s.eventType === 'CLICK'  ? (s.clickedAt || chainTs('CLICKED'))
+                      : (s.openedAt  || chainTs('OPENED') || s.timestamp)
+                    if (!primaryTs) return sent[0]?.sentAt || null
+                    const anchor = new Date(primaryTs).getTime()
+                    return sent.find(e => new Date(e.sentAt).getTime() < anchor)?.sentAt || null
                   })()
                   const sentAt    = s.sentAt || chainTs('SENT') || _outlookSentAt || null
                   const openedAt  = s.openedAt  || chainTs('OPENED')  || (s.eventType === 'OPEN'  ? s.timestamp : null)
