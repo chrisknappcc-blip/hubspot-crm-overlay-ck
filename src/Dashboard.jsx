@@ -1114,8 +1114,6 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
   })
   const [outlookData, setOutlookData]       = useState({ connected: false, emails: {} })
   const [outlookLoading, setOutlookLoading] = useState(false)
-  const [previewData, setPreviewData]       = useState(null)   // dry run results
-  const [previewLoading, setPreviewLoading] = useState(false)
   const saveRepSyncState = (s) => {
     setRepSyncState(s)
     try { sessionStorage.setItem('repSyncState', JSON.stringify(s)) } catch {}
@@ -1191,7 +1189,6 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
   const [todoPage, setTodoPage]       = useState(0)
   const [todoTab, setTodoTab]         = useState('high-priority')
   const TODO_PAGE_SIZE = 5
-  const TODO_PAGE_SIZE = 10
   const [todoLoading, setTodoLoading] = useState(false)
   const [todoInput, setTodoInput]     = useState('')
   const [todoDueDate, setTodoDueDate] = useState('')
