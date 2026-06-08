@@ -4433,6 +4433,7 @@ export const handler = async (event, context) => {
         const fullCrm      = body.fullCrm      || false;
         const crmCursor    = body.crmCursor    || null; // pagination cursor for full CRM mode
         const dryRun       = body.dryRun       || false; // preview mode — no writes to HubSpot
+        const repFilter    = body.repFilter    || null;  // if set, only process contacts for this rep name
 
         // All reps and their owner IDs
         const BDR_OWNER_IDS = {
@@ -4534,7 +4535,17 @@ export const handler = async (event, context) => {
                        "firstname", "lastname", "company"],   // needed for dry run display
         }).catch(() => ({ results: [] }));
 
-        const contacts = contactData.results || [];
+        let contacts = contactData.results || [];
+
+        // repFilter: narrow to just one rep's contacts (e.g. for "Run My Gold")
+        if (repFilter) {
+          contacts = contacts.filter(c => {
+            const p = c.properties || {};
+            // Match by assigned_bdr name OR by hubspot_owner_id for AE contacts
+            return p.assigned_bdr === repFilter || ALL_OWNER_ID_TO_NAME[String(p.hubspot_owner_id||'')] === repFilter;
+          });
+          console.log(`[sync-primary-rep] repFilter="${repFilter}" narrowed to ${contacts.length} contacts`);
+        }
 
         // Step 4: For each contact, find the most recent engagement owner
         // Fetch engagements using the v1 engagements endpoint — one call per contact
