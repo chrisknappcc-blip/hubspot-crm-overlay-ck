@@ -1696,7 +1696,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
   useEffect(() => {
     if (!user?.id) return
     setOutlookLoading(true)
-    safeFetch(`/api/outlook-emails?userId=${user.id}&days=30`)
+    safeFetch(`/api/outlook-emails?userId=${user.id}&days=60`)
       .then(data => { if (data) setOutlookData(data) })
       .catch(e => console.error('[outlook] load failed:', e.message))
       .finally(() => setOutlookLoading(false))
@@ -1820,8 +1820,8 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
       eventType:  s.eventType,
       emailSource:s.emailSource || null,
       sentAt:     s.sentAt    || chainTs('SENT')    || null,
-      openedAt:   s.openedAt  || chainTs('OPENED')  || (isMkt && s.eventType === 'OPEN'  ? s.timestamp : null),
-      clickedAt:  s.clickedAt || chainTs('CLICKED') || (isMkt && s.eventType === 'CLICK' ? s.timestamp : null),
+      openedAt:   s.openedAt  || chainTs('OPENED')  || (s.eventType === 'OPEN'  ? s.timestamp : null),
+      clickedAt:  s.clickedAt || chainTs('CLICKED') || (s.eventType === 'CLICK' ? s.timestamp : null),
       repliedAt:  s.repliedAt || chainTs('REPLIED') || null,
       subject:    s.subject   || null,
       campaignId: s.campaignId|| null,
@@ -2650,12 +2650,14 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                     if (!email) return null
                     const sent = outlookData.emails[email]
                     if (!sent?.length) return null
-                    const activityTs = s.openedAt || s.clickedAt || s.repliedAt || chainTs('OPENED') || chainTs('CLICKED') || s.timestamp
-                    if (activityTs) {
-                      const activity = new Date(activityTs).getTime()
-                      return sent.find(e => new Date(e.sentAt).getTime() <= activity)?.sentAt || null
-                    }
-                    return sent[0]?.sentAt || null
+                    // Use PRIMARY event timestamp as anchor — find the email sent before THIS event
+                    const primaryTs =
+                      s.eventType === 'REPLIED' ? (s.repliedAt || chainTs('REPLIED'))
+                      : s.eventType === 'CLICK'  ? (s.clickedAt || chainTs('CLICKED'))
+                      : (s.openedAt  || chainTs('OPENED') || s.timestamp)
+                    if (!primaryTs) return sent[0]?.sentAt || null
+                    const anchor = new Date(primaryTs).getTime()
+                    return sent.find(e => new Date(e.sentAt).getTime() < anchor)?.sentAt || null
                   })()
                   const sentAt    = s.sentAt || chainTs('SENT') || _outlookSentAt || null
                   const openedAt  = s.openedAt  || chainTs('OPENED')  || (s.eventType === 'OPEN'  ? s.timestamp : null)
@@ -2762,12 +2764,14 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                             </div>
                           )}
 
-                          {/* Timestamps */}
+                          {/* Timestamps — only show the primary event's timestamp.
+                               HubSpot tracks opened/replied across ALL emails independently,
+                               so mixing them creates impossible orderings (replied before opened). */}
                           <div style={{ display:'flex', flexDirection:'column', gap:2 }}>
-                            <TsRow label="Sent"     ts={sentAt}    base={null} />
-                            <TsRow label="Opened"   ts={openedAt}  base={sentAt} />
-                            <TsRow label="Clicked"  ts={clickedAt} base={sentAt} />
-                            <TsRow label="Replied"  ts={repliedAt} base={sentAt} />
+                            <TsRow label="Sent"    ts={sentAt}   base={null} />
+                            {isReply && <TsRow label="Replied"  ts={repliedAt} base={sentAt} />}
+                            {isClick && <TsRow label="Clicked"  ts={clickedAt} base={sentAt} />}
+                            {!isReply && !isClick && <TsRow label="Opened"  ts={openedAt}  base={sentAt} />}
                           </div>
 
                         </div>
