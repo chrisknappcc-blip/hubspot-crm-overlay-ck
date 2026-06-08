@@ -2716,7 +2716,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                                 {s.emailSource === 'sales' ? '1:1' : 'Sequence'}
                               </span>
                             </span>
-                            {(autoHP || hpOverrides[s.contactId] !== undefined) && (
+                            {s.contactId && (
                               <button onClick={e => { e.stopPropagation(); toggleHpOverride(s.contactId, isHP) }}
                                 title={isHP ? 'High Priority — click to remove' : 'Mark as High Priority'}
                                 style={{ background:'none', border:'none', cursor:'pointer', padding:'0 2px',
