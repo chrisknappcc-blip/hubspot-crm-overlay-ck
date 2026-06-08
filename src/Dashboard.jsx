@@ -1173,6 +1173,44 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
     }
   }
 
+  // Run preview/sync for the logged-in user's contacts only
+  const myRepName = user?.firstName && user?.lastName
+    ? `${user.firstName} ${user.lastName}`
+    : filterBdr || null
+
+  const runDryRunMine = async () => {
+    if (!myRepName) return
+    setPreviewLoading(true)
+    setPreviewData(null)
+    try {
+      const res = await safeFetch(`/api/hubspot/sync-primary-rep`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ batchStart: 0, batchSize: 50, fullCrm: false, dryRun: true, repFilter: myRepName }),
+      })
+      setPreviewData(res)
+    } catch(e) {
+      setPreviewData({ error: e.message })
+    } finally {
+      setPreviewLoading(false)
+    }
+  }
+
+  const runRepSyncMine = async () => {
+    if (!myRepName) return
+    saveRepSyncState({ running: true, done: false, updated: 0, skipped: 0, total: 0, progress: `Syncing ${myRepName} Gold contacts…` })
+    try {
+      const res = await safeFetch(`/api/hubspot/sync-primary-rep`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ batchStart: 0, batchSize: 200, fullCrm: false, dryRun: false, repFilter: myRepName }),
+      })
+      saveRepSyncState({ running: false, done: true, updated: res.updated || 0, skipped: res.skipped || 0, total: res.total || 0 })
+    } catch(e) {
+      saveRepSyncState({ running: false, done: false, updated: 0, skipped: 0, total: 0, progress: `Error: ${e.message}` })
+    }
+  }
+
   const [syncMode, setSyncMode]             = useState(() => {
     try { return sessionStorage.getItem('syncMode') || 'gold' } catch { return 'gold' }
   })
@@ -2015,6 +2053,22 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                         </div>
                       )}
                       <div style={{ display:'flex', gap:6, flexShrink:0, flexWrap:'wrap' }}>
+                        <button onClick={runDryRunMine} disabled={repSyncState.running || previewLoading || !myRepName}
+                          style={{ padding:'6px 10px', background:'none',
+                            border:'1px solid var(--accent)',
+                            color: (repSyncState.running || previewLoading || !myRepName) ? 'var(--text-tertiary)' : 'var(--accent)',
+                            borderRadius:'var(--radius)', fontSize:11,
+                            cursor: (repSyncState.running || previewLoading || !myRepName) ? 'not-allowed' : 'pointer' }}>
+                          {previewLoading ? '⟳ Previewing…' : `Preview Mine${myRepName ? ` (${myRepName.split(' ')[0]})` : ''}`}
+                        </button>
+                        <button onClick={runRepSyncMine} disabled={repSyncState.running || !myRepName}
+                          style={{ padding:'6px 10px', background:'none',
+                            border:'1px solid var(--accent)',
+                            color: (repSyncState.running || !myRepName) ? 'var(--text-tertiary)' : 'var(--accent)',
+                            borderRadius:'var(--radius)', fontSize:11, fontWeight:600,
+                            cursor: (repSyncState.running || !myRepName) ? 'not-allowed' : 'pointer' }}>
+                          {repSyncState.running ? '⟳ Running…' : `Run Mine`}
+                        </button>
                         <button onClick={runDryRun} disabled={repSyncState.running || previewLoading}
                           style={{ padding:'6px 10px', background:'none',
                             border:'1px solid var(--amber, #D97706)',
