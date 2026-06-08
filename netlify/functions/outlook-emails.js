@@ -15,7 +15,7 @@
 // }
 // OR { connected: false, emails: {} }  when no tokens stored
 
-import { BlobServiceClient } from "@azure/storage-blob";
+// No external dependencies — uses fetch + Azure Blob REST API directly
 
 const CLIENT_ID     = process.env.MICROSOFT_CLIENT_ID;
 const CLIENT_SECRET = process.env.MICROSOFT_CLIENT_SECRET;
@@ -36,27 +36,32 @@ function json(data, status = 200) {
   });
 }
 
-// ── Azure Blob helpers ────────────────────────────────────────────────────────
-function container() {
+// ── Azure Blob REST API helpers ───────────────────────────────────────────────
+function blobUrl(name) {
   const sas = process.env.AZURE_STORAGE_SAS_TOKEN;
-  return new BlobServiceClient(
-    `https://${AZURE_ACCOUNT}.blob.core.windows.net?${sas}`
-  ).getContainerClient(CONTAINER);
+  return `https://${AZURE_ACCOUNT}.blob.core.windows.net/${CONTAINER}/${name}?${sas}`;
 }
 
 async function getBlob(name) {
   try {
-    const dl   = await container().getBlockBlobClient(name).download();
-    const chunks = [];
-    for await (const chunk of dl.readableStreamBody) chunks.push(chunk);
-    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    const res = await fetch(blobUrl(name));
+    if (!res.ok) return null;
+    return await res.json();
   } catch { return null; }
 }
 
 async function setBlob(name, data) {
   const text = JSON.stringify(data);
-  await container().getBlockBlobClient(name)
-    .upload(text, text.length, { blobHTTPHeaders: { blobContentType: "application/json" } });
+  const res  = await fetch(blobUrl(name), {
+    method:  "PUT",
+    headers: {
+      "Content-Type":   "application/json",
+      "Content-Length": String(new TextEncoder().encode(text).length),
+      "x-ms-blob-type": "BlockBlob",
+    },
+    body: text,
+  });
+  if (!res.ok) throw new Error(`Azure PUT ${res.status}`);
 }
 
 // ── Token management ──────────────────────────────────────────────────────────
