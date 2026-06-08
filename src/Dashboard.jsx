@@ -1696,7 +1696,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
   useEffect(() => {
     if (!user?.id) return
     setOutlookLoading(true)
-    safeFetch(`/api/outlook-emails?userId=${user.id}&days=30`)
+    safeFetch(`/api/outlook-emails?userId=${user.id}&days=60`)
       .then(data => { if (data) setOutlookData(data) })
       .catch(e => console.error('[outlook] load failed:', e.message))
       .finally(() => setOutlookLoading(false))
@@ -1820,8 +1820,8 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
       eventType:  s.eventType,
       emailSource:s.emailSource || null,
       sentAt:     s.sentAt    || chainTs('SENT')    || null,
-      openedAt:   s.openedAt  || chainTs('OPENED')  || (isMkt && s.eventType === 'OPEN'  ? s.timestamp : null),
-      clickedAt:  s.clickedAt || chainTs('CLICKED') || (isMkt && s.eventType === 'CLICK' ? s.timestamp : null),
+      openedAt:   s.openedAt  || chainTs('OPENED')  || s.timestamp || null,
+      clickedAt:  s.clickedAt || chainTs('CLICKED') || s.timestamp || null,
       repliedAt:  s.repliedAt || chainTs('REPLIED') || null,
       subject:    s.subject   || null,
       campaignId: s.campaignId|| null,
@@ -2660,7 +2660,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                     return sent.find(e => new Date(e.sentAt).getTime() < anchor)?.sentAt || null
                   })()
                   const sentAt    = s.sentAt || chainTs('SENT') || _outlookSentAt || null
-                  const openedAt  = s.openedAt  || chainTs('OPENED')  || (s.eventType === 'OPEN'  ? s.timestamp : null)
+                  const openedAt  = s.openedAt  || chainTs('OPENED')  || s.timestamp || null  // s.timestamp = event time, always valid for the Opened row
                   const clickedAt = s.clickedAt || chainTs('CLICKED') || (s.eventType === 'CLICK' ? s.timestamp : null)
                   const repliedAt = s.repliedAt || chainTs('REPLIED') || null
                   const emailName = cleanSubject(s.subject, s.campaignId)
