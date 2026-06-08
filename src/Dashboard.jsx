@@ -1106,6 +1106,14 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
     return { running:false, done:false, updated:0, skipped:0, total:0, progress:'' }
   })
   const [adminOpen, setAdminOpen]           = useState(false)
+  const [previewData, setPreviewData]       = useState(null)
+  const [previewLoading, setPreviewLoading] = useState(false)
+  const [hpOverrides, setHpOverrides] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('cipher_hp_overrides') || '{}') }
+    catch { return {} }
+  })
+  const [outlookData, setOutlookData]       = useState({ connected: false, emails: {} })
+  const [outlookLoading, setOutlookLoading] = useState(false)
   const [previewData, setPreviewData]       = useState(null)   // dry run results
   const [previewLoading, setPreviewLoading] = useState(false)
   const saveRepSyncState = (s) => {
@@ -1181,6 +1189,8 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
   // ── To-Do list state ────────────────────────────────────────────────────────
   const [todoItems, setTodoItems]     = useState([])
   const [todoPage, setTodoPage]       = useState(0)
+  const [todoTab, setTodoTab]         = useState('high-priority')
+  const TODO_PAGE_SIZE = 5
   const TODO_PAGE_SIZE = 10
   const [todoLoading, setTodoLoading] = useState(false)
   const [todoInput, setTodoInput]     = useState('')
@@ -1304,6 +1314,32 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
   const [gapBatchProgress, setGapBatchProgress] = useState('')
   const [expandedGaps, setExpandedGaps]   = useState({}) // keyed by companyId
   const [goldSelectedAccount, setGoldSelectedAccount] = useState(null)
+
+  // ── Gold Target / High Priority helpers ──────────────────────────────────────
+  const goldCompanyIds = useMemo(
+    () => new Set((goldAccounts || []).map(a => a.id).filter(Boolean)),
+    [goldAccounts]
+  )
+  const autoIsHP = useCallback((signal) => {
+    if (!signal?.contactId) return false
+    return !!(signal.contact?.target_persona) &&
+           goldCompanyIds.has(signal.contact?.associatedcompanyid)
+  }, [goldCompanyIds])
+  const isHighPriority = useCallback((signal) => {
+    if (!signal?.contactId) return false
+    const override = hpOverrides[signal.contactId]
+    if (override !== undefined) return override
+    return autoIsHP(signal)
+  }, [hpOverrides, autoIsHP])
+  const toggleHpOverride = useCallback((contactId, currentValue) => {
+    setHpOverrides(prev => {
+      const next = { ...prev }
+      if (prev[contactId] !== undefined) { delete next[contactId] }
+      else { next[contactId] = !currentValue }
+      try { localStorage.setItem('cipher_hp_overrides', JSON.stringify(next)) } catch {}
+      return next
+    })
+  }, [])
 
   // ── Persisted report filter state ─────────────────────────────────────────
   // Lifted up to Dashboard so state survives tab switches (ReportsTab unmounts/remounts)
@@ -1648,6 +1684,54 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
 
   useEffect(() => { fetchData() }, [fetchData])
   useEffect(() => { fetchTodos(); syncTodos() }, [fetchTodos, syncTodos])
+
+  // ── ownRepName: capture logged-in user's rep name once on load ───────────────
+  const ownRepName = useRef(null)
+  useEffect(() => {
+    if (filterBdr && !ownRepName.current) ownRepName.current = filterBdr
+  }, [filterBdr])
+
+  // ── Load Outlook sent emails for sentAt resolution ────────────────────────
+  useEffect(() => {
+    if (!user?.id) return
+    setOutlookLoading(true)
+    safeFetch(`/api/outlook-emails?userId=${user.id}&days=30`)
+      .then(data => { if (data) setOutlookData(data) })
+      .catch(e => console.error('[outlook] load failed:', e.message))
+      .finally(() => setOutlookLoading(false))
+    const params = new URLSearchParams(window.location.search)
+    if (params.has('outlook_connected') || params.has('outlook_error')) {
+      window.history.replaceState({}, '', window.location.pathname)
+    }
+  }, [user?.id])
+
+  // ── Auto-create High Priority To-Dos from Gold Target signals ────────────────
+  const todoItemsRef = useRef([])
+  useEffect(() => { todoItemsRef.current = todoItems }, [todoItems])
+  const hpProcessed = useRef(new Set())
+  useEffect(() => {
+    if (!signals.length) return
+    if (ownRepName.current && filterBdr && filterBdr !== ownRepName.current) return
+    signals.forEach(signal => {
+      if (!signal.contactId || !isHighPriority(signal)) return
+      if (hpProcessed.current.has(signal.contactId)) return
+      hpProcessed.current.add(signal.contactId)
+      const signalType = signal.score >= 100 ? 'replied' : signal.score >= 60 ? 'clicked' : 'opened'
+      const name       = signal.contact?.name || signal.recipientEmail || 'Contact'
+      const taskText   = signalType === 'replied'
+        ? `Reply to ${name} — responded to your email`
+        : signalType === 'clicked'
+        ? `Follow up — ${name} clicked your email, no reply yet`
+        : `Follow up — ${name} opened your email, no reply yet`
+      const subtext    = [signal.contact?.company, signal.contact?.title].filter(Boolean).join(' · ')
+      const existing   = todoItemsRef.current.find(t =>
+        t.contactId === signal.contactId && t.priority === 'HIGH' && !t.completed
+      )
+      if (!existing) {
+        addTodoItem(taskText, { priority:'HIGH', contactId:signal.contactId, type:'high-priority', subtext })
+      }
+    })
+  }, [signals, isHighPriority, filterBdr])
   // Stagger all fetches to avoid rate limit storm on filter change or mount.
   // Signals (fetchData) fires immediately ~2s, tasks at 1s, gold at 3s, activity at 5s, content at 4s.
   useEffect(() => {
@@ -2080,8 +2164,39 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                   </button>
                 </div>
               </div>
+              {/* High Priority | All tabs */}
+              {(() => {
+                const hpCount  = todoItems.filter(t => t.priority === 'HIGH' && !t.completed).length
+                const allCount = todoItems.filter(t => !t.completed).length
+                return (
+                  <div style={{ display:'flex', borderBottom:'1px solid var(--border)', marginBottom:10 }}>
+                    {[
+                      { key:'high-priority', label:'High Priority', count:hpCount,  color:'#D97706' },
+                      { key:'all',           label:'All',           count:allCount, color:'var(--accent)' },
+                    ].map(tab => (
+                      <button key={tab.key} onClick={() => { setTodoTab(tab.key); setTodoPage(0) }}
+                        style={{ padding:'6px 14px', fontSize:12, fontWeight:todoTab===tab.key?600:400,
+                          color:todoTab===tab.key?tab.color:'var(--text-tertiary)',
+                          background:'none', border:'none',
+                          borderBottom:todoTab===tab.key?`2px solid ${tab.color}`:'2px solid transparent',
+                          cursor:'pointer', display:'flex', alignItems:'center', gap:5 }}>
+                        {tab.label}
+                        {tab.count > 0 && (
+                          <span style={{ background:todoTab===tab.key?tab.color:'var(--bg-secondary)',
+                            color:todoTab===tab.key?'#fff':'var(--text-tertiary)',
+                            borderRadius:10, padding:'1px 6px', fontSize:9, fontWeight:700 }}>
+                            {tab.count}
+                          </span>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                )
+              })()}
               <div style={{ fontSize:11, color:'var(--text-tertiary)', marginBottom:10 }}>
-                ⭐ Gold Account contacts surface first. Meetings show HubSpot-logged only — full calendar sync available once Outlook is connected.
+                {todoTab === 'high-priority'
+                  ? '🔴 Gold Account contacts flagged for immediate follow-up. Red outline = 48 hrs overdue.'
+                  : '⭐ Gold Account contacts surface first. Meetings show HubSpot-logged only — full calendar sync available once Outlook is connected.'}
               </div>
 
               {/* Add item input */}
@@ -2115,7 +2230,10 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
               )}
 
               {!todoLoading && todoItems.length > 0 && (() => {
-                const active    = todoItems.filter(t => !t.completed)
+                const allActive = todoItems.filter(t => !t.completed)
+                const active    = todoTab === 'high-priority'
+                  ? allActive.filter(t => t.priority === 'HIGH').sort((a,b) => new Date(a.createdAt||0) - new Date(b.createdAt||0))
+                  : allActive
                 const done      = todoItems.filter(t => t.completed)
                 const pageActive = active.slice(todoPage * TODO_PAGE_SIZE, (todoPage + 1) * TODO_PAGE_SIZE)
                 return (
@@ -2239,15 +2357,23 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                 {/* Section tabs */}
                 <div style={{ display:'flex', gap:0, marginBottom:12, background:'var(--bg-secondary)', borderRadius:'var(--radius)', padding:3 }}>
                   {[
-                    { key:'replies',   label:'Replies', count: taskData.repliesAwaitingResponse.length },
-                    { key:'sequences', label:'Sequences', count: taskData.upcomingSequences.length },
-                    { key:'tasks',     label:'Due tasks', count: taskData.dueTasks.length },
-                  ].map(({ key, label, count }) => (
+                    { key:'high-priority', label:'High Priority', count: todoItems.filter(t=>t.priority==='HIGH'&&!t.completed).length, amber:true },
+                    { key:'replies',       label:'Replies',       count: taskData.repliesAwaitingResponse.length },
+                    { key:'sequences',     label:'Sequences',     count: taskData.upcomingSequences.length },
+                    { key:'tasks',         label:'Due tasks',     count: taskData.dueTasks.length },
+                  ].map(({ key, label, count, amber }) => (
                     <button key={key} onClick={() => { setTaskSection(key); setTaskPage(0) }}
-                      style={{ flex:1, fontSize:12, fontWeight: taskSection===key ? 500 : 400, color: taskSection===key ? 'var(--text)' : 'var(--text-tertiary)', background: taskSection===key ? 'var(--bg-panel)' : 'transparent', border:'none', borderRadius:'var(--radius)', padding:'5px 8px', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', gap:5 }}>
+                      style={{ flex:1, fontSize:12, fontWeight: taskSection===key ? 500 : 400,
+                        color: taskSection===key ? (amber?'#D97706':'var(--text)') : 'var(--text-tertiary)',
+                        background: taskSection===key ? 'var(--bg-panel)' : 'transparent',
+                        border:'none', borderRadius:'var(--radius)', padding:'5px 8px', cursor:'pointer',
+                        display:'flex', alignItems:'center', justifyContent:'center', gap:5 }}>
                       {label}
                       {count > 0 && (
-                        <span style={{ fontSize:10, fontWeight:600, background: taskSection===key ? (key==='replies' ? 'var(--red-light)' : 'var(--accent-light)') : 'var(--border)', color: taskSection===key ? (key==='replies' ? 'var(--red)' : 'var(--accent-text)') : 'var(--text-tertiary)', borderRadius:10, padding:'0 5px', minWidth:16, textAlign:'center' }}>
+                        <span style={{ fontSize:10, fontWeight:600,
+                          background: taskSection===key ? (amber?'rgba(217,119,6,.15)':key==='replies'?'var(--red-light)':'var(--accent-light)') : 'var(--border)',
+                          color: taskSection===key ? (amber?'#D97706':key==='replies'?'var(--red)':'var(--accent-text)') : 'var(--text-tertiary)',
+                          borderRadius:10, padding:'0 5px', minWidth:16, textAlign:'center' }}>
                           {count}
                         </span>
                       )}
@@ -2256,6 +2382,38 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                 </div>
 
                 {taskLoading && <div style={{ color:'var(--text-tertiary)', fontSize:13 }}>Loading...</div>}
+
+                {/* Section: High Priority */}
+                {!taskLoading && taskSection === 'high-priority' && (() => {
+                  const hpItems = todoItems.filter(t => t.priority === 'HIGH' && !t.completed)
+                  return (
+                    <div>
+                      {hpItems.length === 0 && (
+                        <div style={{ color:'var(--text-tertiary)', fontSize:13, textAlign:'center', padding:'20px 0' }}>
+                          No high priority items right now.
+                        </div>
+                      )}
+                      {hpItems.map((item, i) => {
+                        const overdue = item.createdAt && (Date.now() - new Date(item.createdAt).getTime() > 48*60*60*1000)
+                        return (
+                          <div key={item.id} style={{ padding:'10px 12px', marginBottom:6, borderRadius:'var(--radius)',
+                            background:'rgba(217,119,6,.06)', border:`1px solid ${overdue?'rgba(239,68,68,.5)':'rgba(217,119,6,.3)'}` }}>
+                            <div style={{ fontSize:13, fontWeight:500, color:'var(--text)', marginBottom:2 }}>{item.text}</div>
+                            {item.subtext && <div style={{ fontSize:11, color:'var(--text-tertiary)' }}>{item.subtext}</div>}
+                            <div style={{ display:'flex', gap:8, marginTop:4, alignItems:'center' }}>
+                              {overdue && <span style={{ fontSize:10, color:'var(--red)', fontWeight:600 }}>⚠ 48h overdue</span>}
+                              {item.createdAt && <span style={{ fontSize:10, color:'var(--text-tertiary)' }}>Added {timeAgo(item.createdAt)}</span>}
+                              <button onClick={() => toggleTodo(item.id, true)}
+                                style={{ marginLeft:'auto', fontSize:11, background:'none', border:'1px solid var(--border)', borderRadius:'var(--radius)', padding:'2px 8px', color:'var(--text-tertiary)', cursor:'pointer' }}>
+                                Done
+                              </button>
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )
+                })()}
 
                 {/* Section: Replies awaiting response */}
                 {!taskLoading && taskSection === 'replies' && (
@@ -2423,6 +2581,23 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                   <SectionTitle style={{ margin:0, flexShrink:0 }}>Live signals</SectionTitle>
                   <div style={{ display:'flex', alignItems:'center', gap:6, flex:1, justifyContent:'flex-end' }}>
                     <Select value={signalSort} onChange={setSignalSort} options={SIGNAL_SORT_OPTIONS} />
+                    {/* Outlook connection indicator */}
+                    {!outlookLoading && (
+                      outlookData.connected
+                        ? <span style={{ fontSize:10, color:'var(--text-tertiary)', display:'flex', alignItems:'center', gap:4, flexShrink:0 }}>
+                            <span style={{ width:6, height:6, borderRadius:'50%', background:'#22c55e', display:'inline-block' }}/>
+                            Outlook
+                          </span>
+                        : <button onClick={() => user?.id && (window.location.href = `/api/outlook-auth?userId=${user.id}`)}
+                            title="Connect Outlook to get accurate email send timestamps"
+                            style={{ flexShrink:0, display:'flex', alignItems:'center', gap:5,
+                              background:'var(--bg-secondary)', border:'1px solid var(--border)',
+                              borderRadius:'var(--radius)', padding:'5px 10px', fontSize:11,
+                              fontWeight:500, color:'var(--accent)', cursor:'pointer' }}>
+                            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M2 8l10 6 10-6"/></svg>
+                            Connect Outlook
+                          </button>
+                    )}
                     <button onClick={exportSignalsCSV} title="Export to CSV (bot opens excluded)"
                       style={{ flexShrink:0, display:'flex', alignItems:'center', gap:5, background:'var(--bg-secondary)', border:'1px solid var(--border)', borderRadius:'var(--radius)', padding:'5px 10px', fontSize:11, fontWeight:500, color:'var(--text-secondary)', cursor:'pointer' }}>
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
@@ -2468,7 +2643,20 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
 
                   const chain     = s.eventChain || []
                   const chainTs   = (type) => chain.find(e => e.type === type)?.timestamp || null
-                  const sentAt    = s.sentAt    || chainTs('SENT')    || null
+                  const _outlookSentAt = (() => {
+                    if (!outlookData.connected) return null
+                    const email = s.contact?.email?.toLowerCase()
+                    if (!email) return null
+                    const sent = outlookData.emails[email]
+                    if (!sent?.length) return null
+                    const activityTs = s.openedAt || s.clickedAt || s.repliedAt || chainTs('OPENED') || chainTs('CLICKED') || s.timestamp
+                    if (activityTs) {
+                      const activity = new Date(activityTs).getTime()
+                      return sent.find(e => new Date(e.sentAt).getTime() <= activity + 7*24*60*60*1000)?.sentAt || null
+                    }
+                    return sent[0]?.sentAt || null
+                  })()
+                  const sentAt    = s.sentAt || chainTs('SENT') || _outlookSentAt || null
                   const openedAt  = s.openedAt  || chainTs('OPENED')  || (s.eventType === 'OPEN'  ? s.timestamp : null)
                   const clickedAt = s.clickedAt || chainTs('CLICKED') || (s.eventType === 'CLICK' ? s.timestamp : null)
                   const repliedAt = s.repliedAt || chainTs('REPLIED') || null
@@ -2493,8 +2681,26 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                     )
                   }
 
+                  const isHP   = isHighPriority(s)
+                  const autoHP = autoIsHP(s)
+
                   return (
-                    <div key={i} style={{ padding:'11px 0', borderBottom: !isLast ? '1px solid var(--border)' : 'none' }}>
+                    <div key={i} style={{ padding:'11px 10px', marginBottom: isHP ? 4 : 0,
+                      borderRadius: isHP ? 'var(--radius)' : 0,
+                      background: isHP ? 'rgba(217,119,6,.07)' : 'transparent',
+                      border: isHP ? '1px solid rgba(217,119,6,.35)' : (!isLast ? '1px solid var(--border)' : 'none') }}>
+                      {s.contactId && (
+                        <div style={{ display:'flex', alignItems:'center', gap:6, marginBottom:6 }}>
+                          <input type="checkbox" checked={isHP}
+                            onChange={e => { e.stopPropagation(); toggleHpOverride(s.contactId, isHP) }}
+                            style={{ cursor:'pointer', accentColor:'#D97706', width:13, height:13, flexShrink:0 }} />
+                          <span style={{ fontSize:10, fontWeight:600, color: isHP ? '#D97706' : 'var(--text-tertiary)', letterSpacing:'.04em', textTransform:'uppercase' }}>
+                            Gold Target
+                          </span>
+                          {isHP && <span style={{ fontSize:9, fontWeight:700, background:'#D97706', color:'#fff', borderRadius:3, padding:'1px 6px', letterSpacing:'.04em', textTransform:'uppercase' }}>High Priority</span>}
+                          {!autoHP && isHP && <span style={{ fontSize:9, color:'var(--text-tertiary)', fontStyle:'italic' }}>manual</span>}
+                        </div>
+                      )}
                       <div style={{ display:'flex', gap:10 }}>
 
                         {/* Icon */}
