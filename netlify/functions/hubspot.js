@@ -2281,8 +2281,7 @@ export const handler = async (event, context) => {
         // Bug fix: filter eventChain to only show events within the signals window
         // This prevents year-old clicks/opens appearing in the chain
         const sinceISO2 = new Date(since).toISOString();
-        // SENT events are never filtered by window — a sent date from weeks ago is still valid context
-        const recentChain = eventChain.filter(e => e.type === 'SENT' || !e.timestamp || e.timestamp >= sinceISO2);
+        const recentChain = eventChain.filter(e => !e.timestamp || e.timestamp >= sinceISO2);
         // Keep at minimum the primary triggering event even if chain is empty
         if (recentChain.length === 0 && primaryTs) {
           recentChain.push({ type: eventType, timestamp: primaryTs, label: label, source: emailSource });
@@ -4542,7 +4541,9 @@ export const handler = async (event, context) => {
         // returns all engagement types (email, call, meeting, note) with owner + timestamp
         // 4x fewer API calls vs querying each type separately
         const contactMap = Object.fromEntries(contacts.map(c => [c.id, c]));
-        const contactsNeedingEngagements = forceRefresh
+        // During dry run, always look up all contacts so the preview shows
+        // real engagement hit rate rather than 0% from skipping already-assigned contacts
+        const contactsNeedingEngagements = (forceRefresh || dryRun)
           ? batchIds
           : batchIds.filter(id => {
               const p = contactMap[id]?.properties || {};
@@ -4556,17 +4557,17 @@ export const handler = async (event, context) => {
         // the v3 emails object stores the sending rep correctly.
         await Promise.all(contactsNeedingEngagements.map(async contactId => {
           try {
-            // -- v3 emails search
-            const emailData = await hsPost(user.userId, "/crm/v3/objects/emails/search", {
-              filterGroups: [{
-                filters: [
-                  { propertyName: "associations.contact", operator: "EQ", value: contactId },
-                ]
-              }],
-              properties: ["hs_timestamp", "hubspot_owner_id", "hs_email_direction", "hs_email_from_email"],
-              sorts:       [{ propertyName: "hs_timestamp", direction: "DESCENDING" }],
-              limit:       5,
-            }).catch(e => { console.log(`[sync] v3 emails error for ${contactId}: ${e.message}`); return { results: [] }; });
+            // -- v3 emails via associations endpoint (more reliable than search filter)
+            const assocData = await hsGet(user.userId,
+              `/crm/v3/objects/contacts/${contactId}/associations/emails`, {}
+            ).catch(() => ({ results: [] }));
+            const emailIds = (assocData.results || []).map(r => r.id).slice(0, 10);
+            const emailData = emailIds.length > 0
+              ? await hsPost(user.userId, "/crm/v3/objects/emails/batch/read", {
+                  inputs:     emailIds.map(id => ({ id })),
+                  properties: ["hs_timestamp", "hubspot_owner_id", "hs_email_direction", "hs_email_from_email"],
+                }).catch(() => ({ results: [] }))
+              : { results: [] };
 
             // -- v1 engagements as fallback (check ownerId AND metadata.from)
             const engData = await hsGet(user.userId,
@@ -4654,7 +4655,13 @@ export const handler = async (event, context) => {
           const lastOwnerId = eng?.ownerId || null;
           const lastOwnerName = lastOwnerId ? (ALL_OWNER_ID_TO_NAME[lastOwnerId] || null) : null;
 
-          let newRep = assignedBdr; // default
+          // Contact owner fallback: if no BDR assigned, use hubspot_owner_id (the AE)
+          const contactOwnerId   = String(p.hubspot_owner_id || '');
+          const contactOwnerName = (contactOwnerId && !EXCLUDED_FROM_PRIMARY.has(contactOwnerId))
+            ? (ALL_OWNER_ID_TO_NAME[contactOwnerId] || null)
+            : null;
+
+          let newRep = assignedBdr || contactOwnerName; // BDR > AE owner > null
 
           if (lastOwnerName && !EXCLUDED_FROM_PRIMARY.has(lastOwnerId)) {
             const lastOwnerIsBdr = BDR_OWNER_ID_SET.has(lastOwnerId);
@@ -4691,13 +4698,25 @@ export const handler = async (event, context) => {
             const update = updates.find(u => u.id === contact.id);
             const ownerName = eng?.ownerId ? (ALL_OWNER_ID_TO_NAME[eng.ownerId] || `Unknown (${eng.ownerId})`) : null;
             const excluded  = eng?.ownerId ? EXCLUDED_FROM_PRIMARY.has(eng.ownerId) : false;
+            // Determine source of proposed rep for display
+            const contactOwnerId2   = String(p.hubspot_owner_id || '');
+            const contactOwnerName2 = (contactOwnerId2 && !EXCLUDED_FROM_PRIMARY.has(contactOwnerId2))
+              ? (ALL_OWNER_ID_TO_NAME[contactOwnerId2] || null) : null;
+            const proposedFinal = update?.properties?.primary_outreach_rep || p.primary_outreach_rep || null;
+            const repSource = eng?.ownerId && ownerName && !excluded ? 'engagement'
+              : p.assigned_bdr ? 'assigned_bdr'
+              : contactOwnerName2 ? 'contact_owner'
+              : 'none';
+
             return {
               contactId:            contact.id,
               name:                 [p.firstname, p.lastname].filter(Boolean).join(' ') || '(no name)',
               company:              p.company || '',
               assignedBdr:          p.assigned_bdr || null,
+              contactOwner:         contactOwnerName2,
               currentRep:           p.primary_outreach_rep || null,
-              proposedRep:          update?.properties?.primary_outreach_rep || p.primary_outreach_rep || null,
+              proposedRep:          proposedFinal,
+              repSource,
               wouldChange:          !!update,
               hasEngagements:       !!(eng?.ownerId),
               lastEngagementOwner:  ownerName,
