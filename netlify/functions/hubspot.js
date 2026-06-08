@@ -2281,7 +2281,8 @@ export const handler = async (event, context) => {
         // Bug fix: filter eventChain to only show events within the signals window
         // This prevents year-old clicks/opens appearing in the chain
         const sinceISO2 = new Date(since).toISOString();
-        const recentChain = eventChain.filter(e => !e.timestamp || e.timestamp >= sinceISO2);
+        // SENT events are never filtered by window — a sent date from weeks ago is still valid context
+        const recentChain = eventChain.filter(e => e.type === 'SENT' || !e.timestamp || e.timestamp >= sinceISO2);
         // Keep at minimum the primary triggering event even if chain is empty
         if (recentChain.length === 0 && primaryTs) {
           recentChain.push({ type: eventType, timestamp: primaryTs, label: label, source: emailSource });
