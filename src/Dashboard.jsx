@@ -1317,10 +1317,14 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
     () => new Set((goldAccounts || []).map(a => a.id).filter(Boolean)),
     [goldAccounts]
   )
+  const HP_EXCLUDE = ['assistant','coordinator','secretary','administrative','receptionist','scheduler']
   const autoIsHP = useCallback((signal) => {
     if (!signal?.contactId) return false
-    return !!(signal.contact?.target_persona) &&
-           goldCompanyIds.has(signal.contact?.associatedcompanyid)
+    if (!signal.contact?.target_persona) return false
+    if (!goldCompanyIds.has(signal.contact?.associatedcompanyid)) return false
+    const title = (signal.contact?.title || '').toLowerCase()
+    if (HP_EXCLUDE.some(t => title.includes(t))) return false
+    return true
   }, [goldCompanyIds])
   const isHighPriority = useCallback((signal) => {
     if (!signal?.contactId) return false
@@ -2686,18 +2690,6 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                       borderRadius: isHP ? 'var(--radius)' : 0,
                       background: isHP ? 'rgba(217,119,6,.07)' : 'transparent',
                       border: isHP ? '1px solid rgba(217,119,6,.35)' : (!isLast ? '1px solid var(--border)' : 'none') }}>
-                      {s.contactId && (
-                        <div style={{ display:'flex', alignItems:'center', gap:6, marginBottom:6 }}>
-                          <input type="checkbox" checked={isHP}
-                            onChange={e => { e.stopPropagation(); toggleHpOverride(s.contactId, isHP) }}
-                            style={{ cursor:'pointer', accentColor:'#D97706', width:13, height:13, flexShrink:0 }} />
-                          <span style={{ fontSize:10, fontWeight:600, color: isHP ? '#D97706' : 'var(--text-tertiary)', letterSpacing:'.04em', textTransform:'uppercase' }}>
-                            Gold Target
-                          </span>
-                          {isHP && <span style={{ fontSize:9, fontWeight:700, background:'#D97706', color:'#fff', borderRadius:3, padding:'1px 6px', letterSpacing:'.04em', textTransform:'uppercase' }}>High Priority</span>}
-                          {!autoHP && isHP && <span style={{ fontSize:9, color:'var(--text-tertiary)', fontStyle:'italic' }}>manual</span>}
-                        </div>
-                      )}
                       <div style={{ display:'flex', gap:10 }}>
 
                         {/* Icon */}
@@ -2715,12 +2707,28 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
 
                           {/* Action label — color coded */}
                           <div style={{ fontSize:11, fontWeight:700, color:accentCol,
-                            textTransform:'uppercase', letterSpacing:'.05em', marginBottom:3 }}>
-                            {actionLabel}
-                            <span style={{ fontSize:10, fontWeight:500, marginLeft:6, textTransform:'none',
-                              letterSpacing:0, color: s.emailSource === 'sales' ? 'var(--blue)' : 'var(--text-tertiary)' }}>
-                              {s.emailSource === 'sales' ? '1:1' : 'Sequence'}
+                            textTransform:'uppercase', letterSpacing:'.05em', marginBottom:3,
+                            display:'flex', alignItems:'center', justifyContent:'space-between' }}>
+                            <span>
+                              {actionLabel}
+                              <span style={{ fontSize:10, fontWeight:500, marginLeft:6, textTransform:'none',
+                                letterSpacing:0, color: s.emailSource === 'sales' ? 'var(--blue)' : 'var(--text-tertiary)' }}>
+                                {s.emailSource === 'sales' ? '1:1' : 'Sequence'}
+                              </span>
                             </span>
+                            {(autoHP || hpOverrides[s.contactId] !== undefined) && (
+                              <button onClick={e => { e.stopPropagation(); toggleHpOverride(s.contactId, isHP) }}
+                                title={isHP ? 'High Priority — click to remove' : 'Mark as High Priority'}
+                                style={{ background:'none', border:'none', cursor:'pointer', padding:'0 2px',
+                                  fontSize:13, lineHeight:1, color: isHP ? '#D97706' : 'var(--text-tertiary)',
+                                  display:'flex', alignItems:'center', gap:4 }}>
+                                {isHP ? '★' : '☆'}
+                                <span style={{ fontSize:9, fontWeight:600, letterSpacing:'.04em',
+                                  color: isHP ? '#D97706' : 'var(--text-tertiary)' }}>
+                                  GOLD TARGET{isHP ? ' · HIGH PRIORITY' : ''}
+                                </span>
+                              </button>
+                            )}
                           </div>
 
                           {/* Name */}
