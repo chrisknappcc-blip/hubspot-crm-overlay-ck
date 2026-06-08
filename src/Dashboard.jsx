@@ -2653,7 +2653,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                     const activityTs = s.openedAt || s.clickedAt || s.repliedAt || chainTs('OPENED') || chainTs('CLICKED') || s.timestamp
                     if (activityTs) {
                       const activity = new Date(activityTs).getTime()
-                      return sent.find(e => new Date(e.sentAt).getTime() <= activity + 7*24*60*60*1000)?.sentAt || null
+                      return sent.find(e => new Date(e.sentAt).getTime() <= activity)?.sentAt || null
                     }
                     return sent[0]?.sentAt || null
                   })()
@@ -2762,12 +2762,14 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                             </div>
                           )}
 
-                          {/* Timestamps */}
+                          {/* Timestamps — only show the primary event's timestamp.
+                               HubSpot tracks opened/replied across ALL emails independently,
+                               so mixing them creates impossible orderings (replied before opened). */}
                           <div style={{ display:'flex', flexDirection:'column', gap:2 }}>
-                            <TsRow label="Sent"     ts={sentAt}    base={null} />
-                            <TsRow label="Opened"   ts={openedAt}  base={sentAt} />
-                            <TsRow label="Clicked"  ts={clickedAt} base={sentAt} />
-                            <TsRow label="Replied"  ts={repliedAt} base={sentAt} />
+                            <TsRow label="Sent"    ts={sentAt}   base={null} />
+                            {isReply && <TsRow label="Replied"  ts={repliedAt} base={sentAt} />}
+                            {isClick && <TsRow label="Clicked"  ts={clickedAt} base={sentAt} />}
+                            {!isReply && !isClick && <TsRow label="Opened"  ts={openedAt}  base={sentAt} />}
                           </div>
 
                         </div>
