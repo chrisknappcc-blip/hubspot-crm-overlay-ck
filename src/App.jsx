@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { useAuth, useUser, SignIn } from '@clerk/clerk-react'
+import { useAuth, useUser, RedirectToSignIn } from '@clerk/clerk-react'
 import { apiFetch } from './api'
 import Dashboard from './Dashboard'
 
@@ -35,17 +35,7 @@ export default function App() {
 
   if (!isLoaded) return <LoadingScreen />
 
-  if (!isSignedIn) return (
-    <div style={{ display:'flex', alignItems:'center', justifyContent:'center', minHeight:'100vh', background:'var(--bg)' }}>
-      <div>
-        <div style={{ textAlign:'center', marginBottom:'2rem' }}>
-          <div style={{ fontSize:13, fontWeight:500, letterSpacing:'.06em', textTransform:'uppercase', color:'var(--text-tertiary)', marginBottom:8 }}>CarePathIQ</div>
-          <h1 style={{ fontSize:26, fontWeight:500, color:'var(--text)' }}>Sales Command Center</h1>
-        </div>
-        <SignIn afterSignInUrl="/" />
-      </div>
-    </div>
-  )
+  if (!isSignedIn) return <RedirectToSignIn />
 
   if (checkingConnection) return <LoadingScreen />
 
