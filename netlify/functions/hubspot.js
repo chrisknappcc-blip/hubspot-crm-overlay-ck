@@ -4433,7 +4433,6 @@ export const handler = async (event, context) => {
         const fullCrm      = body.fullCrm      || false;
         const crmCursor    = body.crmCursor    || null; // pagination cursor for full CRM mode
         const dryRun       = body.dryRun       || false; // preview mode — no writes to HubSpot
-        const repFilter    = body.repFilter    || null;  // if set, only process contacts for this rep name
 
         // All reps and their owner IDs
         const BDR_OWNER_IDS = {
@@ -4519,42 +4518,42 @@ export const handler = async (event, context) => {
         // Deduplicate
         allContactIds = [...new Set(allContactIds)];
         const total     = allContactIds.length;
-        const batchIds  = allContactIds.slice(batchStart, batchStart + batchSize);
-        const hasMore   = batchStart + batchSize < total;
+        // When filtering by rep, pull ALL Gold contacts (not just first batchSize) so
+        // the rep filter actually finds contacts — they may not be in the first page.
+        const effectiveBatchIds = (repFilter && !fullCrm)
+          ? allContactIds                                               // all Gold contacts
+          : allContactIds.slice(batchStart, batchStart + batchSize);   // normal pagination
+        const batchIds  = effectiveBatchIds;
+        const hasMore   = repFilter ? false : batchStart + batchSize < total;
         const nextBatch = hasMore ? batchStart + batchSize : null;
 
         if (batchIds.length === 0) {
           return ok({ done: true, updated: 0, skipped: 0, total, batchStart, nextBatch: null, message: "Batch empty" });
         }
 
-        // Step 3: Fetch contact properties for this batch
-        const contactData = await hsPost(user.userId, "/crm/v3/objects/contacts/batch/read", {
-          inputs: batchIds.map(id => ({ id })),
-          properties: ["assigned_bdr", "primary_outreach_rep", "hubspot_owner_id",
-                       "hs_email_optout", "existing_customer",
-                       "firstname", "lastname", "company"],   // needed for dry run display
-        }).catch(() => ({ results: [] }));
-
-        let contacts = contactData.results || [];
-
-        // repFilter: narrow to just one rep's contacts (e.g. for "Run My Gold")
-        if (repFilter) {
-          contacts = contacts.filter(c => {
-            const p = c.properties || {};
-            // Match by assigned_bdr name OR by hubspot_owner_id for AE contacts
-            return p.assigned_bdr === repFilter || ALL_OWNER_ID_TO_NAME[String(p.hubspot_owner_id||'')] === repFilter;
-          });
-          console.log(`[sync-primary-rep] repFilter="${repFilter}" narrowed to ${contacts.length} contacts`);
+        // Step 3: Fetch contact properties — batch in chunks of 100 (HubSpot limit)
+        const PROPS = ["assigned_bdr", "primary_outreach_rep", "hubspot_owner_id",
+                       "hs_email_optout", "existing_customer", "firstname", "lastname", "company"];
+        const contactResults = [];
+        for (let i = 0; i < batchIds.length; i += 100) {
+          const chunk = batchIds.slice(i, i + 100);
+          const chunkData = await hsPost(user.userId, "/crm/v3/objects/contacts/batch/read", {
+            inputs: chunk.map(id => ({ id })),
+            properties: PROPS,
+          }).catch(() => ({ results: [] }));
+          contactResults.push(...(chunkData.results || []));
+          if (i + 100 < batchIds.length) await new Promise(r => setTimeout(r, 150));
         }
+        const contactData = { results: contactResults };
+
+        const contacts = contactData.results || [];
 
         // Step 4: For each contact, find the most recent engagement owner
         // Fetch engagements using the v1 engagements endpoint — one call per contact
         // returns all engagement types (email, call, meeting, note) with owner + timestamp
         // 4x fewer API calls vs querying each type separately
         const contactMap = Object.fromEntries(contacts.map(c => [c.id, c]));
-        // During dry run, always look up all contacts so the preview shows
-        // real engagement hit rate rather than 0% from skipping already-assigned contacts
-        const contactsNeedingEngagements = (forceRefresh || dryRun)
+        const contactsNeedingEngagements = forceRefresh
           ? batchIds
           : batchIds.filter(id => {
               const p = contactMap[id]?.properties || {};
@@ -4568,17 +4567,17 @@ export const handler = async (event, context) => {
         // the v3 emails object stores the sending rep correctly.
         await Promise.all(contactsNeedingEngagements.map(async contactId => {
           try {
-            // -- v3 emails via associations endpoint (more reliable than search filter)
-            const assocData = await hsGet(user.userId,
-              `/crm/v3/objects/contacts/${contactId}/associations/emails`, {}
-            ).catch(() => ({ results: [] }));
-            const emailIds = (assocData.results || []).map(r => r.id).slice(0, 10);
-            const emailData = emailIds.length > 0
-              ? await hsPost(user.userId, "/crm/v3/objects/emails/batch/read", {
-                  inputs:     emailIds.map(id => ({ id })),
-                  properties: ["hs_timestamp", "hubspot_owner_id", "hs_email_direction", "hs_email_from_email"],
-                }).catch(() => ({ results: [] }))
-              : { results: [] };
+            // -- v3 emails search
+            const emailData = await hsPost(user.userId, "/crm/v3/objects/emails/search", {
+              filterGroups: [{
+                filters: [
+                  { propertyName: "associations.contact", operator: "EQ", value: contactId },
+                ]
+              }],
+              properties: ["hs_timestamp", "hubspot_owner_id", "hs_email_direction", "hs_email_from_email"],
+              sorts:       [{ propertyName: "hs_timestamp", direction: "DESCENDING" }],
+              limit:       5,
+            }).catch(e => { console.log(`[sync] v3 emails error for ${contactId}: ${e.message}`); return { results: [] }; });
 
             // -- v1 engagements as fallback (check ownerId AND metadata.from)
             const engData = await hsGet(user.userId,
@@ -4666,13 +4665,7 @@ export const handler = async (event, context) => {
           const lastOwnerId = eng?.ownerId || null;
           const lastOwnerName = lastOwnerId ? (ALL_OWNER_ID_TO_NAME[lastOwnerId] || null) : null;
 
-          // Contact owner fallback: if no BDR assigned, use hubspot_owner_id (the AE)
-          const contactOwnerId   = String(p.hubspot_owner_id || '');
-          const contactOwnerName = (contactOwnerId && !EXCLUDED_FROM_PRIMARY.has(contactOwnerId))
-            ? (ALL_OWNER_ID_TO_NAME[contactOwnerId] || null)
-            : null;
-
-          let newRep = assignedBdr || contactOwnerName; // BDR > AE owner > null
+          let newRep = assignedBdr; // default
 
           if (lastOwnerName && !EXCLUDED_FROM_PRIMARY.has(lastOwnerId)) {
             const lastOwnerIsBdr = BDR_OWNER_ID_SET.has(lastOwnerId);
@@ -4709,25 +4702,13 @@ export const handler = async (event, context) => {
             const update = updates.find(u => u.id === contact.id);
             const ownerName = eng?.ownerId ? (ALL_OWNER_ID_TO_NAME[eng.ownerId] || `Unknown (${eng.ownerId})`) : null;
             const excluded  = eng?.ownerId ? EXCLUDED_FROM_PRIMARY.has(eng.ownerId) : false;
-            // Determine source of proposed rep for display
-            const contactOwnerId2   = String(p.hubspot_owner_id || '');
-            const contactOwnerName2 = (contactOwnerId2 && !EXCLUDED_FROM_PRIMARY.has(contactOwnerId2))
-              ? (ALL_OWNER_ID_TO_NAME[contactOwnerId2] || null) : null;
-            const proposedFinal = update?.properties?.primary_outreach_rep || p.primary_outreach_rep || null;
-            const repSource = eng?.ownerId && ownerName && !excluded ? 'engagement'
-              : p.assigned_bdr ? 'assigned_bdr'
-              : contactOwnerName2 ? 'contact_owner'
-              : 'none';
-
             return {
               contactId:            contact.id,
               name:                 [p.firstname, p.lastname].filter(Boolean).join(' ') || '(no name)',
               company:              p.company || '',
               assignedBdr:          p.assigned_bdr || null,
-              contactOwner:         contactOwnerName2,
               currentRep:           p.primary_outreach_rep || null,
-              proposedRep:          proposedFinal,
-              repSource,
+              proposedRep:          update?.properties?.primary_outreach_rep || p.primary_outreach_rep || null,
               wouldChange:          !!update,
               hasEngagements:       !!(eng?.ownerId),
               lastEngagementOwner:  ownerName,
