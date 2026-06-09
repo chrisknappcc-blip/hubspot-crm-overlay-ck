@@ -6,15 +6,6 @@ export default defineConfig({
   optimizeDeps: {
     include: ['@clerk/clerk-react'],
   },
-  build: {
-    rollupOptions: {
-      output: {
-        manualChunks: {
-          clerk: ['@clerk/clerk-react'],
-        },
-      },
-    },
-  },
   server: {
     proxy: {
       '/api': {
