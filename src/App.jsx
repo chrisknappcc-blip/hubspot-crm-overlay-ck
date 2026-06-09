@@ -4,7 +4,7 @@ import { apiFetch } from './api'
 import Dashboard from './Dashboard'
 
 export default function App() {
-  const { isLoaded, isSignedIn, getToken } = useAuth()
+  const { isLoaded, isSignedIn, getToken, signOut } = useAuth()
   const { user } = useUser()
   const [theme, setTheme] = useState(() => localStorage.getItem('crm-theme') || 'light')
   const [hsConnected, setHsConnected] = useState(false)
@@ -64,6 +64,7 @@ export default function App() {
       toggleTheme={toggleTheme}
       getToken={getToken}
       onScopeError={onScopeError}
+      signOut={signOut}
     />
   )
 }
