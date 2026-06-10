@@ -1,7 +1,7 @@
-import { useState, useEffect } from 'react'
+import React, { useState, useEffect, Suspense } from 'react'
 const netlifyIdentity = window.netlifyIdentity
 import { apiFetch } from './api'
-import Dashboard from './Dashboard'
+const Dashboard = React.lazy(() => import('./Dashboard'))
 
 export default function App() {
   const [user, setUser] = useState(null)
@@ -95,14 +95,16 @@ export default function App() {
   )
 
   return (
-    <Dashboard
-      user={user}
-      theme={theme}
-      toggleTheme={toggleTheme}
-      getToken={getToken}
-      onScopeError={onScopeError}
-      signOut={signOut}
-    />
+    <Suspense fallback={<LoadingScreen />}>
+      <Dashboard
+        user={user}
+        theme={theme}
+        toggleTheme={toggleTheme}
+        getToken={getToken}
+        onScopeError={onScopeError}
+        signOut={signOut}
+      />
+    </Suspense>
   )
 }
 
