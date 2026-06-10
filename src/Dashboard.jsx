@@ -1116,10 +1116,6 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
     setRepSyncState(s)
     try { sessionStorage.setItem('repSyncState', JSON.stringify(s)) } catch {}
   }
-  const saveSyncMode = (m) => {
-    setSyncMode(m)
-    try { sessionStorage.setItem('syncMode', m) } catch {}
-  }
   const runRepSync = async (fullCrm = false, forceRefresh = false) => {
     saveSyncMode(fullCrm ? 'fullcrm' : 'gold')
     saveRepSyncState({ running:true, done:false, updated:0, skipped:0, total:0, progress:'Starting…' })
@@ -1212,6 +1208,10 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
   const [syncMode, setSyncMode]             = useState(() => {
     try { return sessionStorage.getItem('syncMode') || 'gold' } catch { return 'gold' }
   })
+  const saveSyncMode = (m) => {
+    setSyncMode(m)
+    try { sessionStorage.setItem('syncMode', m) } catch {}
+  }
   const [feed, setFeed]               = useState([])
   const [loading, setLoading]         = useState(true)
   const [signalsHasMore, setSignalsHasMore] = useState(false)

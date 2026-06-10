@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import netlifyIdentity from 'netlify-identity-widget'
+const netlifyIdentity = window.netlifyIdentity
 import { apiFetch } from './api'
 import Dashboard from './Dashboard'
 
