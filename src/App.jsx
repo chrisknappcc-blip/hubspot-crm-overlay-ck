@@ -21,7 +21,7 @@ export default function App() {
 
   useEffect(() => {
     netlifyIdentity.on('init', (u) => {
-      setUser(u)
+      setUser(u || null)
       setIsLoaded(true)
     })
     netlifyIdentity.on('login', (u) => {
@@ -33,6 +33,8 @@ export default function App() {
       setHsConnected(false)
       setCheckingConnection(true)
     })
+    // init() must be called AFTER listeners are registered
+    netlifyIdentity.init()
     return () => {
       netlifyIdentity.off('init')
       netlifyIdentity.off('login')

@@ -1,10 +1,7 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
-import netlifyIdentity from 'netlify-identity-widget'
 import App from './App'
 import './index.css'
-
-netlifyIdentity.init()
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
