@@ -33,11 +33,8 @@ export default function App() {
     netlifyIdentity.on('init', (u) => {
       setUser(u || null)
       setIsLoaded(true)
-      // Auto-open the widget for invite/recovery/email-change flows
-      // The widget will show the appropriate form based on the processed token
-      if (_hasTokenOnLoad && !u) {
-        netlifyIdentity.open()
-      }
+      // Note: the widget auto-opens its own UI for invite/recovery tokens —
+      // we do NOT call open() here as it would override the token-specific form
     })
     netlifyIdentity.on('login', (u) => {
       setUser(u)
