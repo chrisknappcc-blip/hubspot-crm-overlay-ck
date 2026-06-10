@@ -17,7 +17,6 @@ const _inviteTokenValue     = _loadParams.get('invite_token') || null
 export default function App() {
   const [user, setUser] = useState(null)
   const [isLoaded, setIsLoaded] = useState(false)
-  const [showPasswordChange, setShowPasswordChange] = useState(false)
   const [theme, setTheme] = useState(() => localStorage.getItem('crm-theme') || 'light')
   const [hsConnected, setHsConnected] = useState(false)
   const [checkingConnection, setCheckingConnection] = useState(true)
@@ -35,17 +34,21 @@ export default function App() {
     netlifyIdentity.on('init', (u) => {
       setUser(u || null)
       setIsLoaded(true)
-      // Note: the widget auto-opens its own UI for invite/recovery tokens —
-      // we do NOT call open() here as it would override the token-specific form
+      if (!u) {
+        // If a recovery token was valid, the widget stores the user in
+        // store.recovered_user (not user) and needs open() to show the
+        // "Update Password" form. login() only fires AFTER the password is set.
+        if (netlifyIdentity.store?.recovered_user) {
+          netlifyIdentity.open()
+        }
+      }
     })
     netlifyIdentity.on('login', (u) => {
       setUser(u)
-      if (_hasRecoveryToken || _hasEmailChangeToken) {
-        // Show our own password-change screen instead of relying on widget modal
-        setShowPasswordChange(true)
-      } else {
-        netlifyIdentity.close()
-      }
+      // login fires AFTER the user has completed whatever flow they were in
+      // (set new password for recovery, accepted invite, or normal login).
+      // Always close the widget modal at this point.
+      netlifyIdentity.close()
     })
     netlifyIdentity.on('logout', () => {
       setUser(null)
@@ -84,13 +87,6 @@ export default function App() {
   }
 
   if (!isLoaded) return <LoadingScreen />
-
-  if (showPasswordChange && user) return (
-    <PasswordChangeScreen
-      user={user}
-      onDone={() => setShowPasswordChange(false)}
-    />
-  )
 
   // Invite flow: show our own accept-invitation form
   if (isLoaded && !user && _hasInviteToken && _inviteTokenValue) return (
@@ -223,79 +219,6 @@ function ConnectHubSpot({ getToken, onConnected, reconnectReason }) {
           <div style={{ marginTop:12, fontSize:12, color:'var(--text-tertiary)' }}>
             This only takes a few seconds and won't affect your existing data.
           </div>
-        )}
-      </div>
-    </div>
-  )
-}
-
-function PasswordChangeScreen({ user, onDone }) {
-  const [password, setPassword] = useState('')
-  const [confirm, setConfirm] = useState('')
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState(null)
-  const [done, setDone] = useState(false)
-
-  const handleSubmit = async () => {
-    if (!password || password.length < 6) {
-      setError('Password must be at least 6 characters.')
-      return
-    }
-    if (password !== confirm) {
-      setError('Passwords do not match.')
-      return
-    }
-    setLoading(true)
-    setError(null)
-    try {
-      await netlifyIdentity.currentUser().update({ password })
-      setDone(true)
-      setTimeout(() => onDone(), 1500)
-    } catch (err) {
-      setError(err.message || 'Failed to update password. Please try again.')
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  return (
-    <div style={{ display:'flex', alignItems:'center', justifyContent:'center', minHeight:'100vh', background:'var(--bg)' }}>
-      <div style={{ background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius-lg)', padding:'2.5rem', maxWidth:420, width:'100%', textAlign:'center' }}>
-        <div style={{ fontSize:13, fontWeight:500, letterSpacing:'.06em', textTransform:'uppercase', color:'var(--text-tertiary)', marginBottom:8 }}>CarePathIQ</div>
-        <h2 style={{ fontSize:20, fontWeight:500, color:'var(--text)', marginBottom:4 }}>Set your password</h2>
-        <p style={{ fontSize:13, color:'var(--text-secondary)', marginBottom:'1.5rem' }}>
-          {user?.email ? `Welcome, ${user.email}` : 'Choose a password to complete your account setup.'}
-        </p>
-        {done ? (
-          <div style={{ fontSize:14, color:'var(--green)', fontWeight:500 }}>✓ Password set! Signing you in…</div>
-        ) : (
-          <>
-            <input
-              type="password"
-              placeholder="New password"
-              value={password}
-              onChange={e => setPassword(e.target.value)}
-              style={{ width:'100%', padding:'10px 12px', marginBottom:10, border:'1px solid var(--border)', borderRadius:'var(--radius)', background:'var(--bg)', color:'var(--text)', fontSize:14, boxSizing:'border-box' }}
-              onKeyDown={e => e.key === 'Enter' && handleSubmit()}
-            />
-            <input
-              type="password"
-              placeholder="Confirm password"
-              value={confirm}
-              onChange={e => setConfirm(e.target.value)}
-              style={{ width:'100%', padding:'10px 12px', marginBottom:16, border:'1px solid var(--border)', borderRadius:'var(--radius)', background:'var(--bg)', color:'var(--text)', fontSize:14, boxSizing:'border-box' }}
-              onKeyDown={e => e.key === 'Enter' && handleSubmit()}
-            />
-            {error && (
-              <div style={{ fontSize:12, color:'var(--red)', marginBottom:12 }}>{error}</div>
-            )}
-            <button
-              onClick={handleSubmit}
-              disabled={loading || !password || !confirm}
-              style={{ width:'100%', padding:'10px 24px', background:'var(--accent)', color:'#fff', border:'none', borderRadius:'var(--radius)', fontSize:14, fontWeight:500, cursor: loading ? 'not-allowed' : 'pointer', opacity: loading ? 0.7 : 1 }}>
-              {loading ? 'Saving…' : 'Set Password'}
-            </button>
-          </>
         )}
       </div>
     </div>
