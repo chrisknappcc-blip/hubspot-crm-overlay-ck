@@ -1170,7 +1170,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
   // Run preview/sync for the logged-in user's contacts only
   const myRepName = user?.firstName && user?.lastName
     ? `${user.firstName} ${user.lastName}`
-    : filterBdr || null
+    : null
 
   const runDryRunMine = async () => {
     if (!myRepName) return
