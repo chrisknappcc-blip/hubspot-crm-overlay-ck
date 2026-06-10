@@ -1,11 +1,11 @@
 import { useState, useEffect } from 'react'
-import { useAuth, useUser, SignIn } from '@clerk/clerk-react'
+import netlifyIdentity from 'netlify-identity-widget'
 import { apiFetch } from './api'
 import Dashboard from './Dashboard'
 
 export default function App() {
-  const { isLoaded, isSignedIn, getToken } = useAuth()
-  const { user } = useUser()
+  const [user, setUser] = useState(null)
+  const [isLoaded, setIsLoaded] = useState(false)
   const [theme, setTheme] = useState(() => localStorage.getItem('crm-theme') || 'light')
   const [hsConnected, setHsConnected] = useState(false)
   const [checkingConnection, setCheckingConnection] = useState(true)
@@ -20,12 +20,41 @@ export default function App() {
   const toggleTheme = () => setTheme(t => t === 'light' ? 'dark' : 'light')
 
   useEffect(() => {
-    if (!isSignedIn) return
+    netlifyIdentity.on('init', (u) => {
+      setUser(u)
+      setIsLoaded(true)
+    })
+    netlifyIdentity.on('login', (u) => {
+      setUser(u)
+      netlifyIdentity.close()
+    })
+    netlifyIdentity.on('logout', () => {
+      setUser(null)
+      setHsConnected(false)
+      setCheckingConnection(true)
+    })
+    return () => {
+      netlifyIdentity.off('init')
+      netlifyIdentity.off('login')
+      netlifyIdentity.off('logout')
+    }
+  }, [])
+
+  const getToken = async () => {
+    const currentUser = netlifyIdentity.currentUser()
+    if (!currentUser) return null
+    return currentUser.jwt()
+  }
+
+  const signOut = () => netlifyIdentity.logout()
+
+  useEffect(() => {
+    if (!user) return
     apiFetch('/api/hubspot/status', getToken)
       .then(d => setHsConnected(d.hubspot))
       .catch(() => setHsConnected(false))
       .finally(() => setCheckingConnection(false))
-  }, [isSignedIn, getToken])
+  }, [user])
 
   // Called by Dashboard when any HubSpot API call returns 403 MISSING_SCOPES
   const onScopeError = (message) => {
@@ -35,14 +64,20 @@ export default function App() {
 
   if (!isLoaded) return <LoadingScreen />
 
-  if (!isSignedIn) return (
+  if (!user) return (
     <div style={{ display:'flex', alignItems:'center', justifyContent:'center', minHeight:'100vh', background:'var(--bg)' }}>
       <div>
         <div style={{ textAlign:'center', marginBottom:'2rem' }}>
           <div style={{ fontSize:13, fontWeight:500, letterSpacing:'.06em', textTransform:'uppercase', color:'var(--text-tertiary)', marginBottom:8 }}>CarePathIQ</div>
           <h1 style={{ fontSize:26, fontWeight:500, color:'var(--text)' }}>Sales Command Center</h1>
         </div>
-        <SignIn afterSignInUrl="/" />
+        <div style={{ textAlign:'center' }}>
+          <button
+            onClick={() => netlifyIdentity.open()}
+            style={{ background:'var(--accent)', color:'#fff', border:'none', borderRadius:'var(--radius)', padding:'12px 32px', fontSize:14, fontWeight:500, cursor:'pointer' }}>
+            Sign in
+          </button>
+        </div>
       </div>
     </div>
   )
@@ -64,6 +99,7 @@ export default function App() {
       toggleTheme={toggleTheme}
       getToken={getToken}
       onScopeError={onScopeError}
+      signOut={signOut}
     />
   )
 }

@@ -1,5 +1,4 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
-import { useClerk } from '@clerk/clerk-react'
 import { apiFetch } from './api'
 
 // ─── Persona detection ────────────────────────────────────────────────────────
@@ -1074,8 +1073,7 @@ function ContactIntelPanel({ user, safeFetch }) {
 }
 
 
-export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeError }) {
-  const { signOut } = useClerk()
+export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeError, signOut }) {
 
   // Wrap apiFetch to intercept 403 MISSING_SCOPES and trigger reconnect flow.
   // Must be useCallback so its reference is stable -- unstable safeFetch causes
