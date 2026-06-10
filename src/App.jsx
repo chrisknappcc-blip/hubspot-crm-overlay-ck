@@ -8,9 +8,10 @@ import Dashboard from './Dashboard'
 // code can safely read the original token type here.
 const _loadHash = typeof window !== 'undefined' ? window.location.hash : ''
 const _loadParams = new URLSearchParams(_loadHash.slice(1))
-const _hasTokenOnLoad = _loadParams.has('invite_token') ||
-                        _loadParams.has('recovery_token') ||
-                        _loadParams.has('email_change_token')
+const _hasInviteToken       = _loadParams.has('invite_token')
+const _hasRecoveryToken     = _loadParams.has('recovery_token')
+const _hasEmailChangeToken  = _loadParams.has('email_change_token')
+const _hasTokenOnLoad       = _hasInviteToken || _hasRecoveryToken || _hasEmailChangeToken
 
 export default function App() {
   const [user, setUser] = useState(null)
@@ -40,7 +41,13 @@ export default function App() {
     })
     netlifyIdentity.on('login', (u) => {
       setUser(u)
-      netlifyIdentity.close()
+      // Don't close the modal for recovery/email-change token flows.
+      // GoTrue fires 'login' immediately after the token exchange — before
+      // the user sees the "set new password" form. Closing here would kill it.
+      // For normal email+password login, close the modal as expected.
+      if (!_hasRecoveryToken && !_hasEmailChangeToken) {
+        netlifyIdentity.close()
+      }
     })
     netlifyIdentity.on('logout', () => {
       setUser(null)
