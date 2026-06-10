@@ -273,8 +273,8 @@ function THead({ cols }) {
   )
 }
 const TEAM_MEMBERS = [
-  { name: 'Chris Knapp',  ownerId: '78304576',  group: 'bdr'      },
-  { name: 'Chiara Pate',  ownerId: '87806380',  group: 'bdr'      },
+  { name: 'Chris Knapp',  ownerId: '78304576',  group: 'bdr',      email: 'cknapp@carecontinuity.com' },
+  { name: 'Chiara Pate',  ownerId: '87806380',  group: 'bdr',      email: 'cpate@carecontinuity.com'  },
   { name: 'Matt Valin',   ownerId: '76104455',  group: 'vp'       },
   { name: 'Joe Haine',    ownerId: '55217954',  group: 'vp',  hubspotName: 'Joseph Haine' },
   { name: 'Tim Grisham',  ownerId: '83862037',  group: 'vp'       },
@@ -1075,6 +1075,15 @@ function ContactIntelPanel({ user, safeFetch }) {
 
 export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeError, signOut }) {
 
+  // ── User identity helpers (Netlify Identity + Clerk compatible) ──────────
+  // Netlify Identity: user.email, user.user_metadata?.full_name
+  // Clerk: user.firstName, user.lastName, user.emailAddresses
+  const _userEmail    = user?.email || user?.emailAddresses?.[0]?.emailAddress || null
+  const _userFullName = user?.user_metadata?.full_name ||
+    (user?.firstName && user?.lastName ? `${user.firstName} ${user.lastName}` : null) ||
+    TEAM_MEMBERS.find(m => m.email && m.email === _userEmail)?.name || null
+  const _userFirstName = _userFullName?.split(' ')[0] || _userEmail?.split('@')[0] || null
+
   // Wrap apiFetch to intercept 403 MISSING_SCOPES and trigger reconnect flow.
   // Must be useCallback so its reference is stable -- unstable safeFetch causes
   // downstream useCallbacks to re-create on every render, triggering fetch loops.
@@ -1168,8 +1177,9 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
   }
 
   // Run preview/sync for the logged-in user's contacts only
-  const myRepName = user?.firstName && user?.lastName
-    ? `${user.firstName} ${user.lastName}`
+  const myRepName = _userFullName
+    ? (TEAM_MEMBERS.find(m => m.name.toLowerCase() === _userFullName.toLowerCase() ||
+        (_userFirstName && m.name.toLowerCase().startsWith(_userFirstName.toLowerCase())))?.name || null)
     : null
 
   const runDryRunMine = async () => {
@@ -1384,10 +1394,11 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
   const [reportPeriod,  setReportPeriod]  = useState('week')   // default 7 days
   const [reportRep,     setReportRep]     = useState(() => {
     if (!user) return 'all'
-    const full = `${user.firstName||''} ${user.lastName||''}`.trim()
+    const full = _userFullName || ''
     const match = TEAM_MEMBERS.find(m =>
-      m.name.toLowerCase() === full.toLowerCase() ||
-      (user.firstName && m.name.toLowerCase().startsWith(user.firstName.toLowerCase()))
+      (m.email && m.email === _userEmail) ||
+      (full && m.name.toLowerCase() === full.toLowerCase()) ||
+      (_userFirstName && m.name.toLowerCase().startsWith(_userFirstName.toLowerCase()))
     )
     return match?.name || 'all'
   })
@@ -1399,10 +1410,12 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
   const [activityData, setActivityData]       = useState(null)
   const [activityDays, setActivityDays]       = useState('7')
   const [activityRep, setActivityRep]         = useState(() => {
-    if (!user) return 'all'
-    const full = `${user.firstName || ''} ${user.lastName || ''}`.trim()
-    const match = TEAM_MEMBERS.find(m => m.name.toLowerCase() === full.toLowerCase() ||
-      (user.firstName && m.name.toLowerCase().startsWith(user.firstName.toLowerCase())))
+    if (!_userFullName && !_userEmail) return 'all'
+    const match = TEAM_MEMBERS.find(m =>
+      (m.email && m.email === _userEmail) ||
+      (_userFullName && m.name.toLowerCase() === _userFullName.toLowerCase()) ||
+      (_userFirstName && m.name.toLowerCase().startsWith(_userFirstName.toLowerCase()))
+    )
     return match?.name || 'all'
   })
   const [activityIncludeOwned, setActivityIncludeOwned] = useState(false)
@@ -1434,30 +1447,37 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
   // Filters
   // Default filter to current user -- match Clerk name against TEAM_MEMBERS
   const currentUserName = useMemo(() => {
-    if (!user) return ''
-    const full = `${user.firstName || ''} ${user.lastName || ''}`.trim()
+    if (!_userFullName && !_userEmail) return ''
     const match = TEAM_MEMBERS.find(m =>
-      m.name.toLowerCase() === full.toLowerCase() ||
-      (user.firstName && m.name.toLowerCase().startsWith(user.firstName.toLowerCase()))
+      (m.email && m.email === _userEmail) ||
+      (_userFullName && m.name.toLowerCase() === _userFullName.toLowerCase()) ||
+      (_userFirstName && m.name.toLowerCase().startsWith(_userFirstName.toLowerCase()))
     )
     return match?.name || ''
-  }, [user])
+  }, [user, _userFullName, _userEmail, _userFirstName])
 
   const [filterBdr, setFilterBdr] = useState(() => {
-    if (!user) return ''
-    const full = `${user.firstName || ''} ${user.lastName || ''}`.trim()
+    // Restore last-used filter from session
+    try { const s = sessionStorage.getItem('cipher_filterBdr'); if (s !== null) return s } catch {}
+    // Auto-detect from logged-in user (Netlify Identity + Clerk compatible)
+    if (!_userFullName && !_userEmail) return ''
     const match = TEAM_MEMBERS.find(m =>
-      m.name.toLowerCase() === full.toLowerCase() ||
-      (user.firstName && m.name.toLowerCase().startsWith(user.firstName.toLowerCase()))
+      (m.email && m.email === _userEmail) ||
+      (_userFullName && m.name.toLowerCase() === _userFullName.toLowerCase()) ||
+      (_userFirstName && m.name.toLowerCase().startsWith(_userFirstName.toLowerCase()))
     )
     return match?.name || ''
   })
   const [filterTerritory, setFilterTerritory] = useState('')
+  // Persist filter selection across page reloads
+  useEffect(() => {
+    try { sessionStorage.setItem('cipher_filterBdr', filterBdr) } catch {}
+  }, [filterBdr])
   const [filterTier, setFilterTier]         = useState('')
   const [filterTarget, setFilterTarget]     = useState('')
   const [owners, setOwners]                 = useState([])
 
-  const firstName = user?.firstName || user?.emailAddresses?.[0]?.emailAddress?.split('@')[0] || 'there'
+  const firstName = _userFirstName || 'there'
   const hour = new Date().getHours()
   const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening'
   const today = new Date().toLocaleDateString('en-US', { weekday:'long', month:'long', day:'numeric' })
