@@ -4519,8 +4519,13 @@ export const handler = async (event, context) => {
         // Deduplicate
         allContactIds = [...new Set(allContactIds)];
         const total     = allContactIds.length;
-        const batchIds  = allContactIds.slice(batchStart, batchStart + batchSize);
-        const hasMore   = batchStart + batchSize < total;
+        // When filtering by rep, pull ALL Gold contacts (not just first batchSize) so
+        // the rep filter actually finds contacts — they may not be in the first page.
+        const effectiveBatchIds = (repFilter && !fullCrm)
+          ? allContactIds                                               // all Gold contacts
+          : allContactIds.slice(batchStart, batchStart + batchSize);   // normal pagination
+        const batchIds  = effectiveBatchIds;
+        const hasMore   = repFilter ? false : batchStart + batchSize < total;
         const nextBatch = hasMore ? batchStart + batchSize : null;
 
         if (batchIds.length === 0) {
@@ -4528,12 +4533,20 @@ export const handler = async (event, context) => {
         }
 
         // Step 3: Fetch contact properties for this batch
-        const contactData = await hsPost(user.userId, "/crm/v3/objects/contacts/batch/read", {
-          inputs: batchIds.map(id => ({ id })),
-          properties: ["assigned_bdr", "primary_outreach_rep", "hubspot_owner_id",
-                       "hs_email_optout", "existing_customer",
-                       "firstname", "lastname", "company"],   // needed for dry run display
-        }).catch(() => ({ results: [] }));
+        // Step 3: Fetch contact properties — batch in chunks of 100 (HubSpot limit)
+        const PROPS = ["assigned_bdr", "primary_outreach_rep", "hubspot_owner_id",
+                       "hs_email_optout", "existing_customer", "firstname", "lastname", "company"];
+        const contactResults = [];
+        for (let i = 0; i < batchIds.length; i += 100) {
+          const chunk = batchIds.slice(i, i + 100);
+          const chunkData = await hsPost(user.userId, "/crm/v3/objects/contacts/batch/read", {
+            inputs: chunk.map(id => ({ id })),
+            properties: PROPS,
+          }).catch(() => ({ results: [] }));
+          contactResults.push(...(chunkData.results || []));
+          if (i + 100 < batchIds.length) await new Promise(r => setTimeout(r, 150));
+        }
+        const contactData = { results: contactResults };
 
         let contacts = contactData.results || [];
 
@@ -4541,7 +4554,6 @@ export const handler = async (event, context) => {
         if (repFilter) {
           contacts = contacts.filter(c => {
             const p = c.properties || {};
-            // Match by assigned_bdr name OR by hubspot_owner_id for AE contacts
             return p.assigned_bdr === repFilter || ALL_OWNER_ID_TO_NAME[String(p.hubspot_owner_id||'')] === repFilter;
           });
           console.log(`[sync-primary-rep] repFilter="${repFilter}" narrowed to ${contacts.length} contacts`);
