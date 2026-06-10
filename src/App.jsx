@@ -3,6 +3,15 @@ const netlifyIdentity = window.netlifyIdentity
 import { apiFetch } from './api'
 import Dashboard from './Dashboard'
 
+// Capture URL hash tokens BEFORE netlifyIdentity.init() clears them.
+// The CDN script does NOT clear the hash — init() does. So module-level
+// code can safely read the original token type here.
+const _loadHash = typeof window !== 'undefined' ? window.location.hash : ''
+const _loadParams = new URLSearchParams(_loadHash.slice(1))
+const _hasTokenOnLoad = _loadParams.has('invite_token') ||
+                        _loadParams.has('recovery_token') ||
+                        _loadParams.has('email_change_token')
+
 export default function App() {
   const [user, setUser] = useState(null)
   const [isLoaded, setIsLoaded] = useState(false)
@@ -23,6 +32,11 @@ export default function App() {
     netlifyIdentity.on('init', (u) => {
       setUser(u || null)
       setIsLoaded(true)
+      // Auto-open the widget for invite/recovery/email-change flows
+      // The widget will show the appropriate form based on the processed token
+      if (_hasTokenOnLoad && !u) {
+        netlifyIdentity.open()
+      }
     })
     netlifyIdentity.on('login', (u) => {
       setUser(u)
