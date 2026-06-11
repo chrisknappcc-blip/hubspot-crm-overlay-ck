@@ -2880,11 +2880,20 @@ export const handler = async (event, context) => {
         let items = await getTodos(user.userId);
         // One-time live dedup: remove duplicate manual todos for the same contactId
         // (keeps the most recently-created one, since getTodos sorts manual items newest first)
+        // Pass 1: manual item dedup — keep first (newest) per contactId
         const seenManualCids = new Set();
         items = items.filter(i => {
           if (!i.autoDetected && i.contactId) {
-            if (seenManualCids.has(i.contactId)) return false;
+            if (seenManualCids.has(i.contactId)) { dirty = true; return false; }
             seenManualCids.add(i.contactId);
+          }
+          return true;
+        });
+        // Pass 2: drop auto-detected items already covered by a manual item
+        items = items.filter(i => {
+          if (i.autoDetected && i.contactId && seenManualCids.has(i.contactId)) {
+            dirty = true;
+            return false;
           }
           return true;
         });
