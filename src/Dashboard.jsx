@@ -3101,6 +3101,29 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                     </div>
                   </div>
 
+                  {/* Meeting details — expanded list below outbound metrics */}
+                  {activityData.meetingDetails?.length > 0 && (
+                    <div style={{ marginTop:12, padding:'10px 12px', background:'var(--bg-secondary)', borderRadius:'var(--radius)', border:'1px solid var(--border)' }}>
+                      <div style={{ fontSize:11, fontWeight:600, letterSpacing:'.06em', textTransform:'uppercase', color:'var(--text-tertiary)', marginBottom:8 }}>
+                        📅 Meetings this period
+                      </div>
+                      {activityData.meetingDetails.map((m, i) => {
+                        const dt = m.startTime ? new Date(m.startTime) : null
+                        const dateStr = dt ? dt.toLocaleDateString('en-US', { timeZone:'America/New_York', weekday:'short', month:'short', day:'numeric' }) + ' at ' + dt.toLocaleTimeString('en-US', { timeZone:'America/New_York', hour:'numeric', minute:'2-digit' }) : ''
+                        const attendees = (m.contacts||[]).map(c => c.company ? `${c.name} (${c.company})` : c.name).filter(Boolean).join(', ')
+                        return (
+                          <div key={m.id} style={{ paddingBottom: i < activityData.meetingDetails.length-1 ? 8 : 0, marginBottom: i < activityData.meetingDetails.length-1 ? 8 : 0, borderBottom: i < activityData.meetingDetails.length-1 ? '1px solid var(--border)' : 'none' }}>
+                            <div style={{ fontSize:13, fontWeight:500, color:'var(--text)', marginBottom:2 }}>{m.title}</div>
+                            <div style={{ fontSize:11, color:'var(--text-tertiary)' }}>
+                              {dateStr}
+                              {attendees && <span style={{ color:'var(--text-secondary)' }}> · {attendees}</span>}
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
+
                   {/* Inbound */}
                   <div>
                     <div style={{ fontSize:11, fontWeight:500, letterSpacing:'.06em', textTransform:'uppercase', color:'var(--text-tertiary)', marginBottom:10 }}>Inbound</div>
