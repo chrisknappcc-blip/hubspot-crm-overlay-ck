@@ -36,7 +36,7 @@ function gapCacheBlobUrl() {
 import { withAuth } from "./utils/auth.js";
 import { getTokens, setTokens, isTokenValid } from "./utils/tokenStore.js";
 import { getTabsForUser, getAllTabsForUser, getRegistry, saveRegistry, getPersonalTabs, savePersonalTabs, slugify, fetchPageTitle } from "./utils/tabRegistry.js";
-import { getTodos, writeTodos, addTodo, updateTodo, deleteTodo, bulkUpsertAutoDetected } from "./utils/todoStore.js";
+import { getTodos, addTodo, updateTodo, deleteTodo, bulkUpsertAutoDetected } from "./utils/todoStore.js";
 import { getActivityLog, addActivityEntry, deleteActivityEntry } from "./utils/activityLog.js";
 
 // Admin user IDs -- comma-separated Clerk user IDs in ADMIN_USER_IDS env var
@@ -2020,23 +2020,74 @@ export const handler = async (event, context) => {
           const meetingOwnerIds = [...new Set(
             targetReps.map(r => FULL_OWNER_ID_MAP[r]).filter(Boolean)
           )];
+          const meetingDetails = [];
           if (meetingOwnerIds.length > 0) {
             const meetingFilterGroups = meetingOwnerIds.map(ownerId => ({
               filters: [
-                { propertyName: "hubspot_owner_id",      operator: "EQ",  value: ownerId },
-                { propertyName: "hs_meeting_start_time",  operator: "GTE", value: sinceISO },
-                { propertyName: "hs_meeting_start_time",  operator: "LTE", value: new Date().toISOString() },
+                { propertyName: "hubspot_owner_id",     operator: "EQ",  value: ownerId },
+                { propertyName: "hs_meeting_start_time", operator: "GTE", value: sinceISO },
+                { propertyName: "hs_meeting_start_time", operator: "LTE", value: new Date().toISOString() },
               ],
             }));
             const meetData = await hsPost(user.userId, "/crm/v3/objects/meetings/search", {
               filterGroups: meetingFilterGroups,
-              properties: ["hs_meeting_start_time", "hubspot_owner_id"],
-              limit: 1,
-            }).catch(() => ({ total: 0 }));
+              properties: [
+                "hs_meeting_title", "hs_meeting_start_time", "hs_meeting_end_time",
+                "hubspot_owner_id", "hs_internal_meeting_notes",
+              ],
+              sorts: [{ propertyName: "hs_meeting_start_time", direction: "DESCENDING" }],
+              limit: 50,
+            }).catch(() => ({ results: [], total: 0 }));
+
             const meetCount = meetData.total || 0;
             engTotals.meetings += meetCount;
             const bucket = engByRep[repFilter || targetReps[0]] || (engByRep[targetReps[0]] = { calls:0, meetings:0, notes:0 });
             bucket.meetings += meetCount;
+
+            // Build meeting details list — fetch associated contacts for each meeting
+            const rawMeetings = (meetData.results || [])
+              .filter(m => !(m.properties?.hs_meeting_title || "").match(/\[Gong\]|\[Canceled\]|canceled/i));
+
+            // Batch-fetch contact associations for meetings
+            if (rawMeetings.length > 0) {
+              const assocData = await hsPost(user.userId, "/crm/v4/associations/meetings/contacts/batch/read", {
+                inputs: rawMeetings.slice(0, 50).map(m => ({ id: m.id })),
+              }).catch(() => ({ results: [] }));
+
+              const meetingToContacts = {};
+              for (const r of (assocData.results || [])) {
+                meetingToContacts[r.from?.id] = (r.to || []).map(t => t.toObjectId).slice(0, 5);
+              }
+
+              // Fetch contact names/companies
+              const allContactIds = [...new Set(Object.values(meetingToContacts).flat())];
+              const contactDetails = {};
+              if (allContactIds.length > 0) {
+                const cData = await hsPost(user.userId, "/crm/v3/objects/contacts/batch/read", {
+                  inputs: allContactIds.slice(0, 100).map(id => ({ id })),
+                  properties: ["firstname", "lastname", "company"],
+                }).catch(() => ({ results: [] }));
+                for (const c of (cData.results || [])) {
+                  const name = `${c.properties?.firstname||""} ${c.properties?.lastname||""}`.trim();
+                  contactDetails[c.id] = { name, company: c.properties?.company || "" };
+                }
+              }
+
+              for (const m of rawMeetings) {
+                const p = m.properties || {};
+                const contactIds = meetingToContacts[m.id] || [];
+                const contacts = contactIds.map(id => contactDetails[id]).filter(Boolean);
+                meetingDetails.push({
+                  id:        m.id,
+                  title:     p.hs_meeting_title || "Meeting",
+                  startTime: p.hs_meeting_start_time || null,
+                  endTime:   p.hs_meeting_end_time   || null,
+                  ownerId:   p.hubspot_owner_id       || null,
+                  contacts,
+                  url: `https://app.hubspot.com/contacts/39921549/objects/0-47/views/all/list`,
+                });
+              }
+            }
           }
         } catch { /* fall through */ }
 
@@ -2089,6 +2140,7 @@ export const handler = async (event, context) => {
         return ok({
           summary,
           byRep: targetReps.length > 1 ? byRep : null,
+          meetingDetails,
           meta: {
             days,
             rep:          repFilter || "all",
@@ -2516,11 +2568,12 @@ export const handler = async (event, context) => {
         } catch { /* non-critical — signals still show without company name */ }
       }
 
-      // Apply sentAt from contact property — only for marketing signals
-      // For sales/1:1 signals the contact-level send date is unreliable
-      // (it could be from a different email entirely)
+      // Apply sentAt fallback to ALL signals.
+      // The fallback already validates that sendDate <= eventDate so it can't be
+      // from a future/unrelated email. Sales signals left at null would break bot
+      // detection and hide sent/replied stamps — the validated fallback is better.
       for (const sig of contactSignals) {
-        if (!sig.sentAt && sig._fallbackSentAt && sig.emailSource !== 'sales') {
+        if (!sig.sentAt && sig._fallbackSentAt) {
           sig.sentAt = sig._fallbackSentAt;
         }
         delete sig._fallbackSentAt;
@@ -2824,34 +2877,16 @@ export const handler = async (event, context) => {
     if (method === "GET" && path === "/todo") {
       try {
         let items = await getTodos(user.userId);
-        let dirty = false;
-
-        // One-time migration: set priority:'HIGH' on items that have type:'high-priority'
-        // but are missing the priority field (created before the fix)
-        items = items.map(i => {
-          if (i.type === 'high-priority' && i.priority == null) {
-            dirty = true;
-            return { ...i, priority: 'HIGH' };
-          }
-          return i;
-        });
-
-        // One-time dedup: remove duplicate manual todos for the same contactId
-        // (keeps the most recently-created one — getTodos sorts manual items newest first)
+        // One-time live dedup: remove duplicate manual todos for the same contactId
+        // (keeps the most recently-created one, since getTodos sorts manual items newest first)
         const seenManualCids = new Set();
         items = items.filter(i => {
           if (!i.autoDetected && i.contactId) {
-            if (seenManualCids.has(i.contactId)) { dirty = true; return false; }
+            if (seenManualCids.has(i.contactId)) return false;
             seenManualCids.add(i.contactId);
           }
           return true;
         });
-
-        // Persist the cleaned list back to blob if anything changed
-        if (dirty) {
-          await writeTodos(user.userId, items).catch(() => {});
-        }
-
         return ok({ items });
       } catch (err) {
         console.error("[todo] GET error:", err.message);
