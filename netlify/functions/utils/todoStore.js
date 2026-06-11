@@ -160,7 +160,11 @@ export async function bulkUpsertAutoDetected(userId, autoItems) {
   // Sort: manual items first (newest first), then auto-detected by priority
   const updated = [
     ...manualItems.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)),
-    ...freshAutoItems.sort((a, b) => (a.priority || 9) - (b.priority || 9)),
+    ...freshAutoItems.sort((a, b) => {
+      const pa = a.priority === "HIGH" ? 0 : (typeof a.priority === "number" ? a.priority : 9);
+      const pb = b.priority === "HIGH" ? 0 : (typeof b.priority === "number" ? b.priority : 9);
+      return pa - pb;
+    }),
   ];
   await writeTodos(userId, updated);
   return updated;
