@@ -2026,7 +2026,6 @@ export const handler = async (event, context) => {
               filters: [
                 { propertyName: "hubspot_owner_id",     operator: "EQ",  value: ownerId },
                 { propertyName: "hs_meeting_start_time", operator: "GTE", value: sinceISO },
-                { propertyName: "hs_meeting_start_time", operator: "LTE", value: new Date().toISOString() },
               ],
             }));
             const meetData = await hsPost(user.userId, "/crm/v3/objects/meetings/search", {
@@ -2698,9 +2697,9 @@ export const handler = async (event, context) => {
 
         const sentMs   = s.sentAt   ? new Date(s.sentAt).getTime()   : null;
         const openedMs = s.openedAt ? new Date(s.openedAt).getTime() : null;
-        if (!sentMs || !openedMs || openedMs < sentMs) return;
-
-        const tto = openedMs - sentMs;
+        // Only require openedMs — tto is optional (sentAt often null for sales emails)
+        if (!openedMs) return;
+        const tto = (sentMs && openedMs >= sentMs) ? openedMs - sentMs : null;
         if (!domainOpenMap[domain]) domainOpenMap[domain] = [];
         domainOpenMap[domain].push({ s, tto, openedMs, domain });
       });
@@ -2712,7 +2711,8 @@ export const handler = async (event, context) => {
         if (entries.length < 2) return;
         for (let i = 0; i < entries.length; i++) {
           for (let j = i + 1; j < entries.length; j++) {
-            const ttoSimilar    = Math.abs(entries[i].tto    - entries[j].tto)    <= 5 * 60 * 1000;
+            const ttoA = entries[i].tto, ttoB = entries[j].tto;
+            const ttoSimilar    = ttoA !== null && ttoB !== null && Math.abs(ttoA - ttoB) <= 5 * 60 * 1000;
             const openedSimilar = Math.abs(entries[i].openedMs - entries[j].openedMs) <= 5 * 60 * 1000;
             if (ttoSimilar || openedSimilar) {
               orgBotContactIds.add(entries[i].s.contactId);
