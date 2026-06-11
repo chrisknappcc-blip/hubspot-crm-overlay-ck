@@ -1782,7 +1782,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
         : `Follow up — ${name} opened your email, no reply yet`
       const subtext    = [signal.contact?.company, signal.contact?.title].filter(Boolean).join(' · ')
       const existing   = todoItemsRef.current.find(t =>
-        t.contactId === signal.contactId && t.priority === 'HIGH' && !t.completed
+        t.contactId === signal.contactId && (t.priority === 'HIGH' || t.type === 'high-priority') && !t.completed
       )
       if (!existing) {
         addTodoItem(taskText, { priority:'HIGH', contactId:signal.contactId, type:'high-priority', subtext })
@@ -2247,7 +2247,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
               </div>
               {/* High Priority | All tabs */}
               {(() => {
-                const hpCount  = todoItems.filter(t => t.priority === 'HIGH' && !t.completed).length
+                const hpCount  = todoItems.filter(t => (t.priority === 'HIGH' || t.type === 'high-priority') && !t.completed).length
                 const allCount = todoItems.filter(t => !t.completed).length
                 return (
                   <div style={{ display:'flex', borderBottom:'1px solid var(--border)', marginBottom:10 }}>
@@ -2313,7 +2313,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
               {!todoLoading && todoItems.length > 0 && (() => {
                 const allActive = todoItems.filter(t => !t.completed)
                 const active    = todoTab === 'high-priority'
-                  ? allActive.filter(t => t.priority === 'HIGH').sort((a,b) => new Date(a.createdAt||0) - new Date(b.createdAt||0))
+                  ? allActive.filter(t => t.priority === 'HIGH' || t.type === 'high-priority').sort((a,b) => new Date(a.createdAt||0) - new Date(b.createdAt||0))
                   : allActive
                 const done      = todoItems.filter(t => t.completed)
                 const pageActive = active.slice(todoPage * TODO_PAGE_SIZE, (todoPage + 1) * TODO_PAGE_SIZE)
@@ -2438,7 +2438,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                 {/* Section tabs */}
                 <div style={{ display:'flex', gap:0, marginBottom:12, background:'var(--bg-secondary)', borderRadius:'var(--radius)', padding:3 }}>
                   {[
-                    { key:'high-priority', label:'High Priority', count: todoItems.filter(t=>t.priority==='HIGH'&&!t.completed).length, amber:true },
+                    { key:'high-priority', label:'High Priority', count: todoItems.filter(t=>(t.priority==='HIGH'||t.type==='high-priority')&&!t.completed).length, amber:true },
                     { key:'replies',       label:'Replies',       count: taskData.repliesAwaitingResponse.length },
                     { key:'sequences',     label:'Sequences',     count: taskData.upcomingSequences.length },
                     { key:'tasks',         label:'Due tasks',     count: taskData.dueTasks.length },
@@ -2466,7 +2466,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
 
                 {/* Section: High Priority */}
                 {!taskLoading && taskSection === 'high-priority' && (() => {
-                  const hpItems = todoItems.filter(t => t.priority === 'HIGH' && !t.completed)
+                  const hpItems = todoItems.filter(t => (t.priority === 'HIGH' || t.type === 'high-priority') && !t.completed)
                   return (
                     <div>
                       {hpItems.length === 0 && (
