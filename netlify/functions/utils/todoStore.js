@@ -70,15 +70,25 @@ export async function getTodos(userId) {
     await writeTodos(userId, live).catch(() => {});
   }
   // Manual items always first (newest first), then auto-detected by priority
+  const priVal = p => p === "HIGH" ? 0 : (typeof p === "number" ? p : 9);
   return [
     ...live.filter(t => !t.autoDetected).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)),
-    ...live.filter(t =>  t.autoDetected).sort((a, b) => (a.priority || 9) - (b.priority || 9)),
+    ...live.filter(t =>  t.autoDetected).sort((a, b) => priVal(a.priority) - priVal(b.priority)),
   ];
 }
 
 export async function addTodo(userId, item) {
   const items = await readTodos(userId);
   const now   = new Date().toISOString();
+
+  // Dedup: if a non-completed todo already exists for this contactId, skip
+  if (item.contactId) {
+    const existing = items.find(i =>
+      !i.completed && i.contactId === item.contactId && !i.autoDetected
+    );
+    if (existing) return existing; // return existing instead of duplicating
+  }
+
   const newItem = {
     id:           Math.random().toString(36).slice(2, 10),
     type:         item.type         || "manual",
@@ -88,11 +98,12 @@ export async function addTodo(userId, item) {
     hubspotUrl:   item.hubspotUrl   || null,
     completed:    false,
     completedAt:  null,
-    dueDate:      item.dueDate || null,
+    dueDate:      item.dueDate      || null,
     createdAt:    now,
     date:         item.date         || todayStr(),
     autoDetected: item.autoDetected || false,
     sourceId:     item.sourceId     || null,
+    priority:     item.priority     || null,
   };
   const updated = applyArchive([...items, newItem]);
   await writeTodos(userId, updated);
