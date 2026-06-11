@@ -2939,8 +2939,9 @@ export const handler = async (event, context) => {
             sorts: [{ propertyName: "hs_sales_email_last_replied", direction: "DESCENDING" }],
             limit: 20,
           });
+          const seenTodoContactIds = new Set(goldContactIds);
           for (const c of (replies.results || [])) {
-            if (goldContactIds.has(String(c.id))) continue; // already added above
+            if (seenTodoContactIds.has(String(c.id))) continue; // already added above
             const p = c.properties || {};
             const name = `${p.firstname||""} ${p.lastname||""}`.trim() || "Unknown";
             const replyTs = Math.max(
@@ -2961,6 +2962,7 @@ export const handler = async (event, context) => {
                 hubspotUrl: `https://app.hubspot.com/contacts/${PORTAL}/record/0-1/${c.id}`,
                 sourceId: `reply-${c.id}`, date: today,
               });
+              seenTodoContactIds.add(String(c.id));
             }
           }
         } catch (e) { console.error("[todo/sync] replies:", e.message); }
@@ -2978,7 +2980,7 @@ export const handler = async (event, context) => {
             limit: 20,
           });
           for (const c of (seqs.results || [])) {
-            if (goldContactIds.has(String(c.id))) continue; // already added above
+            if (seenTodoContactIds.has(String(c.id))) continue; // already added above
             const p = c.properties || {};
             const name = `${p.firstname||""} ${p.lastname||""}`.trim() || "Unknown";
             autoItems.push({
