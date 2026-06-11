@@ -2009,17 +2009,28 @@ export const handler = async (event, context) => {
             offset += (engData.results || []).length;
           }
 
-          // Count meetings from CRM objects API (where modern HubSpot stores them)
-          // Filter by the current user's owner ID — meetings are owned by the person who booked
-          const meOwnerData = await hsGet(user.userId, "/crm/v3/owners/me", {}).catch(() => null);
-          if (meOwnerData?.id) {
-            const meetingFilters = [
-              { propertyName: "hubspot_owner_id",    operator: "EQ",  value: String(meOwnerData.id) },
-              { propertyName: "hs_meeting_start_time", operator: "GTE", value: sinceISO },
-            ];
+          // Count meetings from CRM objects API (where modern HubSpot stores them).
+          // Build owner ID list: use OWNER_ID_MAP + known BDR owner IDs for all target reps.
+          const FULL_OWNER_ID_MAP = {
+            ...OWNER_ID_MAP,
+            "Chris Knapp":  "78304576",
+            "Chiara Pate":  "87806380",
+          };
+          // Collect unique owner IDs for the current targetReps
+          const meetingOwnerIds = [...new Set(
+            targetReps.map(r => FULL_OWNER_ID_MAP[r]).filter(Boolean)
+          )];
+          if (meetingOwnerIds.length > 0) {
+            const meetingFilterGroups = meetingOwnerIds.map(ownerId => ({
+              filters: [
+                { propertyName: "hubspot_owner_id",      operator: "EQ",  value: ownerId },
+                { propertyName: "hs_meeting_start_time",  operator: "GTE", value: sinceISO },
+                { propertyName: "hs_meeting_start_time",  operator: "LTE", value: new Date().toISOString() },
+              ],
+            }));
             const meetData = await hsPost(user.userId, "/crm/v3/objects/meetings/search", {
-              filterGroups: [{ filters: meetingFilters }],
-              properties: ["hs_meeting_start_time"],
+              filterGroups: meetingFilterGroups,
+              properties: ["hs_meeting_start_time", "hubspot_owner_id"],
               limit: 1,
             }).catch(() => ({ total: 0 }));
             const meetCount = meetData.total || 0;
@@ -2812,7 +2823,17 @@ export const handler = async (event, context) => {
 
     if (method === "GET" && path === "/todo") {
       try {
-        const items = await getTodos(user.userId);
+        let items = await getTodos(user.userId);
+        // One-time live dedup: remove duplicate manual todos for the same contactId
+        // (keeps the most recently-created one, since getTodos sorts manual items newest first)
+        const seenManualCids = new Set();
+        items = items.filter(i => {
+          if (!i.autoDetected && i.contactId) {
+            if (seenManualCids.has(i.contactId)) return false;
+            seenManualCids.add(i.contactId);
+          }
+          return true;
+        });
         return ok({ items });
       } catch (err) {
         console.error("[todo] GET error:", err.message);
@@ -2853,16 +2874,34 @@ export const handler = async (event, context) => {
         // ── Identify current user ─────────────────────────────────────────────
         // Look up the current user's HubSpot owner ID and name.
         // All contact queries filter by assigned_bdr OR hubspot_owner_id.
+        const KNOWN_USER_MAP = {
+          "cknapp@carecontinuity.com":  { name: "Chris Knapp",  ownerId: "78304576" },
+          "chrisknappcc@gmail.com":      { name: "Chris Knapp",  ownerId: "78304576" },
+          "cpate@carecontinuity.com":    { name: "Chiara Pate",  ownerId: "87806380" },
+          "mvalin@carecontinuity.com":   { name: "Matt Valin",   ownerId: "76104455" },
+          "jhansel@carecontinuity.com":  { name: "John Hansel",  ownerId: "743772047" },
+        };
         let currentOwnerIds  = [];
         let currentOwnerName = null;
+        // Primary: try HubSpot API
         try {
           const me = await hsGet(user.userId, "/crm/v3/owners/me", {});
           if (me?.id) {
             currentOwnerIds  = [String(me.id)];
             currentOwnerName = `${me.firstName||""} ${me.lastName||""}`.trim() || null;
-            console.log(`[todo/sync] current user: ${currentOwnerName} (${me.id})`);
+            console.log(`[todo/sync] current user via HubSpot: ${currentOwnerName} (${me.id})`);
           }
-        } catch (e) { console.error("[todo/sync] owner lookup failed:", e.message); }
+        } catch (e) { console.error("[todo/sync] HubSpot owner lookup failed:", e.message); }
+        // Fallback: match Netlify Identity email to known BDR map
+        if (!currentOwnerName) {
+          const userEmail = user?.email || user?.user_metadata?.email || "";
+          const known = KNOWN_USER_MAP[userEmail.toLowerCase()];
+          if (known) {
+            currentOwnerName = known.name;
+            currentOwnerIds  = [known.ownerId];
+            console.log(`[todo/sync] current user via email fallback: ${currentOwnerName}`);
+          }
+        }
 
         // Build filter groups for contact queries.
         // Priority: primary_rep (custom field) → assigned_bdr (BDR) → hubspot_owner_id (AE/owner)
