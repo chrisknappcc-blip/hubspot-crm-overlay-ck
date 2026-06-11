@@ -130,6 +130,90 @@ async function refreshHubSpotToken(userId, tokens) {
   return updated.hubspot;
 }
 
+// ─── Outlook Calendar via Microsoft Graph ─────────────────────────────────────
+// Fetches upcoming calendar events for users who have connected Outlook.
+// Tokens are stored in Azure Blob at outlook-tokens-{userId}.json.
+// Returns [] gracefully when not connected or on any error.
+async function getOutlookCalendarEvents(userId, windowStart, windowEnd) {
+  if (!AZURE_ACCOUNT || !AZURE_SAS_TOKEN) return [];
+  const sas     = AZURE_SAS_TOKEN.startsWith("?") ? AZURE_SAS_TOKEN : `?${AZURE_SAS_TOKEN}`;
+  const blobBase = `https://${AZURE_ACCOUNT}.blob.core.windows.net/${AZURE_CONTAINER}`;
+
+  // Load stored tokens
+  let tokens = null;
+  try {
+    const r = await fetch(`${blobBase}/outlook-tokens-${userId}.json${sas}`);
+    if (!r.ok) return [];
+    tokens = await r.json();
+  } catch { return []; }
+  if (!tokens?.access_token) return [];
+
+  // Refresh if expiring within 5 minutes
+  if ((tokens.expires_at || 0) < Date.now() + 5 * 60 * 1000) {
+    try {
+      const r = await fetch("https://login.microsoftonline.com/common/oauth2/v2.0/token", {
+        method:  "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          client_id:     process.env.MICROSOFT_CLIENT_ID     || "",
+          client_secret: process.env.MICROSOFT_CLIENT_SECRET || "",
+          refresh_token: tokens.refresh_token,
+          grant_type:    "refresh_token",
+        }).toString(),
+      });
+      if (!r.ok) throw new Error(`Refresh ${r.status}`);
+      const t = await r.json();
+      tokens = {
+        access_token:  t.access_token,
+        refresh_token: t.refresh_token || tokens.refresh_token,
+        expires_at:    Date.now() + (t.expires_in || 3600) * 1000,
+        scope:         t.scope,
+      };
+      await fetch(`${blobBase}/outlook-tokens-${userId}.json${sas}`, {
+        method:  "PUT",
+        headers: { "Content-Type": "application/json", "x-ms-blob-type": "BlockBlob" },
+        body:    JSON.stringify(tokens),
+      });
+    } catch (e) {
+      console.error("[calendar] token refresh failed:", e.message);
+      return [];
+    }
+  }
+
+  // Fetch calendarView — all events in window
+  const url =
+    `https://graph.microsoft.com/v1.0/me/calendarView` +
+    `?startDateTime=${windowStart.toISOString()}` +
+    `&endDateTime=${windowEnd.toISOString()}` +
+    `&$select=id,subject,start,end,location,organizer,isCancelled,isOrganizer,responseStatus` +
+    `&$orderby=start/dateTime` +
+    `&$top=50`;
+
+  try {
+    const r = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${tokens.access_token}`,
+        Prefer:        `outlook.timezone="UTC"`,
+      },
+    });
+    if (!r.ok) {
+      console.error("[calendar] Graph calendarView error:", r.status, await r.text().catch(() => ""));
+      return [];
+    }
+    const data = await r.json();
+    return (data.value || []).filter(ev =>
+      // Skip cancelled events and events the user declined
+      !ev.isCancelled &&
+      ev.responseStatus?.response !== "declined"
+    );
+  } catch (e) {
+    console.error("[calendar] fetch failed:", e.message);
+    return [];
+  }
+}
+
+
+
 async function getValidHubSpotToken(userId) {
   const tokens = await getTokens(userId);
   if (!tokens.hubspot?.access_token) {
@@ -2880,11 +2964,14 @@ export const handler = async (event, context) => {
           } catch (e) { console.error("[todo/sync] gold seqs:", e.message); }
         }
 
-        // ── 2. Meetings — upcoming 30 days (HubSpot + Gong-synced) ─────────────
+        // ── 2. Meetings — upcoming 30 days (HubSpot + Outlook calendar) ──────────
         try {
           const meetingWindowStart = new Date();
           const meetingWindowEnd   = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
-          const meetings = await hsPost(user.userId, "/crm/v3/objects/meetings/search", {
+
+          // Fetch HubSpot meetings and Outlook calendar in parallel
+          const [meetings, outlookEvents] = await Promise.all([
+            hsPost(user.userId, "/crm/v3/objects/meetings/search", {
             filterGroups: [{ filters: [
               { propertyName: "hs_meeting_start_time", operator: "GTE", value: meetingWindowStart.toISOString() },
               { propertyName: "hs_meeting_start_time", operator: "LTE", value: meetingWindowEnd.toISOString() },
@@ -2892,7 +2979,9 @@ export const handler = async (event, context) => {
             properties: ["hs_meeting_title","hs_meeting_start_time","hubspot_owner_id","hs_attendee_owner_ids"],
             sorts: [{ propertyName: "hs_meeting_start_time", direction: "ASCENDING" }],
             limit: 100,
-          });
+          }).catch(() => ({ results: [] })),
+            getOutlookCalendarEvents(user.userId, meetingWindowStart, meetingWindowEnd),
+          ]);
 
           // Deduplicate: for meetings at the same start time, prefer non-Gong version.
           // Gong creates a duplicate [Gong] record for every synced call — skip those
@@ -2938,8 +3027,61 @@ export const handler = async (event, context) => {
               subtext: dateLabel,
               hubspotUrl: `https://app.hubspot.com/contacts/${PORTAL}/objects/0-47/views/all/list`,
               sourceId: `meeting-${m.id}`, date: today,
+              _startMs: startDate ? startDate.getTime() : 0,
             });
           }
+          // ── Merge Outlook calendar events not already in HubSpot ──────────────
+          // Dedup: skip Outlook events whose start time is within 3 minutes of a
+          // HubSpot meeting already added (catches Calendly / Teams sync overlap).
+          const hsStartTimes = new Set(
+            autoItems
+              .filter(i => i.type === "meeting" && i._startMs)
+              .map(i => i._startMs)
+          );
+
+          for (const ev of (outlookEvents || [])) {
+            const subject = (ev.subject || "").trim();
+            if (!subject) continue;
+
+            // Skip canceled / declined
+            if (/\[canceled\]|\bcanceled\b|\bcancelled\b/i.test(subject)) continue;
+
+            const startMs = ev.start?.dateTime ? new Date(ev.start.dateTime + (ev.start.dateTime.endsWith("Z") ? "" : "Z")).getTime() : 0;
+            if (!startMs) continue;
+
+            // Skip if a HubSpot meeting already covers this time slot (within 3 min)
+            const alreadyCovered = [...hsStartTimes].some(t => Math.abs(t - startMs) < 3 * 60 * 1000);
+            if (alreadyCovered) continue;
+
+            // Skip all-day events (no meaningful end time within same day)
+            if (ev.start?.dateTime === undefined && ev.start?.date) continue;
+
+            hsStartTimes.add(startMs); // prevent Outlook dupes with itself
+
+            const startDate = new Date(startMs);
+            const dateLabel = startDate.toLocaleDateString("en-US", {
+              timeZone: "America/New_York",
+              weekday: "short", month: "short", day: "numeric",
+            }) + " at " + startDate.toLocaleTimeString("en-US", {
+              timeZone: "America/New_York",
+              hour: "numeric", minute: "2-digit",
+            });
+
+            autoItems.push({
+              type:       "meeting",
+              priority:   2,
+              text:       subject,
+              subtext:    `📅 Outlook · ${dateLabel}`,
+              hubspotUrl: `https://app.hubspot.com/contacts/${PORTAL}/objects/0-47/views/all/list`,
+              sourceId:   `outlook-cal-${ev.id}`,
+              date:       today,
+              _startMs:   startMs,
+            });
+          }
+
+          // Clean up internal _startMs flag
+          for (const item of autoItems) delete item._startMs;
+
         } catch (e) { console.error("[todo/sync] meetings:", e.message); }
 
         // ── 3. Regular replies needing response ───────────────────────────────
