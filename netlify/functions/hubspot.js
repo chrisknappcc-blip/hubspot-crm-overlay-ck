@@ -1857,6 +1857,7 @@ export const handler = async (event, context) => {
         const since    = Date.now() - days * 24 * 60 * 60 * 1000;
         const sinceISO = new Date(since).toISOString();
         const includeOwned = qp.include_owned === "true";
+        const includeAEs   = qp.include_owned === "true"; // same param, also expands to AE reps
 
         // rep param: "all" = both BDRs, anything else = filter to that rep's assigned_bdr value
         const repFilter = qp.rep && qp.rep !== "all"
@@ -1876,7 +1877,13 @@ export const handler = async (event, context) => {
           "Cole Hooper":   "85819247",
           "John Hansel":   "743772047",
         };
-        const targetReps = repFilter ? [repFilter] : KNOWN_BDRS;
+        // When "Include AE activity" is checked, expand targetReps to all reps
+        const BDR_ONLY   = ["Chris Knapp", "Chiara Pate"];
+        const targetReps = repFilter
+          ? [repFilter]
+          : includeAEs
+            ? KNOWN_BDRS   // KNOWN_BDRS already includes all BDRs + AEs
+            : BDR_ONLY;    // default: BDRs only
 
         // Count contacts with dateProp >= since, filtered by rep (assigned_bdr or owner_id)
         async function countForRep(dateProp, repName) {
@@ -1974,12 +1981,14 @@ export const handler = async (event, context) => {
           } catch { /* fall through */ }
         }
 
-        // Engagements: calls, meetings, notes -- filter by owner name where possible
+        // Engagements: calls, notes via legacy API; meetings via CRM objects API
+        // (Meetings are stored as CRM object type 0-47, not legacy MEETING engagements)
         const engTotals = { calls: 0, meetings: 0, notes: 0 };
         const engByRep  = {};
         targetReps.forEach(r => { engByRep[r] = { calls:0, meetings:0, notes:0 }; });
 
         try {
+          // Count calls + notes from legacy engagements
           let hasMore = true;
           let offset  = 0;
           while (hasMore && offset < 2000) {
@@ -1991,21 +2000,32 @@ export const handler = async (event, context) => {
               const ts   = eng.engagement?.createdAt || 0;
               const type = eng.engagement?.type || "";
               if (ts < since) continue;
-
-              // Match engagements to reps via the associated contact's assigned_bdr if available
-              // For now count all engagements if scope is all, or skip if rep-filtered
-              // (engagement owner ID doesn't reliably map to BDR)
-              if (repFilter) {
-                // Can't reliably filter engagements by BDR name -- include all and note limitation
-              }
               const bucket = engByRep[repFilter || targetReps[0]] || (engByRep[targetReps[0]] = { calls:0, meetings:0, notes:0 });
-              if (type === "CALL")    { engTotals.calls++;    bucket.calls++;    }
-              if (type === "MEETING") { engTotals.meetings++; bucket.meetings++; }
-              if (type === "NOTE")    { engTotals.notes++;    bucket.notes++;    }
+              if (type === "CALL") { engTotals.calls++; bucket.calls++; }
+              if (type === "NOTE") { engTotals.notes++; bucket.notes++; }
             }
 
             hasMore = engData.hasMore && (engData.results || []).length === 250;
             offset += (engData.results || []).length;
+          }
+
+          // Count meetings from CRM objects API (where modern HubSpot stores them)
+          // Filter by the current user's owner ID — meetings are owned by the person who booked
+          const meOwnerData = await hsGet(user.userId, "/crm/v3/owners/me", {}).catch(() => null);
+          if (meOwnerData?.id) {
+            const meetingFilters = [
+              { propertyName: "hubspot_owner_id",    operator: "EQ",  value: String(meOwnerData.id) },
+              { propertyName: "hs_meeting_start_time", operator: "GTE", value: sinceISO },
+            ];
+            const meetData = await hsPost(user.userId, "/crm/v3/objects/meetings/search", {
+              filterGroups: [{ filters: meetingFilters }],
+              properties: ["hs_meeting_start_time"],
+              limit: 1,
+            }).catch(() => ({ total: 0 }));
+            const meetCount = meetData.total || 0;
+            engTotals.meetings += meetCount;
+            const bucket = engByRep[repFilter || targetReps[0]] || (engByRep[targetReps[0]] = { calls:0, meetings:0, notes:0 });
+            bucket.meetings += meetCount;
           }
         } catch { /* fall through */ }
 
@@ -2926,7 +2946,7 @@ export const handler = async (event, context) => {
               );
               if (replyTs > activityTs) {
                 autoItems.push({
-                  type: "reply", priority: 1,
+                  type: "reply", priority: "HIGH",
                   text: `⭐ Reply to ${name}`,
                   subtext: `Gold · ${p.company || ""}`.trim().replace(/·\s*$/, ""),
                   contactId: c.id,
@@ -2953,7 +2973,7 @@ export const handler = async (event, context) => {
               const p = c.properties || {};
               const name = `${p.firstname||""} ${p.lastname||""}`.trim() || "Unknown";
               autoItems.push({
-                type: "sequence", priority: 1,
+                type: "sequence", priority: "HIGH",
                 text: `⭐ Follow up: ${name}`,
                 subtext: `Gold · ${p.company || ""}`.trim().replace(/·\s*$/, ""),
                 contactId: c.id,
@@ -3153,7 +3173,11 @@ export const handler = async (event, context) => {
         } catch (e) { console.error("[todo/sync] seqs:", e.message); }
 
         // Sort by priority before upserting
-        autoItems.sort((a, b) => (a.priority || 9) - (b.priority || 9));
+        autoItems.sort((a, b) => {
+          const pa = a.priority === "HIGH" ? 0 : (typeof a.priority === "number" ? a.priority : 9);
+          const pb = b.priority === "HIGH" ? 0 : (typeof b.priority === "number" ? b.priority : 9);
+          return pa - pb;
+        });
 
         const items = await bulkUpsertAutoDetected(user.userId, autoItems);
         return ok({ items, synced: autoItems.length });
