@@ -1985,6 +1985,7 @@ export const handler = async (event, context) => {
         // (Meetings are stored as CRM object type 0-47, not legacy MEETING engagements)
         const engTotals = { calls: 0, meetings: 0, notes: 0 };
         const engByRep  = {};
+        let meetingDetails = [];  // declared here — accessible after the try/catch
         targetReps.forEach(r => { engByRep[r] = { calls:0, meetings:0, notes:0 }; });
 
         try {
@@ -2020,7 +2021,6 @@ export const handler = async (event, context) => {
           const meetingOwnerIds = [...new Set(
             targetReps.map(r => FULL_OWNER_ID_MAP[r]).filter(Boolean)
           )];
-          const meetingDetails = [];
           if (meetingOwnerIds.length > 0) {
             const meetingFilterGroups = meetingOwnerIds.map(ownerId => ({
               filters: [
@@ -2568,12 +2568,13 @@ export const handler = async (event, context) => {
         } catch { /* non-critical — signals still show without company name */ }
       }
 
-      // Apply sentAt fallback to ALL signals.
-      // The fallback already validates that sendDate <= eventDate so it can't be
-      // from a future/unrelated email. Sales signals left at null would break bot
-      // detection and hide sent/replied stamps — the validated fallback is better.
+      // Apply sentAt fallback for marketing signals only.
+      // Sales/1:1 signals: hs_email_last_send_date is the contact's most recent
+      // send date globally — it's NOT paired to this specific reply/open event
+      // and will show a stale date (e.g. a send from months ago). Leave null.
+      // Marketing signals: send date is more reliably paired to the campaign.
       for (const sig of contactSignals) {
-        if (!sig.sentAt && sig._fallbackSentAt) {
+        if (!sig.sentAt && sig._fallbackSentAt && sig.emailSource !== 'sales') {
           sig.sentAt = sig._fallbackSentAt;
         }
         delete sig._fallbackSentAt;
