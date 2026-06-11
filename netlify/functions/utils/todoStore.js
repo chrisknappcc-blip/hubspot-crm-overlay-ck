@@ -42,7 +42,7 @@ async function readTodos(userId) {
   }
 }
 
-async function writeTodos(userId, items) {
+export async function writeTodos(userId, items) {
   const body = JSON.stringify(items, null, 2);
   const res  = await fetch(blobUrl(todoBlobName(userId)), {
     method: "PUT",
