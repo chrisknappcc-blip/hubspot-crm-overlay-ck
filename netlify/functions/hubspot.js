@@ -36,7 +36,7 @@ function gapCacheBlobUrl() {
 import { withAuth } from "./utils/auth.js";
 import { getTokens, setTokens, isTokenValid } from "./utils/tokenStore.js";
 import { getTabsForUser, getAllTabsForUser, getRegistry, saveRegistry, getPersonalTabs, savePersonalTabs, slugify, fetchPageTitle } from "./utils/tabRegistry.js";
-import { getTodos, addTodo, updateTodo, deleteTodo, bulkUpsertAutoDetected } from "./utils/todoStore.js";
+import { getTodos, writeTodos, addTodo, updateTodo, deleteTodo, bulkUpsertAutoDetected } from "./utils/todoStore.js";
 import { getActivityLog, addActivityEntry, deleteActivityEntry } from "./utils/activityLog.js";
 
 // Admin user IDs -- comma-separated Clerk user IDs in ADMIN_USER_IDS env var
@@ -2824,16 +2824,34 @@ export const handler = async (event, context) => {
     if (method === "GET" && path === "/todo") {
       try {
         let items = await getTodos(user.userId);
-        // One-time live dedup: remove duplicate manual todos for the same contactId
-        // (keeps the most recently-created one, since getTodos sorts manual items newest first)
+        let dirty = false;
+
+        // One-time migration: set priority:'HIGH' on items that have type:'high-priority'
+        // but are missing the priority field (created before the fix)
+        items = items.map(i => {
+          if (i.type === 'high-priority' && i.priority == null) {
+            dirty = true;
+            return { ...i, priority: 'HIGH' };
+          }
+          return i;
+        });
+
+        // One-time dedup: remove duplicate manual todos for the same contactId
+        // (keeps the most recently-created one — getTodos sorts manual items newest first)
         const seenManualCids = new Set();
         items = items.filter(i => {
           if (!i.autoDetected && i.contactId) {
-            if (seenManualCids.has(i.contactId)) return false;
+            if (seenManualCids.has(i.contactId)) { dirty = true; return false; }
             seenManualCids.add(i.contactId);
           }
           return true;
         });
+
+        // Persist the cleaned list back to blob if anything changed
+        if (dirty) {
+          await writeTodos(user.userId, items).catch(() => {});
+        }
+
         return ok({ items });
       } catch (err) {
         console.error("[todo] GET error:", err.message);
