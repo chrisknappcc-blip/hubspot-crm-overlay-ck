@@ -1123,8 +1123,10 @@ export const handler = async (event, context) => {
               ? Object.entries(OWNER_NAME_TO_ID).find(([, id]) => id === String(contactOwnerId))?.[0] || null
               : null;
 
-            // If specific reps are selected, exclude contacts owned by anyone not in the list
-            if (selectedOwnerIds.length > 0 && contactOwnerId && !selectedOwnerIds.includes(String(contactOwnerId))) {
+            // For owner-based filtering (AEs): exclude contacts not owned by the selected rep.
+            // Skip this check for BDR-name filtering — BDR contacts are owned by AEs, not Chris,
+            // so hubspot_owner_id won't match. The assigned_bdr search filter already scoped correctly.
+            if (ownerIdList.length > 0 && assignedBdrList.length === 0 && contactOwnerId && !selectedOwnerIds.includes(String(contactOwnerId))) {
               return null;
             }
 
