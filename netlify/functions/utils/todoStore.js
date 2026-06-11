@@ -140,6 +140,12 @@ export async function bulkUpsertAutoDetected(userId, autoItems) {
   // Keep all manual items
   const manualItems = items.filter(i => !i.autoDetected);
 
+  // Build set of contactIds already covered by active manual items
+  // so auto-detected items don't duplicate them
+  const manualContactIds = new Set(
+    manualItems.filter(i => i.contactId && !i.completed).map(i => i.contactId)
+  );
+
   // Build completion state map from existing auto-detected items
   const completionMap = {};
   for (const item of items) {
@@ -151,8 +157,11 @@ export async function bulkUpsertAutoDetected(userId, autoItems) {
     }
   }
 
-  // Build fresh auto-detected list, preserving completion state
-  const freshAutoItems = autoItems.map(incoming => ({
+  // Build fresh auto-detected list, skipping contacts already covered by manual items
+  // and preserving completion state for items that still qualify
+  const freshAutoItems = autoItems
+    .filter(incoming => !incoming.contactId || !manualContactIds.has(incoming.contactId))
+    .map(incoming => ({
     id:           Math.random().toString(36).slice(2, 10),
     type:         incoming.type      || "task",
     text:         (incoming.text     || "").trim().slice(0, 200),
