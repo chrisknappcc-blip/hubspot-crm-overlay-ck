@@ -2880,32 +2880,46 @@ export const handler = async (event, context) => {
           } catch (e) { console.error("[todo/sync] gold seqs:", e.message); }
         }
 
-        // ── 2. Meetings (HubSpot only — Outlook pending) ─────────────────────
+        // ── 2. Meetings — upcoming 30 days (HubSpot + Gong-synced) ─────────────
         try {
-
-          const todayStart = new Date(); todayStart.setHours(0,0,0,0);
-          const todayEnd   = new Date(); todayEnd.setHours(23,59,59,999);
+          const meetingWindowStart = new Date();
+          const meetingWindowEnd   = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
           const meetings = await hsPost(user.userId, "/crm/v3/objects/meetings/search", {
             filterGroups: [{ filters: [
-              { propertyName: "hs_meeting_start_time", operator: "GTE", value: todayStart.toISOString() },
-              { propertyName: "hs_meeting_start_time", operator: "LTE", value: todayEnd.toISOString() },
+              { propertyName: "hs_meeting_start_time", operator: "GTE", value: meetingWindowStart.toISOString() },
+              { propertyName: "hs_meeting_start_time", operator: "LTE", value: meetingWindowEnd.toISOString() },
             ]}],
             properties: ["hs_meeting_title","hs_meeting_start_time","hubspot_owner_id","hs_attendee_owner_ids"],
             sorts: [{ propertyName: "hs_meeting_start_time", direction: "ASCENDING" }],
-            limit: 50,
+            limit: 100,
           });
-          for (const m of (meetings.results || [])) {
-            const p = m.properties || {};
 
-            // Exclude Gong-synced meetings where current user is not the owner.
-            // hs_attendee_owner_ids is not populated by Gong so we can't use it.
-            // Rule: skip [Gong] meetings unless hubspot_owner_id === current user.
-            const isGong = (p.hs_meeting_title || "").startsWith("[Gong]");
-            if (isGong) {
-              if (!currentOwnerIds.length) continue; // can't verify, skip all Gong meetings
-              if (!currentOwnerIds.includes(String(p.hubspot_owner_id || ""))) continue;
-            } else if (currentOwnerIds.length > 0) {
-              // For non-Gong meetings: must own or be attendee
+          // Deduplicate: for meetings at the same start time, prefer non-Gong version.
+          // Gong creates a duplicate [Gong] record for every synced call — skip those
+          // if a non-Gong record already exists for that time slot.
+          const seenMeetingTimes = new Set();
+          const meetingsSorted = (meetings.results || []).sort((a, b) => {
+            // non-Gong first so they win the dedup
+            const aGong = (a.properties?.hs_meeting_title || "").startsWith("[Gong]");
+            const bGong = (b.properties?.hs_meeting_title || "").startsWith("[Gong]");
+            return aGong - bGong;
+          });
+
+          for (const m of meetingsSorted) {
+            const p = m.properties || {};
+            const title = p.hs_meeting_title || "";
+
+            // Skip canceled meetings
+            if (/\[canceled\]|\bcanceled\b|\bcancelled\b/i.test(title)) continue;
+
+            // Skip Gong duplicates if non-Gong already claimed this time slot
+            const isGong = title.startsWith("[Gong]");
+            const timeKey = p.hs_meeting_start_time || m.id;
+            if (isGong && seenMeetingTimes.has(timeKey)) continue;
+            seenMeetingTimes.add(timeKey);
+
+            // Ownership check: must own or be attendee (Gong sets hubspot_owner_id = AE)
+            if (currentOwnerIds.length > 0) {
               const owner     = String(p.hubspot_owner_id || "");
               const attendees = String(p.hs_attendee_owner_ids || "").split(";").map(s => s.trim()).filter(Boolean);
               const isOwner   = currentOwnerIds.includes(owner);
@@ -2913,13 +2927,15 @@ export const handler = async (event, context) => {
               if (!isOwner && !isAttendee) continue;
             }
 
-            const start = p.hs_meeting_start_time
-              ? new Date(p.hs_meeting_start_time).toLocaleTimeString("en-US", { hour:"numeric", minute:"2-digit" })
+            const startDate = p.hs_meeting_start_time ? new Date(p.hs_meeting_start_time) : null;
+            const dateLabel = startDate
+              ? startDate.toLocaleDateString("en-US", { weekday:"short", month:"short", day:"numeric" })
+                + " at " + startDate.toLocaleTimeString("en-US", { hour:"numeric", minute:"2-digit" })
               : "";
             autoItems.push({
               type: "meeting", priority: 2,
-              text: p.hs_meeting_title || "Meeting",
-              subtext: start ? `Today at ${start}` : "Today",
+              text: isGong ? title.replace(/^\[Gong\]\s*/i, "") : title,
+              subtext: dateLabel,
               hubspotUrl: `https://app.hubspot.com/contacts/${PORTAL}/objects/0-47/views/all/list`,
               sourceId: `meeting-${m.id}`, date: today,
             });
