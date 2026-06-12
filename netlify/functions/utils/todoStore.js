@@ -137,8 +137,17 @@ export async function bulkUpsertAutoDetected(userId, autoItems) {
   const now   = new Date().toISOString();
   const today = todayStr();
 
-  // Keep all manual items
-  const manualItems = items.filter(i => !i.autoDetected);
+  // Keep all manual items, deduplicating by contactId (keep newest = first in list)
+  // This cleans up any duplicates that were created before the frontend dedup was added
+  const manualContactSeen = new Set();
+  const manualItems = items
+    .filter(i => !i.autoDetected)
+    .filter(i => {
+      if (!i.contactId) return true;
+      if (manualContactSeen.has(i.contactId)) return false;
+      manualContactSeen.add(i.contactId);
+      return true;
+    });
 
   // Build set of contactIds already covered by active manual items
   // so auto-detected items don't duplicate them
