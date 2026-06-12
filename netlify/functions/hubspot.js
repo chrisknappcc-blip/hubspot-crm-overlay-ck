@@ -2116,7 +2116,8 @@ export const handler = async (event, context) => {
               limit: 50,
             }).catch(() => ({ results: [], total: 0 }));
 
-            const meetCount = meetData.total || 0;
+            // Use deduplicated count (rawMeetings, after Gong-pair removal) for accuracy
+            const meetCount = rawMeetings.length;
             engTotals.meetings += meetCount;
             const bucket = engByRep[repFilter || targetReps[0]] || (engByRep[targetReps[0]] = { calls:0, meetings:0, notes:0 });
             bucket.meetings += meetCount;
@@ -2674,17 +2675,26 @@ export const handler = async (event, context) => {
         if (outlookSent) {
           const outlookMs = new Date(outlookSent).getTime();
           const eventMs   = new Date(sig.openedAt || sig.repliedAt || sig.clickedAt || 0).getTime();
-          // Use Outlook sent time if it's before the event (valid) and within 30 days
           if (outlookMs < eventMs && (eventMs - outlookMs) < 30 * 24 * 60 * 60 * 1000) {
             sig.sentAt = outlookSent;
           }
         }
 
-        // Fallback: marketing signals only (contact-level send date is unreliable for sales)
+        // Fallback: marketing signals only
         if (!sig.sentAt && sig._fallbackSentAt && sig.emailSource !== 'sales') {
           sig.sentAt = sig._fallbackSentAt;
         }
         delete sig._fallbackSentAt;
+
+        // Re-run TTO bot check now that we have accurate sentAt from Outlook.
+        // isBot was set earlier when sentAt was null — fix any misses.
+        if (!sig.isBot && sig.sentAt && sig.openedAt && sig.eventType === "OPEN") {
+          const tto = new Date(sig.openedAt).getTime() - new Date(sig.sentAt).getTime();
+          if (tto >= 0 && tto < 60 * 1000) {  // opened < 1 minute after send
+            sig.isBot = true;
+            sig.botCheck = { isBot: true, confidence: "high", reasons: ["Opened < 1 min after send (Outlook)"] };
+          }
+        }
       }
 
       // Supplement with engagements not already covered by contact search
@@ -4596,31 +4606,70 @@ export const handler = async (event, context) => {
             if (untilISO) replyFilters.push({ propertyName: "hs_timestamp", operator: "LTE", value: untilISO });
             if (ownerId)  replyFilters.push({ propertyName: "hubspot_owner_id", operator: "EQ", value: ownerId });
 
-            const [seqEmails, indivEmails, replyData] = await Promise.all([
+            const RECAP_OWNER_MAP = { ...OWNER_ID_MAP, "Chris Knapp": "78304576", "Chiara Pate": "87806380" };
+            const repOwnerId = RECAP_OWNER_MAP[repName];
+
+            const meetingFilters = [];
+            if (repOwnerId) meetingFilters.push({ propertyName: "hubspot_owner_id", operator: "EQ", value: repOwnerId });
+            if (sinceISO)   meetingFilters.push({ propertyName: "hs_meeting_start_time", operator: "GTE", value: sinceISO });
+            if (untilISO)   meetingFilters.push({ propertyName: "hs_meeting_start_time", operator: "LTE", value: untilISO || new Date().toISOString() });
+
+            const [seqEmails, indivEmails, replyData, meetData] = await Promise.all([
               countEmailsByType(ownerId, assignedBdr, true),
               countEmailsByType(ownerId, assignedBdr, false),
               hsPost(user.userId, "/crm/v3/objects/emails/search", {
                 filterGroups: [{ filters: replyFilters }],
                 properties: ["hs_timestamp"], limit: 1,
               }).catch(() => ({ total: 0 })),
+              meetingFilters.length > 0
+                ? hsPost(user.userId, "/crm/v3/objects/meetings/search", {
+                    filterGroups: [{ filters: meetingFilters }],
+                    properties: ["hs_meeting_title", "hs_meeting_start_time"],
+                    sorts: [{ propertyName: "hs_meeting_start_time", direction: "DESCENDING" }],
+                    limit: 50,
+                  }).catch(() => ({ results: [], total: 0 }))
+                : Promise.resolve({ results: [], total: 0 }),
             ]);
 
-            console.log(`[weekly_recap] ${repName}: seq=${seqEmails} indiv=${indivEmails} replies=${replyData.total||0}`);
+            // Dedup Gong pairs in meeting results
+            const meetSeenTimes = new Set();
+            const meetDetails = (meetData.results || [])
+              .filter(m => !(m.properties?.hs_meeting_title || "").match(/\[Canceled\]|\bcanceled\b/i))
+              .sort((a, b) => {
+                const aG = (a.properties?.hs_meeting_title||"").startsWith("[Gong]");
+                return aG ? 1 : -1;
+              })
+              .filter(m => {
+                const t = m.properties?.hs_meeting_start_time || m.id;
+                if (meetSeenTimes.has(t)) return false;
+                meetSeenTimes.add(t);
+                return true;
+              })
+              .map(m => ({
+                title: (m.properties?.hs_meeting_title || "Meeting").replace(/^\[Gong\]\s*/i, ""),
+                date:  m.properties?.hs_meeting_start_time || null,
+              }));
+
+            console.log(`[weekly_recap] ${repName}: seq=${seqEmails} indiv=${indivEmails} replies=${replyData.total||0} meetings=${meetDetails.length}`);
             repEmailCounts[repName] = {
               seqEmails, indivEmails,
               total:   seqEmails + indivEmails,
               replies: replyData.total || 0,
+              meetings: meetDetails.length,
+              meetingDetails: meetDetails,
             };
           }));
 
           const byRep = targetReps.map(repName => ({
-            rep:         repName,
-            sent:        repEmailCounts[repName]?.total     || 0,
-            seqEmails:   repEmailCounts[repName]?.seqEmails || 0,
-            indivEmails: repEmailCounts[repName]?.indivEmails || 0,
-            opens:       openCounts[repName]  || 0,
-            replies:     repEmailCounts[repName]?.replies || 0,
-            sequences:   seqCounts[repName]   || 0,
+            rep:            repName,
+            sent:           repEmailCounts[repName]?.total          || 0,
+            seqEmails:      repEmailCounts[repName]?.seqEmails       || 0,
+            indivEmails:    repEmailCounts[repName]?.indivEmails     || 0,
+            opens:          openCounts[repName]                      || 0,
+            replies:        repEmailCounts[repName]?.replies         || 0,
+            sequences:      seqCounts[repName]                       || 0,
+            meetings:       repEmailCounts[repName]?.meetings        || 0,
+            meetingDetails: repEmailCounts[repName]?.meetingDetails  || [],
           }));
 
           // Completed To-Do items for the period
@@ -4644,7 +4693,10 @@ export const handler = async (event, context) => {
             opens:       acc.opens       + r.opens,
             replies:     acc.replies     + r.replies,
             sequences:   acc.sequences   + r.sequences,
-          }), { sent:0, seqEmails:0, indivEmails:0, opens:0, replies:0, sequences:0 });
+            meetings:    acc.meetings    + (r.meetings    || 0),
+          }), { sent:0, seqEmails:0, indivEmails:0, opens:0, replies:0, sequences:0, meetings:0 });
+          const allMeetingDetails = byRep.flatMap(r => r.meetingDetails || [])
+            .sort((a, b) => new Date(b.date||0) - new Date(a.date||0));
 
           return ok({
             section: "weekly_recap",
@@ -4658,8 +4710,10 @@ export const handler = async (event, context) => {
               replyRate:      totals.sent > 0 ? +((totals.replies / totals.sent) * 100).toFixed(1) : 0,
               completedTodos: completedTodos.length,
               manualEntries:  logEntries.length,
+              meetings:       totals.meetings,
             },
             byRep,
+            meetingDetails: allMeetingDetails,
             completedTodos,
             activityLog: logEntries,
           });
