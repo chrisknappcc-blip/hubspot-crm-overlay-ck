@@ -1232,6 +1232,8 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
 
   // ── To-Do list state ────────────────────────────────────────────────────────
   const [todoItems, setTodoItems]     = useState([])
+  const todoItemsRef = useRef([])
+  useEffect(() => { todoItemsRef.current = todoItems }, [todoItems])
   const [todoPage, setTodoPage]       = useState(0)
   const [todoTab, setTodoTab]         = useState('high-priority')
   const TODO_PAGE_SIZE = 5
@@ -1260,6 +1262,13 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
 
   const addTodoItem = useCallback(async (text, extraFields = {}) => {
     if (!text?.trim()) return
+    // Prevent duplicate contactId entries — check current state via ref to avoid race conditions
+    if (extraFields.contactId) {
+      const alreadyTracked = todoItemsRef.current.some(
+        t => !t.completed && t.contactId === extraFields.contactId && !t.autoDetected
+      )
+      if (alreadyTracked) return
+    }
     try {
       const data = await safeFetch('/api/hubspot/todo', {
         method: 'POST',
@@ -1271,6 +1280,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
         }),
       })
       setTodoItems(prev => {
+        if (extraFields.contactId && prev.some(t => !t.completed && t.contactId === extraFields.contactId && !t.autoDetected)) return prev
         if (extraFields.sourceId && prev.some(t => t.sourceId === extraFields.sourceId)) return prev
         // Prepend to top, before other manual items (newest first)
         const firstAutoIdx = prev.findIndex(t => t.autoDetected)
