@@ -211,6 +211,84 @@ async function getOutlookCalendarEvents(userId, windowStart, windowEnd) {
     return [];
   }
 }
+// ─── Outlook Sent Email → sentAt Enrichment ─────────────────────────────────
+// For the current user's Outlook, fetch recently sent emails and build a map
+// of recipientEmail → most recent sentAt. Used to enrich signals with accurate
+// TTO for bot detection (sentAt from HubSpot contact properties is unreliable).
+async function getOutlookSentAtMap(userId, since) {
+  if (!AZURE_ACCOUNT || !AZURE_SAS_TOKEN) return {};
+  const sas      = AZURE_SAS_TOKEN.startsWith("?") ? AZURE_SAS_TOKEN : `?${AZURE_SAS_TOKEN}`;
+  const blobBase = `https://${AZURE_ACCOUNT}.blob.core.windows.net/${AZURE_CONTAINER}`;
+
+  let tokens = null;
+  try {
+    const r = await fetch(`${blobBase}/outlook-tokens-${userId}.json${sas}`);
+    if (!r.ok) return {};
+    tokens = await r.json();
+  } catch { return {}; }
+  if (!tokens?.access_token) return {};
+
+  // Refresh if needed
+  if ((tokens.expires_at || 0) < Date.now() + 5 * 60 * 1000) {
+    try {
+      const r = await fetch("https://login.microsoftonline.com/common/oauth2/v2.0/token", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          client_id:     process.env.MICROSOFT_CLIENT_ID || "",
+          client_secret: process.env.MICROSOFT_CLIENT_SECRET || "",
+          refresh_token: tokens.refresh_token,
+          grant_type:    "refresh_token",
+        }).toString(),
+      });
+      if (!r.ok) throw new Error(`Refresh ${r.status}`);
+      const t = await r.json();
+      tokens = { access_token: t.access_token, refresh_token: t.refresh_token || tokens.refresh_token, expires_at: Date.now() + (t.expires_in || 3600) * 1000 };
+      await fetch(`${blobBase}/outlook-tokens-${userId}.json${sas}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", "x-ms-blob-type": "BlockBlob" },
+        body: JSON.stringify(tokens),
+      });
+    } catch (e) {
+      console.error("[sentAt] token refresh failed:", e.message);
+      return {};
+    }
+  }
+
+  // Fetch sent items from last 14 days (wider window to catch older sends)
+  const sinceStr = since ? new Date(since).toISOString() : new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
+  const url = `https://graph.microsoft.com/v1.0/me/mailFolders/SentItems/messages` +
+    `?$filter=sentDateTime ge ${sinceStr}` +
+    `&$select=sentDateTime,toRecipients` +
+    `&$top=200&$orderby=sentDateTime desc`;
+
+  try {
+    const r = await fetch(url, {
+      headers: { Authorization: `Bearer ${tokens.access_token}` },
+    });
+    if (!r.ok) return {};
+    const data = await r.json();
+    // Build map: recipientEmail (lowercased) → most recent sentAt
+    const map = {};
+    for (const msg of (data.value || [])) {
+      const sent = msg.sentDateTime;
+      if (!sent) continue;
+      for (const rec of (msg.toRecipients || [])) {
+        const email = rec.emailAddress?.address?.toLowerCase().trim();
+        if (!email) continue;
+        if (!map[email] || new Date(sent) > new Date(map[email])) {
+          map[email] = sent;
+        }
+      }
+    }
+    return map;
+  } catch (e) {
+    console.error("[sentAt] Graph fetch failed:", e.message);
+    return {};
+  }
+}
+
+
 
 
 
@@ -2044,8 +2122,22 @@ export const handler = async (event, context) => {
             bucket.meetings += meetCount;
 
             // Build meeting details list — fetch associated contacts for each meeting
-            const rawMeetings = (meetData.results || [])
-              .filter(m => !(m.properties?.hs_meeting_title || "").match(/\[Gong\]|\[Canceled\]|canceled/i));
+            // Dedup Gong vs non-Gong: for each start time, prefer non-Gong.
+            // If only a Gong record exists for that slot, include it (stripped of prefix).
+            const allMeetResults = (meetData.results || [])
+              .filter(m => !(m.properties?.hs_meeting_title || "").match(/\[Canceled\]|\bcanceled\b|\bcancelled\b/i))
+              .sort((a, b) => {
+                const aG = (a.properties?.hs_meeting_title || "").startsWith("[Gong]");
+                const bG = (b.properties?.hs_meeting_title || "").startsWith("[Gong]");
+                return aG - bG; // non-Gong first
+              });
+            const seenStartTimes = new Set();
+            const rawMeetings = allMeetResults.filter(m => {
+              const t = m.properties?.hs_meeting_start_time || m.id;
+              if (seenStartTimes.has(t)) return false;
+              seenStartTimes.add(t);
+              return true;
+            });
 
             // Batch-fetch contact associations for meetings
             if (rawMeetings.length > 0) {
@@ -2567,12 +2659,28 @@ export const handler = async (event, context) => {
         } catch { /* non-critical — signals still show without company name */ }
       }
 
-      // Apply sentAt fallback for marketing signals only.
-      // Sales/1:1 signals: hs_email_last_send_date is the contact's most recent
-      // send date globally — it's NOT paired to this specific reply/open event
-      // and will show a stale date (e.g. a send from months ago). Leave null.
-      // Marketing signals: send date is more reliably paired to the campaign.
+      // Enrich sentAt for open signals using Outlook sent items (accurate TTO for bot detection).
+      // This only applies for users with Outlook connected (gracefully returns {} otherwise).
+      // We set sentAt for DISPLAY only if it validates (otherwise just use for bot detection).
+      let outlookSentAtMap = {};
+      try {
+        outlookSentAtMap = await getOutlookSentAtMap(user.userId, sinceMs);
+      } catch { /* optional enrichment, never fail signals */ }
+
       for (const sig of contactSignals) {
+        const email = sig.contact?.email?.toLowerCase().trim();
+        const outlookSent = email ? outlookSentAtMap[email] : null;
+
+        if (outlookSent) {
+          const outlookMs = new Date(outlookSent).getTime();
+          const eventMs   = new Date(sig.openedAt || sig.repliedAt || sig.clickedAt || 0).getTime();
+          // Use Outlook sent time if it's before the event (valid) and within 30 days
+          if (outlookMs < eventMs && (eventMs - outlookMs) < 30 * 24 * 60 * 60 * 1000) {
+            sig.sentAt = outlookSent;
+          }
+        }
+
+        // Fallback: marketing signals only (contact-level send date is unreliable for sales)
         if (!sig.sentAt && sig._fallbackSentAt && sig.emailSource !== 'sales') {
           sig.sentAt = sig._fallbackSentAt;
         }
