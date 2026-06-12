@@ -1233,6 +1233,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
   // ── To-Do list state ────────────────────────────────────────────────────────
   const [todoItems, setTodoItems]     = useState([])
   const [donePage, setDonePage]       = useState(0)
+  const [activityMeetPage, setActivityMeetPage] = useState(0)
   const todoItemsRef = useRef([])
   useEffect(() => { todoItemsRef.current = todoItems }, [todoItems])
   const [todoPage, setTodoPage]       = useState(0)
@@ -3130,17 +3131,28 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                   </div>
 
                   {/* Meeting details — expanded list below outbound metrics */}
-                  {activityData.meetingDetails?.length > 0 && (
+                  {activityData.meetingDetails?.length > 0 && (() => {
+                    const MEET_PAGE = 5
+                    const totalPages = Math.ceil(activityData.meetingDetails.length / MEET_PAGE)
+                    const pageMeets = activityData.meetingDetails.slice(activityMeetPage * MEET_PAGE, (activityMeetPage + 1) * MEET_PAGE)
+                    return (
                     <div style={{ marginTop:12, padding:'10px 12px', background:'var(--bg-secondary)', borderRadius:'var(--radius)', border:'1px solid var(--border)' }}>
-                      <div style={{ fontSize:11, fontWeight:600, letterSpacing:'.06em', textTransform:'uppercase', color:'var(--text-tertiary)', marginBottom:8 }}>
-                        📅 Meetings this period
+                      <div style={{ fontSize:11, fontWeight:600, letterSpacing:'.06em', textTransform:'uppercase', color:'var(--text-tertiary)', marginBottom:8, display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                        <span>📅 Meetings this period ({activityData.meetingDetails.length})</span>
+                        {totalPages > 1 && (
+                          <span style={{ fontWeight:400, fontSize:11 }}>
+                            <span onClick={() => setActivityMeetPage(p => Math.max(0,p-1))} style={{ cursor:'pointer', marginRight:6, opacity: activityMeetPage===0?0.3:1 }}>‹</span>
+                            {activityMeetPage+1}/{totalPages}
+                            <span onClick={() => setActivityMeetPage(p => Math.min(totalPages-1,p+1))} style={{ cursor:'pointer', marginLeft:6, opacity: activityMeetPage+1>=totalPages?0.3:1 }}>›</span>
+                          </span>
+                        )}
                       </div>
-                      {activityData.meetingDetails.map((m, i) => {
+                      {pageMeets.map((m, i) => {
                         const dt = m.startTime ? new Date(m.startTime) : null
                         const dateStr = dt ? dt.toLocaleDateString('en-US', { timeZone:'America/New_York', weekday:'short', month:'short', day:'numeric' }) + ' at ' + dt.toLocaleTimeString('en-US', { timeZone:'America/New_York', hour:'numeric', minute:'2-digit' }) : ''
                         const attendees = (m.contacts||[]).map(c => c.company ? `${c.name} (${c.company})` : c.name).filter(Boolean).join(', ')
                         return (
-                          <div key={m.id} style={{ paddingBottom: i < activityData.meetingDetails.length-1 ? 8 : 0, marginBottom: i < activityData.meetingDetails.length-1 ? 8 : 0, borderBottom: i < activityData.meetingDetails.length-1 ? '1px solid var(--border)' : 'none' }}>
+                          <div key={m.id} style={{ paddingBottom: i < pageMeets.length-1 ? 8 : 0, marginBottom: i < pageMeets.length-1 ? 8 : 0, borderBottom: i < pageMeets.length-1 ? '1px solid var(--border)' : 'none' }}>
                             <div style={{ fontSize:13, fontWeight:500, color:'var(--text)', marginBottom:2 }}>{m.title}</div>
                             <div style={{ fontSize:11, color:'var(--text-tertiary)' }}>
                               {dateStr}
@@ -3150,7 +3162,8 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                         )
                       })}
                     </div>
-                  )}
+                    )
+                  })()}
 
                   {/* Inbound */}
                   <div>
@@ -4110,7 +4123,24 @@ function ReportsTab({ safeFetch, owners, currentUserName,
                 <KpiCard label="Clicks"  value={fmt(t.clicks)}  sub={`${t.clickRate||0}% click rate`} />
                 <KpiCard label="Replies" value={fmt(t.replies)} sub={`${t.replyRate||0}% reply rate`} />
                 <KpiCard label="To-Do Done" value={fmt(t.completedTodos)} accent />
+                <KpiCard label="Meetings" value={fmt(t.meetings || 0)} />
               </div>
+              {/* Meeting details in recap */}
+              {data.meetingDetails?.length > 0 && (
+                <div style={{ marginTop:10, padding:'10px 12px', background:'var(--surface)', border:'1px solid var(--border)', borderRadius:'var(--radius)' }}>
+                  <div style={{ fontSize:11, fontWeight:600, textTransform:'uppercase', letterSpacing:'.06em', color:'var(--text-tertiary)', marginBottom:6 }}>📅 Meetings</div>
+                  {data.meetingDetails.map((m, i) => {
+                    const dt = m.date ? new Date(m.date) : null
+                    const dateStr = dt ? dt.toLocaleDateString('en-US', { timeZone:'America/New_York', weekday:'short', month:'short', day:'numeric' }) : ''
+                    return (
+                      <div key={i} style={{ fontSize:12, padding:'3px 0', borderBottom: i < data.meetingDetails.length-1 ? '1px solid var(--border)' : 'none', display:'flex', gap:8 }}>
+                        <span style={{ color:'var(--text-tertiary)', minWidth:80 }}>{dateStr}</span>
+                        <span style={{ color:'var(--text)' }}>{m.title}</span>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
               {/* Row 2: Sequence stats */}
               <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr 1fr', gap:10 }}>
                 <div style={{ padding:'14px 16px', background:'var(--surface)', border:'1px solid var(--border)', borderRadius:'var(--radius)', display:'flex', flexDirection:'column', gap:2 }}>
