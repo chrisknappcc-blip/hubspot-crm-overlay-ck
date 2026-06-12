@@ -1232,6 +1232,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
 
   // ── To-Do list state ────────────────────────────────────────────────────────
   const [todoItems, setTodoItems]     = useState([])
+  const [donePage, setDonePage]       = useState(0)
   const todoItemsRef = useRef([])
   useEffect(() => { todoItemsRef.current = todoItems }, [todoItems])
   const [todoPage, setTodoPage]       = useState(0)
@@ -1246,7 +1247,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
     setTodoLoading(true)
     try {
       const data = await safeFetch('/api/hubspot/todo')
-      setTodoItems(data.items || [])
+      setTodoItems(dedupTodoItems(data.items))
     } catch (e) { console.error('[todo]', e) }
     finally { setTodoLoading(false) }
   }, [])
@@ -1255,11 +1256,21 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
     setTodoSyncing(true)
     try {
       const data = await safeFetch('/api/hubspot/todo/sync', { method:'POST' })
-      setTodoItems(data.items || [])
+      setTodoItems(dedupTodoItems(data.items))
     } catch (e) { console.error('[todo/sync]', e) }
     finally { setTodoSyncing(false) }
   }, [])
 
+
+  const dedupTodoItems = (items) => {
+    const seen = new Set()
+    return (items || []).filter(i => {
+      if (!i.contactId) return true
+      if (seen.has(i.contactId)) return false
+      seen.add(i.contactId)
+      return true
+    })
+  }
   const addTodoItem = useCallback(async (text, extraFields = {}) => {
     if (!text?.trim()) return
     // Prevent duplicate contactId entries — check current state via ref to avoid race conditions
@@ -2402,10 +2413,17 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                   {/* Completed items with strikethrough */}
                   {done.length > 0 && (
                     <>
-                      <div style={{ fontSize:10, fontWeight:600, textTransform:'uppercase', letterSpacing:'.05em', color:'var(--text-tertiary)', padding:'8px 4px 4px', marginTop:4, borderTop:'1px solid var(--border)' }}>
-                        Completed today
+                      <div style={{ fontSize:10, fontWeight:600, textTransform:'uppercase', letterSpacing:'.05em', color:'var(--text-tertiary)', padding:'8px 4px 4px', marginTop:4, borderTop:'1px solid var(--border)', display:'flex', justifyContent:'space-between' }}>
+                        <span>Completed ({done.length})</span>
+                        {done.length > 10 && (
+                          <span style={{ fontWeight:400, cursor:'pointer', color:'var(--accent)' }}>
+                            <span onClick={() => setDonePage(p => Math.max(0,p-1))} style={{ marginRight:8, opacity: donePage===0?0.3:1 }}>‹</span>
+                            {donePage+1}/{Math.ceil(done.length/10)}
+                            <span onClick={() => setDonePage(p => Math.min(Math.ceil(done.length/10)-1,p+1))} style={{ marginLeft:8, opacity: (donePage+1)>=Math.ceil(done.length/10)?0.3:1 }}>›</span>
+                          </span>
+                        )}
                       </div>
-                      {done.map(item => (
+                      {done.slice(donePage*10,(donePage+1)*10).map(item => (
                         <div key={item.id} style={{ display:'flex', alignItems:'center', gap:8, padding:'5px 4px', opacity:0.55 }}>
                           <input type="checkbox" checked={true} onChange={() => toggleTodo(item.id, false)}
                             style={{ flexShrink:0, cursor:'pointer', accentColor:'var(--accent)', width:15, height:15 }} />
