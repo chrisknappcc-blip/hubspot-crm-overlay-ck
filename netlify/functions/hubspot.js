@@ -255,11 +255,11 @@ async function getOutlookSentAtMap(userId, since) {
     }
   }
 
-  // Fetch sent items from last 14 days (wider window to catch older sends)
-  const sinceStr = since ? new Date(since).toISOString() : new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
+  // Fetch 200 most recent sent items — $filter on sentDateTime requires special
+  // Graph index support, so we just pull the latest batch and filter client-side.
+  const sinceMs = since ? new Date(since).getTime() : Date.now() - 14 * 24 * 60 * 60 * 1000;
   const url = `https://graph.microsoft.com/v1.0/me/mailFolders/SentItems/messages` +
-    `?$filter=sentDateTime ge ${sinceStr}` +
-    `&$select=sentDateTime,toRecipients` +
+    `?$select=sentDateTime,toRecipients` +
     `&$top=200&$orderby=sentDateTime desc`;
 
   try {
@@ -273,6 +273,8 @@ async function getOutlookSentAtMap(userId, since) {
     for (const msg of (data.value || [])) {
       const sent = msg.sentDateTime;
       if (!sent) continue;
+      // Client-side date filter — skip items older than our window
+      if (new Date(sent).getTime() < sinceMs) continue;
       for (const rec of (msg.toRecipients || [])) {
         const email = rec.emailAddress?.address?.toLowerCase().trim();
         if (!email) continue;
@@ -2116,13 +2118,6 @@ export const handler = async (event, context) => {
               limit: 50,
             }).catch(() => ({ results: [], total: 0 }));
 
-            // Use deduplicated count (rawMeetings, after Gong-pair removal) for accuracy
-            const meetCount = rawMeetings.length;
-            engTotals.meetings += meetCount;
-            const bucket = engByRep[repFilter || targetReps[0]] || (engByRep[targetReps[0]] = { calls:0, meetings:0, notes:0 });
-            bucket.meetings += meetCount;
-
-            // Build meeting details list — fetch associated contacts for each meeting
             // Dedup Gong vs non-Gong: for each start time, prefer non-Gong.
             // If only a Gong record exists for that slot, include it (stripped of prefix).
             const allMeetResults = (meetData.results || [])
@@ -2139,6 +2134,12 @@ export const handler = async (event, context) => {
               seenStartTimes.add(t);
               return true;
             });
+
+            // Count uses deduplicated rawMeetings length (not meetData.total which includes Gong dupes)
+            const meetCount = rawMeetings.length;
+            engTotals.meetings += meetCount;
+            const bucket = engByRep[repFilter || targetReps[0]] || (engByRep[targetReps[0]] = { calls:0, meetings:0, notes:0 });
+            bucket.meetings += meetCount;
 
             // Batch-fetch contact associations for meetings
             if (rawMeetings.length > 0) {
