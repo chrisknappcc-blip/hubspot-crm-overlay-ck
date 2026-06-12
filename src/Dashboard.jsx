@@ -1785,8 +1785,6 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
   }, [user?.id])
 
   // ── Auto-create High Priority To-Dos from Gold Target signals ────────────────
-  const todoItemsRef = useRef([])
-  useEffect(() => { todoItemsRef.current = todoItems }, [todoItems])
   const hpProcessed = useRef(new Set())
   useEffect(() => {
     if (!signals.length) return
