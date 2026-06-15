@@ -235,6 +235,11 @@ export default function App() {
   const [tokenDone,  setTokenDone]  = useState(false)
   const [theme, setTheme] = useState(() => localStorage.getItem('cipher-theme') || 'dark')
 
+  // Apply theme to document root so CSS [data-theme="dark"] selector works
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme
+  }, [theme])
+
   const toggleTheme = useCallback(() => {
     setTheme(t => {
       const next = t === 'dark' ? 'light' : 'dark'
