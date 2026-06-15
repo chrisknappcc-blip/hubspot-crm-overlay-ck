@@ -5044,12 +5044,18 @@ export const handler = async (event, context) => {
         }
 
         // Step 4: For each contact, find the most recent engagement owner
-        // Fetch engagements using the v1 engagements endpoint — one call per contact
-        // returns all engagement types (email, call, meeting, note) with owner + timestamp
-        // 4x fewer API calls vs querying each type separately
+        // Priority hierarchy:
+        //   1. MEETING in last 90 days  → strongest signal (AE ran a call)
+        //   2. EMAIL (outbound) in last 60 days → direct 1:1 engagement
+        //   3. NOTE or CALL in last 30 days → weaker, but shows activity
+        //   4. Default → assigned_bdr
+        //   5. Fallback → hubspot_owner_id ONLY if they have any engagement history
+        //      (never set owner as primary just because they own the record)
+        //
+        // Processes contacts in small batches (5 at a time) with 300ms delay between
+        // batches to avoid HubSpot rate limiting (previous Promise.all caused 98% failure).
+
         const contactMap = Object.fromEntries(contacts.map(c => [c.id, c]));
-        // During dry run, always look up all contacts so the preview shows
-        // real engagement hit rate rather than 0% from skipping already-assigned contacts
         const contactsNeedingEngagements = (forceRefresh || dryRun)
           ? batchIds
           : batchIds.filter(id => {
@@ -5059,84 +5065,85 @@ export const handler = async (event, context) => {
 
         const engagementOwners = {};
 
-        // Use v3 CRM emails endpoint — returns outbound emails with hubspot_owner_id populated.
-        // The v1 engagements endpoint returns ownerId: null for Outlook/Exchange-synced emails;
-        // the v3 emails object stores the sending rep correctly.
-        await Promise.all(contactsNeedingEngagements.map(async contactId => {
-          try {
-            // -- v3 emails via associations endpoint (more reliable than search filter)
-            const assocData = await hsGet(user.userId,
-              `/crm/v3/objects/contacts/${contactId}/associations/emails`, {}
-            ).catch(() => ({ results: [] }));
-            const emailIds = (assocData.results || []).map(r => r.id).slice(0, 10);
-            const emailData = emailIds.length > 0
-              ? await hsPost(user.userId, "/crm/v3/objects/emails/batch/read", {
-                  inputs:     emailIds.map(id => ({ id })),
-                  properties: ["hs_timestamp", "hubspot_owner_id", "hs_email_direction", "hs_email_from_email"],
-                }).catch(() => ({ results: [] }))
-              : { results: [] };
+        const MEETING_WINDOW_MS = 90 * 24 * 60 * 60 * 1000;
+        const EMAIL_WINDOW_MS   = 60 * 24 * 60 * 60 * 1000;
+        const NOTE_WINDOW_MS    = 30 * 24 * 60 * 60 * 1000;
+        const nowMs = Date.now();
 
-            // -- v1 engagements as fallback (check ownerId AND metadata.from)
-            const engData = await hsGet(user.userId,
-              `/engagements/v1/engagements/associated/CONTACT/${contactId}/paged`,
-              { limit: 10 }
-            ).catch(() => ({ results: [] }));
+        // Batch size 5 with 300ms delay = ~3 req/sec — safe for HubSpot rate limits
+        const ENG_BATCH = 5;
+        for (let bi = 0; bi < contactsNeedingEngagements.length; bi += ENG_BATCH) {
+          const chunk = contactsNeedingEngagements.slice(bi, bi + ENG_BATCH);
+          await Promise.all(chunk.map(async contactId => {
+            try {
+              const engResp = await hsGet(user.userId,
+                `/engagements/v1/engagements/associated/CONTACT/${contactId}/paged`,
+                { limit: 20 }
+              ).catch(() => ({ results: [] }));
 
-            // Log diagnostic for FIRST contact only
-            if (contactId === contactsNeedingEngagements[0]) {
-              console.log(`[sync-diag] contactId=${contactId}`);
-              console.log(`[sync-diag] v3 emails returned: ${emailData.results?.length ?? 0} records`);
-              if (emailData.results?.length) {
-                const first = emailData.results[0];
-                console.log(`[sync-diag] first email: direction=${first.properties?.hs_email_direction} owner=${first.properties?.hubspot_owner_id} from=${first.properties?.hs_email_from_email}`);
+              const engRows = engResp.results || [];
+
+              let bestMeeting = null;
+              let bestEmail   = null;
+              let bestNote    = null;
+              let hasAnyEngagement  = false;
+              let ownerHasEngaged   = false;  // tracks if hubspot_owner ever did anything
+              const contactOwnerId  = String(contactMap[contactId]?.properties?.hubspot_owner_id || '');
+
+              for (const e of engRows) {
+                const eng     = e.engagement  || {};
+                const type    = eng.type;                                    // MEETING EMAIL NOTE CALL TASK
+                const ownerId = String(eng.ownerId || '');
+                const ts      = eng.timestamp || eng.createdAt || 0;
+                const ownerName = ALL_OWNER_ID_TO_NAME[ownerId];
+
+                // Only count team members we know about
+                if (!ownerName || EXCLUDED_FROM_PRIMARY.has(ownerId)) continue;
+                hasAnyEngagement = true;
+
+                if (ownerId === contactOwnerId) ownerHasEngaged = true;
+
+                const age = nowMs - ts;
+
+                if (type === 'MEETING' && age <= MEETING_WINDOW_MS) {
+                  if (!bestMeeting || ts > bestMeeting.ts)
+                    bestMeeting = { ownerId, ownerName, ts, engType: 'meeting' };
+                }
+                if (type === 'EMAIL' && age <= EMAIL_WINDOW_MS) {
+                  // Outbound only — skip replies from the contact
+                  const meta = e.metadata || {};
+                  const dir  = (meta.direction || meta.emailType || '').toUpperCase();
+                  if (dir !== 'INCOMING_EMAIL' && dir !== 'INCOMING') {
+                    if (!bestEmail || ts > bestEmail.ts)
+                      bestEmail = { ownerId, ownerName, ts, engType: 'email' };
+                  }
+                }
+                if ((type === 'NOTE' || type === 'CALL') && age <= NOTE_WINDOW_MS) {
+                  if (!bestNote || ts > bestNote.ts)
+                    bestNote = { ownerId, ownerName, ts, engType: type === 'CALL' ? 'call' : 'note' };
+                }
               }
-              console.log(`[sync-diag] v1 engagements returned: ${engData.results?.length ?? 0} records`);
-              if (engData.results?.length) {
-                const first = engData.results[0];
-                console.log(`[sync-diag] first eng: type=${first.engagement?.type} ownerId=${first.engagement?.ownerId} from=${first.metadata?.from}`);
-              }
+
+              // Winner: first priority match
+              const winner = bestMeeting || bestEmail || bestNote;
+              engagementOwners[contactId] = {
+                ownerId:          winner?.ownerId   || null,
+                ownerName:        winner?.ownerName || null,
+                engType:          winner?.engType   || null,
+                ts:               winner?.ts        || 0,
+                hasAnyEngagement,
+                ownerHasEngaged,
+              };
+            } catch {
+              engagementOwners[contactId] = {
+                ownerId: null, ownerName: null, engType: null,
+                ts: 0, hasAnyEngagement: false, ownerHasEngaged: false,
+              };
             }
-
-            let mostRecentTs    = 0;
-            let mostRecentOwner = null;
-
-            // Check v3 email objects
-            for (const email of (emailData.results || [])) {
-              if (email.properties?.hs_email_direction === "INCOMING_EMAIL") continue;
-              const ts      = email.properties?.hs_timestamp
-                ? new Date(email.properties.hs_timestamp).getTime() : 0;
-              const ownerId = String(email.properties?.hubspot_owner_id || "");
-              if (ts > mostRecentTs && ownerId) { mostRecentTs = ts; mostRecentOwner = ownerId; }
-            }
-
-            // Fallback: v1 engagements — check ownerId and metadata.from
-            if (!mostRecentOwner) {
-              const repEmailToOwnerId = Object.fromEntries([
-                ...Object.entries(BDR_OWNER_IDS).map(([name, id]) => {
-                  const emailUser = name.toLowerCase().replace(/\s+/g, '.');
-                  return [`${emailUser}@carecontinuity.com`, id];
-                }),
-                ...Object.entries(AE_OWNER_IDS).map(([name, id]) => {
-                  const emailUser = name.toLowerCase().replace(/\s+/g, '.');
-                  return [`${emailUser}@carecontinuity.com`, id];
-                }),
-              ]);
-              for (const eng of (engData.results || [])) {
-                if (!["EMAIL", "NOTE", "CALL"].includes(eng.engagement?.type)) continue;
-                const ts = eng.engagement?.createdAt || eng.engagement?.timestamp || 0;
-                const ownerId = String(eng.engagement?.ownerId || "");
-                // Try ownerId first, then sender email lookup
-                const fromEmail = (eng.metadata?.from || "").toLowerCase();
-                const resolvedOwner = ownerId || repEmailToOwnerId[fromEmail] || "";
-                if (ts > mostRecentTs && resolvedOwner) { mostRecentTs = ts; mostRecentOwner = resolvedOwner; }
-              }
-            }
-
-            engagementOwners[contactId] = { ownerId: mostRecentOwner || null, ts: mostRecentTs };
-          } catch {
-            engagementOwners[contactId] = { ownerId: null, ts: 0 };
-          }
-        }));
+          }));
+          if (bi + ENG_BATCH < contactsNeedingEngagements.length)
+            await new Promise(r => setTimeout(r, 300));
+        }
 
         // Step 5: Determine new primary_outreach_rep for each contact
         const updates = [];
@@ -5145,54 +5152,74 @@ export const handler = async (event, context) => {
         for (const contact of contacts) {
           const p = contact.properties || {};
 
-          // Skip Do Not Contact (email opt-out)
-          if (p.hs_email_optout === "true" || p.hs_email_optout === true) {
+          // Skip DNC / opt-out
+          if (p.hs_email_optout === 'true' || p.hs_email_optout === true) {
             skipped++; continue;
           }
-
-          // Skip existing customers / DNC segment (List 391)
-          const DNC_VALUES = ["yes", "contract discussion", "org yes - but not this market"];
+          const DNC_VALUES = ['yes', 'contract discussion', 'org yes - but not this market'];
           if (p.existing_customer && DNC_VALUES.includes(p.existing_customer.toLowerCase())) {
             skipped++; continue;
           }
 
-          const assignedBdr = p.assigned_bdr || null;
-          const currentRep  = p.primary_outreach_rep || null;
-          const eng         = engagementOwners[contact.id];
-          const lastOwnerId = eng?.ownerId || null;
-          const lastOwnerName = lastOwnerId ? (ALL_OWNER_ID_TO_NAME[lastOwnerId] || null) : null;
+          const assignedBdr    = p.assigned_bdr    || null;
+          const currentRep     = p.primary_outreach_rep || null;
+          const eng            = engagementOwners[contact.id] || {};
+          const winnerName     = eng.ownerName || null;
+          const winnerId       = eng.ownerId   || null;
+          const winnerIsAE     = winnerId ? AE_OWNER_ID_SET.has(winnerId)  : false;
+          const winnerIsBDR    = winnerId ? BDR_OWNER_ID_SET.has(winnerId) : false;
+          const excluded       = winnerId ? EXCLUDED_FROM_PRIMARY.has(winnerId) : false;
 
-          // Contact owner fallback: if no BDR assigned, use hubspot_owner_id (the AE)
+          // Contact owner info (for fallback)
           const contactOwnerId   = String(p.hubspot_owner_id || '');
           const contactOwnerName = (contactOwnerId && !EXCLUDED_FROM_PRIMARY.has(contactOwnerId))
-            ? (ALL_OWNER_ID_TO_NAME[contactOwnerId] || null)
-            : null;
+            ? (ALL_OWNER_ID_TO_NAME[contactOwnerId] || null) : null;
+          const contactOwnerIsAE = contactOwnerId ? AE_OWNER_ID_SET.has(contactOwnerId) : false;
 
-          let newRep = assignedBdr || contactOwnerName; // BDR > AE owner > null
+          let newRep    = null;
+          let repSource = 'none';
 
-          if (lastOwnerName && !EXCLUDED_FROM_PRIMARY.has(lastOwnerId)) {
-            const lastOwnerIsBdr = BDR_OWNER_ID_SET.has(lastOwnerId);
-            const lastOwnerIsAe  = AE_OWNER_ID_SET.has(lastOwnerId);
-
-            if (lastOwnerIsAe) {
-              // AE/VP took over — set to them
-              newRep = lastOwnerName;
-            } else if (lastOwnerIsBdr) {
-              // BDR logged most recent activity
-              // Only update if it's THEIR contact (assigned_bdr matches) — BDRs can't take over each other
-              const bdrIsAssigned = assignedBdr === lastOwnerName;
-              newRep = bdrIsAssigned ? lastOwnerName : (assignedBdr || currentRep);
+          if (winnerName && !excluded) {
+            if (winnerIsAE) {
+              // AE had the most recent meaningful engagement → AE drives
+              newRep    = winnerName;
+              repSource = `AE ${eng.engType}`;
+            } else if (winnerIsBDR) {
+              // BDR had most recent engagement — only use if it's their contact
+              const bdrMatches = assignedBdr === winnerName;
+              newRep    = bdrMatches ? winnerName : (assignedBdr || currentRep);
+              repSource = bdrMatches ? `BDR ${eng.engType}` : 'BDR assigned';
             }
           }
-          // If excluded rep (Irene/Cole) logged most recent activity, fall back to assigned_bdr
-          // Their activity doesn't change ownership — newRep stays as assignedBdr default
 
-          // Only write if value is actually changing
+          // No engagement winner — use assignment-based fallback
+          if (!newRep) {
+            if (assignedBdr) {
+              // BDR is assigned → default to them
+              newRep    = assignedBdr;
+              repSource = 'BDR assigned';
+            } else if (contactOwnerName && eng.ownerHasEngaged) {
+              // No BDR, but the account owner has actually done something on this contact
+              newRep    = contactOwnerName;
+              repSource = contactOwnerIsAE ? 'AE owner (engaged)' : 'owner (engaged)';
+            } else if (contactOwnerName && !eng.hasAnyEngagement) {
+              // No BDR, no engagement data at all — use owner as last resort assumption
+              // (engagement data may not have loaded; owner is best available signal)
+              newRep    = contactOwnerName;
+              repSource = 'owner (no engagement data)';
+            }
+            // If owner exists but has engagement data AND has never engaged themselves:
+            // don't assign them — leave newRep null (admin ownership ≠ active rep)
+          }
+
           if (newRep && newRep !== currentRep) {
             updates.push({ id: contact.id, properties: { primary_outreach_rep: newRep } });
           } else {
             skipped++;
           }
+
+          // Attach decision info to contact for dry-run preview
+          contact._decision = { newRep, repSource, winnerName, winnerId };
         }
 
         // Step 6: Write updates to HubSpot (skipped in dry run)
@@ -5201,51 +5228,47 @@ export const handler = async (event, context) => {
           // Build per-contact preview rows for display
           const previewRows = contacts.map(contact => {
             const p      = contact.properties || {};
-            const eng    = engagementOwners[contact.id];
+            const eng    = engagementOwners[contact.id] || {};
             const update = updates.find(u => u.id === contact.id);
-            const ownerName = eng?.ownerId ? (ALL_OWNER_ID_TO_NAME[eng.ownerId] || `Unknown (${eng.ownerId})`) : null;
-            const excluded  = eng?.ownerId ? EXCLUDED_FROM_PRIMARY.has(eng.ownerId) : false;
-            // Determine source of proposed rep for display
+            const d      = contact._decision || {};
             const contactOwnerId2   = String(p.hubspot_owner_id || '');
             const contactOwnerName2 = (contactOwnerId2 && !EXCLUDED_FROM_PRIMARY.has(contactOwnerId2))
               ? (ALL_OWNER_ID_TO_NAME[contactOwnerId2] || null) : null;
             const proposedFinal = update?.properties?.primary_outreach_rep || p.primary_outreach_rep || null;
-            const repSource = eng?.ownerId && ownerName && !excluded ? 'engagement'
-              : p.assigned_bdr ? 'assigned_bdr'
-              : contactOwnerName2 ? 'contact_owner'
-              : 'none';
 
             return {
-              contactId:            contact.id,
-              name:                 [p.firstname, p.lastname].filter(Boolean).join(' ') || '(no name)',
-              company:              p.company || '',
-              assignedBdr:          p.assigned_bdr || null,
-              contactOwner:         contactOwnerName2,
-              currentRep:           p.primary_outreach_rep || null,
-              proposedRep:          proposedFinal,
-              repSource,
-              wouldChange:          !!update,
-              hasEngagements:       !!(eng?.ownerId),
-              lastEngagementOwner:  ownerName,
-              lastEngagementExcluded: excluded,
-              lastEngagementTs:     eng?.ts ? new Date(eng.ts).toISOString().slice(0,10) : null,
-              skippedDnc:           (p.hs_email_optout==='true' || p.hs_email_optout===true) ||
-                                    ['yes','contract discussion','org yes - but not this market']
-                                      .includes((p.existing_customer||'').toLowerCase()),
+              contactId:             contact.id,
+              name:                  [p.firstname, p.lastname].filter(Boolean).join(' ') || '(no name)',
+              company:               p.company || '',
+              assignedBdr:           p.assigned_bdr || null,
+              contactOwner:          contactOwnerName2,
+              currentRep:            p.primary_outreach_rep || null,
+              proposedRep:           proposedFinal,
+              repSource:             d.repSource || 'none',
+              wouldChange:           !!update,
+              hasEngagements:        eng.hasAnyEngagement || false,
+              lastEngagementOwner:   eng.ownerName || null,
+              lastEngagementType:    eng.engType   || null,
+              lastEngagementExcluded: eng.ownerId ? EXCLUDED_FROM_PRIMARY.has(eng.ownerId) : false,
+              lastEngagementTs:      eng.ts ? new Date(eng.ts).toISOString().slice(0,10) : null,
+              ownerHasEngaged:       eng.ownerHasEngaged || false,
+              skippedDnc: (p.hs_email_optout==='true' || p.hs_email_optout===true) ||
+                          ['yes','contract discussion','org yes - but not this market']
+                            .includes((p.existing_customer||'').toLowerCase()),
             };
           });
 
-          const engHits    = previewRows.filter(r => r.hasEngagements).length;
+          const engHits     = previewRows.filter(r => r.hasEngagements).length;
           const wouldChange = previewRows.filter(r => r.wouldChange).length;
           console.log(`[sync-primary-rep] DRY RUN: ${wouldChange} would change, ${engHits}/${previewRows.length} had engagement data`);
 
           return ok({
-            dryRun:          true,
-            done:            true,
-            preview:         previewRows,
+            dryRun:            true,
+            done:              true,
+            preview:           previewRows,
             wouldChange,
-            engagementHitRate: previewRows.length > 0 ? Math.round((engHits/previewRows.length)*100) : 0,
-            updated:         0,
+            engagementDataRate: previewRows.length > 0 ? Math.round((engHits/previewRows.length)*100) : 0,
+            updated:           0,
             skipped,
             total,
           });
