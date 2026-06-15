@@ -340,7 +340,7 @@ function ConnectHubSpot({ user, onConnect }) {
         headers: { Authorization: `Bearer ${await user.jwt()}` }
       })
       const d = await r.json()
-      if (d.url) window.location.href = d.url
+      if (d.authUrl) window.location.href = d.authUrl
       else throw new Error(d.error || 'Could not start OAuth')
     } catch (e) { setError(e.message); setLoading(false) }
   }
