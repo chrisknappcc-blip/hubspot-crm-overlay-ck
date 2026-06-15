@@ -209,7 +209,7 @@ function InviteScreen({ inviteToken, onLogin }) {
         <h2 style={{ fontSize:20, fontWeight:500, color:'var(--text)', marginBottom:4 }}>Accept Invitation</h2>
         <p style={{ fontSize:13, color:'var(--text-secondary)', marginBottom:'1.5rem' }}>Create your Cipher account to get started.</p>
         <form onSubmit={e => { e.preventDefault(); handleSubmit() }} style={{ width:'100%' }}>
-          <input type="text" placeholder="Full name" value={name} onChange={e => setName(e.target.value)} style={input} />
+          <input type="text" placeholder="Full name" value={name} onChange={e => setName(e.target.value)} style={input} autoComplete="name" />
           <input type="password" placeholder="Choose a password" value={password} onChange={e => setPassword(e.target.value)} style={input} autoComplete="new-password" />
           <input type="password" placeholder="Confirm password" value={confirm} onChange={e => setConfirm(e.target.value)} style={{ ...input, marginBottom:16 }} autoComplete="new-password" />
           {error && <div style={{ fontSize:12, color:'var(--red)', marginBottom:12 }}>{error}</div>}
