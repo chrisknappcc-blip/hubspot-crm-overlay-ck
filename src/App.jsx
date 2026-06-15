@@ -336,7 +336,7 @@ function ConnectHubSpot({ user, onConnect }) {
   const startOAuth = async () => {
     setLoading(true); setError(null)
     try {
-      const r = await fetch('/api/hubspot/auth', {
+      const r = await fetch('/api/hubspot/auth/connect', {
         headers: { Authorization: `Bearer ${await user.jwt()}` }
       })
       const d = await r.json()
@@ -352,7 +352,7 @@ function ConnectHubSpot({ user, onConnect }) {
       ;(async () => {
         try {
           const jwt = await user.jwt()
-          const r = await fetch(`/api/hubspot/callback${window.location.search}`, {
+          const r = await fetch(`/api/hubspot/auth/callback${window.location.search}`, {
             headers: { Authorization: `Bearer ${jwt}` }
           })
           const d = await r.json()
