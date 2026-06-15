@@ -39,11 +39,17 @@ import { getTabsForUser, getAllTabsForUser, getRegistry, saveRegistry, getPerson
 import { getTodos, addTodo, updateTodo, deleteTodo, bulkUpsertAutoDetected } from "./utils/todoStore.js";
 import { getActivityLog, addActivityEntry, deleteActivityEntry } from "./utils/activityLog.js";
 
-// Admin user IDs -- comma-separated Clerk user IDs in ADMIN_USER_IDS env var
-// e.g. ADMIN_USER_IDS=user_abc123,user_def456
+// Admin users -- comma-separated emails in ADMIN_EMAILS env var (preferred)
+// or legacy ADMIN_USER_IDS with Netlify Identity UUIDs.
+// e.g. ADMIN_EMAILS=cknapp@carecontinuity.com,chrisknappcc@gmail.com
+const ADMIN_EMAILS   = new Set(
+  (process.env.ADMIN_EMAILS   || "").split(",").map(s => s.trim().toLowerCase()).filter(Boolean)
+);
 const ADMIN_USER_IDS = new Set(
   (process.env.ADMIN_USER_IDS || "").split(",").map(s => s.trim()).filter(Boolean)
 );
+// Check admin by email (preferred) OR by UUID (legacy)
+const isAdminUser = (u) => ADMIN_EMAILS.has((u?.email || "").toLowerCase()) || ADMIN_USER_IDS.has(u?.userId || "");
 
 const HS_CLIENT_ID     = process.env.HUBSPOT_CLIENT_ID;
 const HS_CLIENT_SECRET = process.env.HUBSPOT_CLIENT_SECRET;
@@ -3439,7 +3445,7 @@ export const handler = async (event, context) => {
     if (method === "GET" && path === "/tabs") {
       try {
         const tabs = await getAllTabsForUser(user.userId);
-        return ok({ tabs, isAdmin: ADMIN_USER_IDS.has(user.userId) });
+        return ok({ tabs, isAdmin: isAdminUser(user) });
       } catch (err) {
         console.error("[tabs] GET error:", err.message);
         return error(500, `Tabs error: ${err.message}`);
@@ -3447,7 +3453,7 @@ export const handler = async (event, context) => {
     }
 
     if (method === "GET" && path === "/tabs/preview") {
-      if (!ADMIN_USER_IDS.has(user.userId)) return error(403, "Admin only");
+      if (!isAdminUser(user)) return error(403, "Admin only");
       const url = qp.url ? decodeURIComponent(qp.url) : null;
       if (!url) return error(400, "url param required");
       try {
@@ -3476,7 +3482,7 @@ export const handler = async (event, context) => {
         try { new URL(url); } catch { return error(400, "Invalid URL"); }
 
         // Personal tabs: any user can create. Shared tabs: admin only.
-        if (!isPersonal && !ADMIN_USER_IDS.has(user.userId)) {
+        if (!isPersonal && !isAdminUser(user)) {
           return error(403, "Admin only for shared tabs");
         }
 
@@ -3507,7 +3513,7 @@ export const handler = async (event, context) => {
           }
           await savePersonalTabs(user.userId, personal);
         } else {
-          console.log("[tabs] saving shared tab, admin:", ADMIN_USER_IDS.has(user.userId));
+          console.log("[tabs] saving shared tab, admin:", isAdminUser(user));
           const registry = await getRegistry();
           const existing = registry.findIndex(t => t.id === id);
           if (existing >= 0) {
@@ -3540,7 +3546,7 @@ export const handler = async (event, context) => {
           return ok({ deleted: tabId });
         } else {
           // Shared tabs: admin only
-          if (!ADMIN_USER_IDS.has(user.userId)) return error(403, "Admin only");
+          if (!isAdminUser(user)) return error(403, "Admin only");
           const registry = await getRegistry();
           const filtered = registry.filter(t => t.id !== tabId);
           if (filtered.length === registry.length) return error(404, "Tab not found");
