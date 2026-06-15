@@ -3,7 +3,8 @@ import { apiFetch } from './api'
 import Dashboard from './Dashboard'
 
 // ── Read URL tokens at module load (before anything can clear the hash) ──────
-const _loadHash   = typeof window !== 'undefined' ? window.location.hash : ''
+// Read from __INITIAL_HASH__ which is set before the identity widget loads and clears it
+const _loadHash   = typeof window !== 'undefined' ? (window.__INITIAL_HASH__ || window.location.hash) : ''
 const _loadParams = new URLSearchParams(_loadHash.slice(1))
 const _inviteToken     = _loadParams.get('invite_token')     || null
 const _recoveryToken   = _loadParams.get('recovery_token')   || null
@@ -265,7 +266,7 @@ export default function App() {
   useEffect(() => {
     if (!user) { setCheckingConnection(false); return }
     setCheckingConnection(true)
-    apiFetch('/api/hubspot/status', () => Promise.resolve(user.token?.access_token))
+    apiFetch('/api/hubspot/status', () => user.jwt())
       .then(d => { setHsConnected(!!d.hubspot); setNeedsReconnect(!d.hubspot) })
       .catch(() => { setHsConnected(false); setNeedsReconnect(true) })
       .finally(() => setCheckingConnection(false))
@@ -330,7 +331,7 @@ function ConnectHubSpot({ user, onConnect }) {
     setLoading(true); setError(null)
     try {
       const r = await fetch('/api/hubspot/auth', {
-        headers: { Authorization: `Bearer ${user.token?.access_token}` }
+        headers: { Authorization: `Bearer ${await user.jwt()}` }
       })
       const d = await r.json()
       if (d.url) window.location.href = d.url
@@ -343,7 +344,7 @@ function ConnectHubSpot({ user, onConnect }) {
     if (params.get('code')) {
       setLoading(true)
       fetch(`/api/hubspot/callback${window.location.search}`, {
-        headers: { Authorization: `Bearer ${user.token?.access_token}` }
+        headers: { Authorization: `Bearer ${await user.jwt()}` }
       })
         .then(r => r.json())
         .then(d => { if (d.ok) { history.replaceState(null,'','/'); onConnect() } else throw new Error(d.error) })
