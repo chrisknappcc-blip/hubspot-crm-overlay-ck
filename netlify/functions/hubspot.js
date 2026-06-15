@@ -2037,7 +2037,8 @@ export const handler = async (event, context) => {
           }).catch(() => ({ total: 0 }));
           const replies = replyData.total || 0;
           await new Promise(r => setTimeout(r, 150));
-          const opens = await countForRep("hs_email_last_open_date", repName);
+          // hs_sales_email_last_opened tracks 1:1 sales email opens (vs marketing email open date)
+          const opens = await countForRep("hs_sales_email_last_opened", repName);
           console.log(`[activity] rep=${repName} seqEmails=${seqEmails} indivEmails=${indivEmails} total=${emailsSent} sequences=${sequencesStarted} replies=${replies} opens=${opens}`);
           repResults.push({ repName, emailsSent, seqEmails, indivEmails, sequencesStarted, replies, opens });
           await new Promise(r => setTimeout(r, 200));
