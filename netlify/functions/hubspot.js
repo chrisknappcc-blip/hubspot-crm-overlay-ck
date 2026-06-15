@@ -5001,8 +5001,10 @@ export const handler = async (event, context) => {
           allContactIds = repDirectIds;
         }
 
-        allContactIds = [...new Set(allContactIds)];
-        const total     = allContactIds.length;
+        // Merge rep direct results into allContactIds if repFilter was used
+        if (repFilter && !fullCrm) {
+          allContactIds = repDirectIds;
+        }
         const effectiveBatchIds = repFilter
           ? repDirectIds                                                // direct rep search (respects batchSize)
           : allContactIds.slice(batchStart, batchStart + batchSize);   // normal pagination
