@@ -159,18 +159,19 @@ function TokenProcessScreen({ onDone }) {
           <>
             <h2 style={{ fontSize:18, fontWeight:500, color:'var(--text)', marginBottom:4 }}>Set your password</h2>
             <p style={{ fontSize:13, color:'var(--text-secondary)', marginBottom:'1.2rem' }}>Choose a new password to complete your reset.</p>
-            <input type="password" placeholder="New password" value={password} onChange={e => setPassword(e.target.value)} style={input} onKeyDown={e => e.key === 'Enter' && handleSetPassword()} />
-            <input type="password" placeholder="Confirm password" value={confirm} onChange={e => setConfirm(e.target.value)} style={{ ...input, marginBottom:16 }} onKeyDown={e => e.key === 'Enter' && handleSetPassword()} />
-            {error && <div style={{ fontSize:12, color:'var(--red)', marginBottom:12 }}>{error}</div>}
-            {password && confirm && password !== confirm && (
-              <div style={{ fontSize:12, color:'var(--red)', marginBottom:12 }}>Passwords don't match</div>
-            )}
-            <button
-              onClick={handleSetPassword}
-              disabled={saving || !password || password.length < 6 || password !== confirm}
-              style={{ width:'100%', padding:'10px 24px', background:'var(--accent)', color:'#fff', border:'none', borderRadius:'var(--radius)', fontSize:14, fontWeight:500, cursor:'pointer', opacity: (saving || !password || password.length < 6 || password !== confirm) ? 0.5 : 1 }}>
-              {saving ? 'Saving…' : 'Set Password'}
-            </button>
+            <form onSubmit={e => { e.preventDefault(); handleSetPassword() }} style={{ width:'100%' }}>
+              <input type="password" placeholder="New password" value={password} onChange={e => setPassword(e.target.value)} style={input} autoComplete="new-password" />
+              <input type="password" placeholder="Confirm password" value={confirm} onChange={e => setConfirm(e.target.value)} style={{ ...input, marginBottom:16 }} autoComplete="new-password" />
+              {error && <div style={{ fontSize:12, color:'var(--red)', marginBottom:12 }}>{error}</div>}
+              {password && confirm && password !== confirm && (
+                <div style={{ fontSize:12, color:'var(--red)', marginBottom:12 }}>Passwords don't match</div>
+              )}
+              <button type="submit"
+                disabled={saving || !password || password.length < 6 || password !== confirm}
+                style={{ width:'100%', padding:'10px 24px', background:'var(--accent)', color:'#fff', border:'none', borderRadius:'var(--radius)', fontSize:14, fontWeight:500, cursor:'pointer', opacity: (saving || !password || password.length < 6 || password !== confirm) ? 0.5 : 1 }}>
+                {saving ? 'Saving…' : 'Set Password'}
+              </button>
+            </form>
           </>
         )}
       </div>
@@ -207,14 +208,16 @@ function InviteScreen({ inviteToken, onLogin }) {
         <div style={{ fontSize:13, fontWeight:500, letterSpacing:'.06em', textTransform:'uppercase', color:'var(--text-tertiary)', marginBottom:8 }}>CarePathIQ</div>
         <h2 style={{ fontSize:20, fontWeight:500, color:'var(--text)', marginBottom:4 }}>Accept Invitation</h2>
         <p style={{ fontSize:13, color:'var(--text-secondary)', marginBottom:'1.5rem' }}>Create your Cipher account to get started.</p>
-        <input type="text" placeholder="Full name" value={name} onChange={e => setName(e.target.value)} style={input} onKeyDown={e => e.key === 'Enter' && handleSubmit()} />
-        <input type="password" placeholder="Choose a password" value={password} onChange={e => setPassword(e.target.value)} style={input} onKeyDown={e => e.key === 'Enter' && handleSubmit()} />
-        <input type="password" placeholder="Confirm password" value={confirm} onChange={e => setConfirm(e.target.value)} style={{ ...input, marginBottom:16 }} onKeyDown={e => e.key === 'Enter' && handleSubmit()} />
-        {error && <div style={{ fontSize:12, color:'var(--red)', marginBottom:12 }}>{error}</div>}
-        <button onClick={handleSubmit} disabled={loading || !name || !password || !confirm}
-          style={{ width:'100%', padding:'10px 24px', background:'var(--accent)', color:'#fff', border:'none', borderRadius:'var(--radius)', fontSize:14, fontWeight:500, cursor:'pointer', opacity: (loading || !name || !password || !confirm) ? 0.6 : 1 }}>
-          {loading ? 'Setting up…' : 'Accept Invitation'}
-        </button>
+        <form onSubmit={e => { e.preventDefault(); handleSubmit() }} style={{ width:'100%' }}>
+          <input type="text" placeholder="Full name" value={name} onChange={e => setName(e.target.value)} style={input} />
+          <input type="password" placeholder="Choose a password" value={password} onChange={e => setPassword(e.target.value)} style={input} autoComplete="new-password" />
+          <input type="password" placeholder="Confirm password" value={confirm} onChange={e => setConfirm(e.target.value)} style={{ ...input, marginBottom:16 }} autoComplete="new-password" />
+          {error && <div style={{ fontSize:12, color:'var(--red)', marginBottom:12 }}>{error}</div>}
+          <button type="submit" disabled={loading || !name || !password || !confirm}
+            style={{ width:'100%', padding:'10px 24px', background:'var(--accent)', color:'#fff', border:'none', borderRadius:'var(--radius)', fontSize:14, fontWeight:500, cursor:'pointer', opacity: (loading || !name || !password || !confirm) ? 0.6 : 1 }}>
+            {loading ? 'Setting up…' : 'Accept Invitation'}
+          </button>
+        </form>
       </div>
     </div>
   )
