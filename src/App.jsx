@@ -343,12 +343,17 @@ function ConnectHubSpot({ user, onConnect }) {
     const params = new URLSearchParams(window.location.search)
     if (params.get('code')) {
       setLoading(true)
-      fetch(`/api/hubspot/callback${window.location.search}`, {
-        headers: { Authorization: `Bearer ${await user.jwt()}` }
-      })
-        .then(r => r.json())
-        .then(d => { if (d.ok) { history.replaceState(null,'','/'); onConnect() } else throw new Error(d.error) })
-        .catch(e => { setError(e.message); setLoading(false) })
+      ;(async () => {
+        try {
+          const jwt = await user.jwt()
+          const r = await fetch(`/api/hubspot/callback${window.location.search}`, {
+            headers: { Authorization: `Bearer ${jwt}` }
+          })
+          const d = await r.json()
+          if (d.ok) { history.replaceState(null, '', '/'); onConnect() }
+          else throw new Error(d.error)
+        } catch (e) { setError(e.message); setLoading(false) }
+      })()
     }
   }, [])
 
