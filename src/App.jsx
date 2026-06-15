@@ -233,6 +233,31 @@ export default function App() {
   const [needsReconnect, setNeedsReconnect] = useState(false)
   const [checkingConnection, setCheckingConnection] = useState(true)
   const [tokenDone,  setTokenDone]  = useState(false)
+  const [theme, setTheme] = useState(() => localStorage.getItem('cipher-theme') || 'dark')
+
+  const toggleTheme = useCallback(() => {
+    setTheme(t => {
+      const next = t === 'dark' ? 'light' : 'dark'
+      localStorage.setItem('cipher-theme', next)
+      return next
+    })
+  }, [])
+
+  const getToken = useCallback(async () => {
+    const u = user || netlifyIdentity.currentUser()
+    if (!u?.jwt) throw new Error('Not authenticated')
+    return u.jwt()
+  }, [user])
+
+  const signOut = useCallback(() => {
+    netlifyIdentity.logout()
+    setUser(null)
+  }, [])
+
+  const onScopeError = useCallback((msg) => {
+    setHsConnected(false)
+    setNeedsReconnect(true)
+  }, [])
 
   // ── Phase 1: Handle token URLs directly (before widget init) ─────────────
   // If there's any token in the URL, show TokenProcessScreen first.
@@ -329,7 +354,14 @@ export default function App() {
   }
 
   // Main app
-  return <Dashboard user={user} onSignOut={() => { netlifyIdentity.logout(); setUser(null) }} onNeedsReconnect={(msg) => { setHsConnected(false); setNeedsReconnect(true) }} />
+  return <Dashboard
+    user={user}
+    getToken={getToken}
+    theme={theme}
+    toggleTheme={toggleTheme}
+    signOut={signOut}
+    onScopeError={onScopeError}
+  />
 }
 
 function ConnectHubSpot({ user, onConnect }) {
