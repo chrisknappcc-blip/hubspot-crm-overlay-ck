@@ -4980,6 +4980,7 @@ export const handler = async (event, context) => {
         // When filtering by rep (non-Gold, non-fullCrm), search contacts directly
         // by assigned_bdr — much faster than going through Gold companies.
         let repDirectIds = [];
+        let repNextCursor = null;
         if (repFilter && !fullCrm) {
           const repOwnerId = BDR_OWNER_IDS[repFilter] || AE_OWNER_IDS[repFilter] || null;
           const repFilters = repOwnerId
@@ -4995,10 +4996,12 @@ export const handler = async (event, context) => {
             properties: ["hs_object_id"],
             sorts: [{ propertyName: "lastmodifieddate", direction: "DESCENDING" }],
             limit: batchSize,
-            after: batchStart > 0 ? String(batchStart) : undefined,
+            after: batchStart > 0 ? (repNextCursor || String(batchStart)) : undefined,
           }).catch(() => ({ results: [], total: 0 }));
           repDirectIds = (repSearchData.results || []).map(c => String(c.id));
           allContactIds = repDirectIds;
+          // Capture cursor for next batch (HubSpot cursor-based pagination)
+          repNextCursor = repSearchData.paging?.next?.after || null;
         }
 
         // Merge rep direct results into allContactIds if repFilter was used
@@ -5009,7 +5012,10 @@ export const handler = async (event, context) => {
           ? repDirectIds                                                // direct rep search (respects batchSize)
           : allContactIds.slice(batchStart, batchStart + batchSize);   // normal pagination
         const batchIds  = effectiveBatchIds;
-        const hasMore   = repFilter ? false : batchStart + batchSize < total;
+        // For repFilter: hasMore if we got a full page (there may be more contacts)
+        const hasMore   = repFilter
+          ? (repDirectIds.length >= batchSize)
+          : (batchStart + batchSize < total);
         const nextBatch = hasMore ? batchStart + batchSize : null;
 
         if (batchIds.length === 0) {
@@ -5297,6 +5303,7 @@ export const handler = async (event, context) => {
           nextBatch,
           hasMore:       hasMore || moreContactPages,
           nextCrmCursor: moreContactPages ? nextCrmCursor : null,
+          repNextCursor: repNextCursor || null,
           fullCrm,
         });
 
