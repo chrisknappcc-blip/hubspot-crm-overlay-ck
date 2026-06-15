@@ -192,10 +192,13 @@ function InviteScreen({ inviteToken, onLogin }) {
     if (password !== confirm)      { setError('Passwords don\'t match.'); return }
     setLoading(true); setError(null)
     try {
-      const user = await netlifyIdentity.gotrue.acceptInvite(inviteToken, password, { full_name: name.trim() })
-      onLogin(user)
+      // acceptInvite returns a raw GoTrue user without .jwt() — don't use it directly.
+      // The widget fires a 'login' event automatically, which gives a proper user with .jwt().
+      await netlifyIdentity.gotrue.acceptInvite(inviteToken, password, { full_name: name.trim() })
+      // onLogin fires via the widget's 'login' event handler
     } catch (e) {
       setError(e.message || 'Invite link invalid or expired — ask for a new one.')
+      setLoading(false)
     } finally { setLoading(false) }
   }
 
