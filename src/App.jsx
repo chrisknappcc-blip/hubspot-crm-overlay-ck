@@ -192,7 +192,7 @@ function InviteScreen({ inviteToken, onLogin }) {
     if (password !== confirm)      { setError('Passwords don\'t match.'); return }
     setLoading(true); setError(null)
     try {
-      const user = await netlifyIdentity.gotrue.acceptInvite(inviteToken, password, { data: { full_name: name.trim() } })
+      const user = await netlifyIdentity.gotrue.acceptInvite(inviteToken, password, { full_name: name.trim() })
       onLogin(user)
     } catch (e) {
       setError(e.message || 'Invite link invalid or expired — ask for a new one.')
