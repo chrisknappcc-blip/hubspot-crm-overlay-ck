@@ -4977,10 +4977,34 @@ export const handler = async (event, context) => {
         // Deduplicate
         allContactIds = [...new Set(allContactIds)];
         const total     = allContactIds.length;
-        // When filtering by rep, pull ALL Gold contacts (not just first batchSize) so
-        // the rep filter actually finds contacts — they may not be in the first page.
-        const effectiveBatchIds = (repFilter && !fullCrm)
-          ? allContactIds                                               // all Gold contacts
+        // When filtering by rep (non-Gold, non-fullCrm), search contacts directly
+        // by assigned_bdr — much faster than going through Gold companies.
+        let repDirectIds = [];
+        if (repFilter && !fullCrm) {
+          const repOwnerId = BDR_OWNER_IDS[repFilter] || AE_OWNER_IDS[repFilter] || null;
+          const repFilters = repOwnerId
+            ? [{ propertyName: "assigned_bdr", operator: "EQ", value: repFilter },
+               { propertyName: "hubspot_owner_id", operator: "EQ", value: repOwnerId }]
+            : [{ propertyName: "assigned_bdr", operator: "EQ", value: repFilter }];
+          // Use OR across both filters to catch all of this rep's contacts
+          const repSearchData = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
+            filterGroups: [
+              { filters: [{ propertyName: "assigned_bdr", operator: "EQ", value: repFilter }] },
+              ...(repOwnerId ? [{ filters: [{ propertyName: "hubspot_owner_id", operator: "EQ", value: repOwnerId }] }] : []),
+            ],
+            properties: ["hs_object_id"],
+            sorts: [{ propertyName: "lastmodifieddate", direction: "DESCENDING" }],
+            limit: batchSize,
+            after: batchStart > 0 ? String(batchStart) : undefined,
+          }).catch(() => ({ results: [], total: 0 }));
+          repDirectIds = (repSearchData.results || []).map(c => String(c.id));
+          allContactIds = repDirectIds;
+        }
+
+        allContactIds = [...new Set(allContactIds)];
+        const total     = allContactIds.length;
+        const effectiveBatchIds = repFilter
+          ? repDirectIds                                                // direct rep search (respects batchSize)
           : allContactIds.slice(batchStart, batchStart + batchSize);   // normal pagination
         const batchIds  = effectiveBatchIds;
         const hasMore   = repFilter ? false : batchStart + batchSize < total;
