@@ -252,6 +252,9 @@ export default function App() {
     netlifyIdentity.on('init', (u) => {
       setUser(u || null)
       setIsLoaded(true)
+      // Close any widget modal the widget auto-opened (e.g. for invite/recovery tokens).
+      // Our own screens handle these flows — the widget iframe just blocks the UI.
+      netlifyIdentity.close()
     })
 
     netlifyIdentity.on('login', (u) => {
