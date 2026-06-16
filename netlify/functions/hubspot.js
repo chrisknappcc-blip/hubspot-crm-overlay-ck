@@ -3814,7 +3814,23 @@ export const handler = async (event, context) => {
           const emailStats = emailStatsResult;
 
           // ── Per-rep breakdown -- sequential with 300ms gaps to avoid 429s ────
-          const sentCounts  = await countAllRepsForMetric("hs_email_last_send_date");
+          // Sent count: use v3 email engagement objects (accurate for sequences + 1:1)
+          // hs_email_last_send_date only tracks marketing emails, not sequence emails
+          const SALES_EMAIL_OWNER_MAP = { ...REP_OWNER_ID_MAP, "Chris Knapp":"78304576", "Chiara Pate":"87806380" };
+          const sentCountsRaw = await Promise.all(targetReps.map(async repName => {
+            const ownerId = SALES_EMAIL_OWNER_MAP[repName];
+            if (!ownerId) return [repName, 0];
+            const filters = [
+              { propertyName: "hs_email_direction", operator: "EQ",  value: "EMAIL" },
+              { propertyName: "hs_timestamp",       operator: "GTE", value: sinceISO },
+              { propertyName: "hubspot_owner_id",   operator: "EQ",  value: ownerId },
+            ];
+            const d = await hsPost(user.userId, "/crm/v3/objects/emails/search", {
+              filterGroups: [{ filters }], properties: ["hs_timestamp"], limit: 1,
+            }).catch(() => ({ total: 0 }));
+            return [repName, d.total || 0];
+          }));
+          const sentCounts = Object.fromEntries(sentCountsRaw);
           await new Promise(r => setTimeout(r, 300));
           const openCounts  = await countAllRepsForMetric("hs_email_last_open_date");
           await new Promise(r => setTimeout(r, 300));
@@ -4243,11 +4259,59 @@ export const handler = async (event, context) => {
             countC(contactFilterGroups({ propertyName: "hs_email_bad_address", operator: "EQ", value: "true" })),
           ]);
 
+          // Fetch meetings for reps in this period (same logic as team_activity)
+          const seqMeetingCountByRep = {};
+          const seqMeetingDetails = [];
+          targetReps.forEach(r => { seqMeetingCountByRep[r] = 0; });
+          try {
+            const SEQ_OWNER_MAP = { ...REP_OWNER_ID_MAP, "Chris Knapp":"78304576", "Chiara Pate":"87806380" };
+            const seqMeetOwnerIds = [...new Set(targetReps.map(r => SEQ_OWNER_MAP[r]).filter(Boolean))];
+            if (seqMeetOwnerIds.length > 0 && sinceISO) {
+              const mData = await hsPost(user.userId, "/crm/v3/objects/meetings/search", {
+                filterGroups: seqMeetOwnerIds.map(id => ({ filters: [
+                  { propertyName: "hubspot_owner_id",      operator: "EQ",  value: id },
+                  { propertyName: "hs_meeting_start_time", operator: "GTE", value: sinceISO },
+                ]})),
+                properties: ["hs_meeting_title","hs_meeting_start_time","hubspot_owner_id"],
+                sorts: [{ propertyName: "hs_meeting_start_time", direction: "DESCENDING" }],
+                limit: 100,
+              }).catch(() => ({ results: [] }));
+              const ownerToRep = Object.fromEntries(Object.entries(SEQ_OWNER_MAP).map(([n,id]) => [id, n]));
+              const seenT = new Set();
+              const deduped = (mData.results || [])
+                .filter(m => !(m.properties?.hs_meeting_title||'').match(/\[Canceled\]|\bcanceled\b|\bcancelled\b/i))
+                .sort((a,b) => ((a.properties?.hs_meeting_title||'').startsWith('[Gong]')?1:0) - ((b.properties?.hs_meeting_title||'').startsWith('[Gong]')?1:0))
+                .filter(m => { const t = m.properties?.hs_meeting_start_time||m.id; if (seenT.has(t)) return false; seenT.add(t); return true; });
+              for (const m of deduped) {
+                const repName = ownerToRep[m.properties?.hubspot_owner_id];
+                if (repName) {
+                  seqMeetingCountByRep[repName] = (seqMeetingCountByRep[repName]||0) + 1;
+                  seqMeetingDetails.push({
+                    title: (m.properties?.hs_meeting_title||'Meeting').replace(/^\[Gong\]\s*/i,''),
+                    date:  m.properties?.hs_meeting_start_time || null,
+                    ownerName: repName,
+                  });
+                }
+              }
+            }
+          } catch { /* silently skip */ }
+
+          // Add meetings to repData
+          const repDataWithMeetings = repData.map(r => ({
+            ...r,
+            meetings: seqMeetingCountByRep[r.rep] || 0,
+          }));
+
           return ok({
             section: "sequences", period, rep: rep || "all",
-            totals: { enrolled, replied: seqReplied, opened: seqOpened, clicked: seqClicked, replyRate, openRate, clickRate },
+            totals: {
+              enrolled, replied: seqReplied, opened: seqOpened, clicked: seqClicked,
+              replyRate, openRate, clickRate,
+              meetings: Object.values(seqMeetingCountByRep).reduce((a,b)=>a+b, 0),
+            },
             compliance: { optedOut, bounced, badAddress },
-            byRep: repData,
+            byRep: repDataWithMeetings,
+            meetingDetails: seqMeetingDetails,
             sequences,
             links: { dashboard: DASHBOARD, sequences: SEQUENCES },
           });
