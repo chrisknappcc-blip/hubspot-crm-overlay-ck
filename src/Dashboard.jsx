@@ -3845,11 +3845,12 @@ function ReportsTab({ safeFetch, owners, currentUserName,
         return (
           <div style={{ display:'flex', flexDirection:'column', gap:16 }}>
             {/* KPI strip */}
-            <div style={{ display:'grid', gridTemplateColumns:'repeat(7,1fr)', gap:10 }}>
+            <div style={{ display:'grid', gridTemplateColumns:'repeat(8,1fr)', gap:10 }}>
               <KpiCard label="Enrolled"    value={fmt(T.enrolled)}   sub="Contacts in sequences"  href={L.sequences} />
               <KpiCard label="Opens"       value={fmt(T.opened)}     sub="Unique opens"            href={L.sequences} />
               <KpiCard label="Open Rate"   value={fmtPct(T.openRate)} sub="Of enrolled"            href={L.sequences} accent />
               <KpiCard label="Clicks"      value={fmt(T.clicked)}    sub="Link clicks"             href={L.sequences} />
+              <KpiCard label="Meetings"    value={fmt(T.meetings||0)} sub="Logged this period"     accent />
               <KpiCard label="Click Rate"  value={fmtPct(T.clickRate)} sub="Of enrolled"           href={L.sequences} accent />
               <KpiCard label="Replies"     value={fmt(T.replied)}    sub="Responses received"      href={L.sequences} />
               <KpiCard label="Reply Rate"  value={fmtPct(T.replyRate)} sub="Of enrolled"           href={L.sequences} accent />
@@ -3990,6 +3991,27 @@ function ReportsTab({ safeFetch, owners, currentUserName,
       })()}
 
       {/* ── Deals ── */}
+      {!loading && data && section === 'sequences' && (data.meetingDetails||[]).length > 0 && (
+        <Panel>
+          <SectionTitle>Meetings This Period ({(data.meetingDetails||[]).length})</SectionTitle>
+          <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
+            {(data.meetingDetails||[]).map((m,i) => (
+              <div key={i} style={{ display:'flex', gap:10, alignItems:'flex-start', paddingBottom:6, borderBottom: i < data.meetingDetails.length-1 ? '1px solid var(--border)' : 'none' }}>
+                <span style={{ fontSize:14, flexShrink:0 }}>📅</span>
+                <div style={{ flex:1, minWidth:0 }}>
+                  <div style={{ fontSize:12, fontWeight:500, color:'var(--text)' }}>{m.title || 'Meeting'}</div>
+                  {m.contactName && <div style={{ fontSize:11, color:'var(--text-secondary)' }}>{m.contactName}{m.company ? ` · ${m.company}` : ''}</div>}
+                </div>
+                <div style={{ display:'flex', flexDirection:'column', alignItems:'flex-end', flexShrink:0 }}>
+                  {m.date && <div style={{ fontSize:11, color:'var(--text-tertiary)' }}>{new Date(m.date).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})}</div>}
+                  {m.ownerName && <div style={{ fontSize:10, color:'var(--accent)', marginTop:1 }}>{m.ownerName}</div>}
+                </div>
+              </div>
+            ))}
+          </div>
+        </Panel>
+      )}
+
       {!loading && data && section === 'deals' && (() => {
         const T = data.totals || {}
         const L = data.links || {}
