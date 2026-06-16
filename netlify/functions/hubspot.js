@@ -4431,6 +4431,58 @@ export const handler = async (event, context) => {
             rep: repNames.length === 1 ? repNames[0] : (ownerIds.length === 0 && repNames.length === 0 ? null : undefined),
           });
 
+          // Fetch meetings via CRM v3 (same logic as /activity endpoint)
+          const meetingCountByRep = {};
+          const meetingDetailsByRep = {};
+          targetReps.forEach(r => { meetingCountByRep[r] = 0; meetingDetailsByRep[r] = []; });
+          try {
+            const FULL_OWNER_ID_MAP_TA = { ...REP_OWNER_ID_MAP, "Chris Knapp":"78304576", "Chiara Pate":"87806380" };
+            const meetingOwnerIds = [...new Set(targetReps.map(r => FULL_OWNER_ID_MAP_TA[r]).filter(Boolean))];
+            if (meetingOwnerIds.length > 0) {
+              const meetData = await hsPost(user.userId, "/crm/v3/objects/meetings/search", {
+                filterGroups: meetingOwnerIds.map(ownerId => ({ filters: [
+                  { propertyName: "hubspot_owner_id",      operator: "EQ",  value: ownerId },
+                  { propertyName: "hs_meeting_start_time", operator: "GTE", value: sinceISO },
+                ]})),
+                properties: ["hs_meeting_title","hs_meeting_start_time","hubspot_owner_id"],
+                sorts: [{ propertyName: "hs_meeting_start_time", direction: "DESCENDING" }],
+                limit: 100,
+              }).catch(() => ({ results: [] }));
+
+              const ownerIdToRep = Object.fromEntries(
+                Object.entries(FULL_OWNER_ID_MAP_TA).map(([name,id]) => [id, name])
+              );
+
+              // Dedup Gong duplicates
+              const seenTimes = new Set();
+              const deduped = (meetData.results || [])
+                .filter(m => !(m.properties?.hs_meeting_title||'').match(/\[Canceled\]|canceled|cancelled/i))
+                .sort((a,b) => {
+                  const aG = (a.properties?.hs_meeting_title||'').startsWith('[Gong]');
+                  const bG = (b.properties?.hs_meeting_title||'').startsWith('[Gong]');
+                  return aG - bG;
+                })
+                .filter(m => {
+                  const t = m.properties?.hs_meeting_start_time || m.id;
+                  if (seenTimes.has(t)) return false;
+                  seenTimes.add(t); return true;
+                });
+
+              for (const m of deduped) {
+                const ownerId = m.properties?.hubspot_owner_id;
+                const repName = ownerIdToRep[ownerId];
+                if (repName && meetingCountByRep[repName] !== undefined) {
+                  meetingCountByRep[repName]++;
+                  meetingDetailsByRep[repName].push({
+                    title: (m.properties?.hs_meeting_title||'Meeting').replace(/^\[Gong\]\s*/i,''),
+                    date:  m.properties?.hs_meeting_start_time || null,
+                    ownerName: repName,
+                  });
+                }
+              }
+            }
+          } catch { /* meetings are additive — silently skip on error */ }
+
           const repData = targetReps.map(repName => {
             const c       = repCounts[repName] || {};
             const sent    = c.sent    || 0;
@@ -4440,14 +4492,16 @@ export const handler = async (event, context) => {
             const clicks  = clickCounts[repName] || 0;
             const replies = c.replies || 0;
             const seqs    = seqCounts[repName]   || 0;
+            const meetings = meetingCountByRep[repName] || 0;
             return {
               rep: repName, sent, seqEmails: seqE, indivEmails: indivE,
-              opens, clicks, replies, sequences: seqs,
+              opens, clicks, replies, sequences: seqs, meetings,
               openRate:  sent > 0 ? +((opens   / sent) * 100).toFixed(1) : 0,
               clickRate: sent > 0 ? +((clicks  / sent) * 100).toFixed(1) : 0,
               replyRate: sent > 0 ? +((replies / sent) * 100).toFixed(1) : 0,
               seqOpenRate:  seqs > 0 ? +((opens   / seqs) * 100).toFixed(1) : 0,
               seqReplyRate: seqs > 0 ? +((replies / seqs) * 100).toFixed(1) : 0,
+              meetingDetails: meetingDetailsByRep[repName] || [],
             };
           });
 
@@ -4459,7 +4513,11 @@ export const handler = async (event, context) => {
             clicks:      acc.clicks      + r.clicks,
             replies:     acc.replies     + r.replies,
             sequences:   acc.sequences   + r.sequences,
-          }), { sent:0, seqEmails:0, indivEmails:0, opens:0, clicks:0, replies:0, sequences:0 });
+            meetings:    acc.meetings    + r.meetings,
+          }), { sent:0, seqEmails:0, indivEmails:0, opens:0, clicks:0, replies:0, sequences:0, meetings:0 });
+
+          const allMeetingDetails = repData.flatMap(r => r.meetingDetails || [])
+            .sort((a,b) => new Date(b.date||0) - new Date(a.date||0));
 
           return ok({
             section: "team_activity", period,
@@ -4474,6 +4532,7 @@ export const handler = async (event, context) => {
               manualEntries:  logEntries.length,
             },
             byRep: repData,
+            meetingDetails: allMeetingDetails,
             completedTodos: completedTodos.slice(0, 100),
             activityLog: logEntries.slice(0, 200),
           });
