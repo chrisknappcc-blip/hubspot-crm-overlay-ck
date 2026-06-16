@@ -4614,7 +4614,7 @@ export const handler = async (event, context) => {
             if (untilISO) replyFilters.push({ propertyName: "hs_timestamp", operator: "LTE", value: untilISO });
             if (ownerId)  replyFilters.push({ propertyName: "hubspot_owner_id", operator: "EQ", value: ownerId });
 
-            const RECAP_OWNER_MAP = { ...OWNER_ID_MAP, "Chris Knapp": "78304576", "Chiara Pate": "87806380" };
+            const RECAP_OWNER_MAP = { ...REP_OWNER_ID_MAP, "Chris Knapp": "78304576", "Chiara Pate": "87806380" };
             const repOwnerId = RECAP_OWNER_MAP[repName];
 
             const meetingFilters = [];
