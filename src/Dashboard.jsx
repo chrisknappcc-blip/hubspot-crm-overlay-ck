@@ -4158,7 +4158,7 @@ function ReportsTab({ safeFetch, owners, currentUserName,
             <Panel>
               <SectionTitle>By Rep</SectionTitle>
               <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
-                <THead cols={['Rep','Sent','Opens','Open%','Clicks','Click%','Replies','Reply%','Sequences']} />
+                <THead cols={['Rep','Sent','Opens','Open%','Clicks','Click%','Replies','Reply%','Sequences','Meetings']} />
                 <tbody>
                   {byRep.map((r,i) => (
                     <tr key={i} style={{ borderBottom:'1px solid var(--border)' }}>
@@ -4171,6 +4171,7 @@ function ReportsTab({ safeFetch, owners, currentUserName,
                       <td style={{ padding:'8px 10px 8px 0' }}>{fmt(r.replies)}</td>
                       <td style={{ padding:'8px 10px 8px 0', color:'var(--text-secondary)' }}>{r.replyRate}%</td>
                       <td style={{ padding:'8px 0' }}>{fmt(r.sequences)}</td>
+                      <td style={{ padding:'8px 0', color: r.meetings > 0 ? 'var(--green)' : 'var(--text-secondary)' }}>{fmt(r.meetings||0)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -4345,6 +4346,40 @@ function ReportsTab({ safeFetch, owners, currentUserName,
                 }
               </Panel>
             </div>
+
+            {/* Meeting Details */}
+            {(data.meetingDetails||[]).length > 0 && (
+              <Panel>
+                <SectionTitle>Meetings This Period ({(data.meetingDetails||[]).length})</SectionTitle>
+                <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
+                  {(data.meetingDetails||[]).map((m,i) => (
+                    <div key={i} style={{ display:'flex', gap:10, alignItems:'flex-start', paddingBottom:6, borderBottom: i < data.meetingDetails.length-1 ? '1px solid var(--border)' : 'none' }}>
+                      <span style={{ fontSize:14, flexShrink:0 }}>📅</span>
+                      <div style={{ flex:1, minWidth:0 }}>
+                        <div style={{ fontSize:12, fontWeight:500, color:'var(--text)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                          {m.title || 'Meeting'}
+                        </div>
+                        {m.contactName && (
+                          <div style={{ fontSize:11, color:'var(--text-secondary)', marginTop:1 }}>
+                            {m.contactName}{m.company ? ` · ${m.company}` : ''}
+                          </div>
+                        )}
+                      </div>
+                      <div style={{ display:'flex', flexDirection:'column', alignItems:'flex-end', flexShrink:0 }}>
+                        {m.date && (
+                          <div style={{ fontSize:11, color:'var(--text-tertiary)' }}>
+                            {new Date(m.date).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})}
+                          </div>
+                        )}
+                        {m.ownerName && (
+                          <div style={{ fontSize:10, color:'var(--accent)', marginTop:1 }}>{m.ownerName}</div>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </Panel>
+            )}
           </div>
         )
       })()}
@@ -4546,6 +4581,7 @@ function ReportsTab({ safeFetch, owners, currentUserName,
             `Clicks:            ${t.clicks}`,
             `Replies:           ${t.replies} (${t.replyRate}%)`,
             `Sequences Started: ${t.sequences}`,
+            `Meetings Logged:   ${t.meetings||0}`,
             `To-Do Completed:   ${t.completedTodos}`,
             `Manual Logged:     ${t.manualEntries}`,
             ``,
@@ -4573,6 +4609,7 @@ function ReportsTab({ safeFetch, owners, currentUserName,
               ['HubSpot',r.rep,'Clicks',r.clicks,''],
               ['HubSpot',r.rep,'Replies',r.replies,''],
               ['HubSpot',r.rep,'Sequences',r.sequences,''],
+              ['HubSpot',r.rep,'Meetings',r.meetings||0,''],
             ]),
             // Completed To-Do
             ...(data.completedTodos||[]).map(t => ['To-Do','',t.text,t.type,t.completedAt||'']),
@@ -4611,7 +4648,7 @@ function ReportsTab({ safeFetch, owners, currentUserName,
             {/* KPI strip — Total Outreach + breakdown + engagement metrics */}
             <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
               {/* Row 1: Email breakdown */}
-              <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr 1fr 1fr', gap:10 }}>
+              <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr 1fr 1fr 1fr', gap:10 }}>
                 {/* Total Outreach — spans wider, prominent */}
                 <div style={{ padding:'14px 16px', background:'var(--surface)', border:'2px solid var(--accent)', borderRadius:'var(--radius)', display:'flex', flexDirection:'column', gap:2 }}>
                   <div style={{ fontSize:11, fontWeight:600, textTransform:'uppercase', letterSpacing:'.06em', color:'var(--accent)', opacity:.8 }}>Total Outreach</div>
@@ -4624,6 +4661,7 @@ function ReportsTab({ safeFetch, owners, currentUserName,
                 <KpiCard label="Individual Emails" value={fmt(t.indivEmails||0)} sub="1:1 direct" />
                 <KpiCard label="Opens"             value={fmt(t.opens)}          sub={`${t.openRate||0}% open rate`} />
                 <KpiCard label="Replies"           value={fmt(t.replies)}        sub={`${t.replyRate||0}% reply rate`} />
+                <KpiCard label="Meetings"          value={fmt(t.meetings||0)}    sub="Logged this period" accent />
                 <KpiCard label="To-Do Done"        value={fmt(t.completedTodos)} accent />
               </div>
             </div>
@@ -4632,7 +4670,7 @@ function ReportsTab({ safeFetch, owners, currentUserName,
             <Panel>
               <SectionTitle>Activity by Rep</SectionTitle>
               <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
-                <THead cols={['Rep','Total Sent','Seq Emails','Indiv Emails','Opens','Open%','Replies','Reply%','Sequences']} />
+                <THead cols={['Rep','Total Sent','Seq Emails','Indiv Emails','Opens','Open%','Replies','Reply%','Sequences','Meetings']} />
                 <tbody>
                   {byRep.map((r,i) => (
                     <tr key={i} style={{ borderBottom:'1px solid var(--border)' }}>
@@ -4649,6 +4687,7 @@ function ReportsTab({ safeFetch, owners, currentUserName,
                         {r.sent > 0 ? ((r.replies/r.sent)*100).toFixed(1) : 0}%
                       </td>
                       <td style={{ padding:'8px 0' }}>{fmt(r.sequences)}</td>
+                      <td style={{ padding:'8px 0', color: (r.meetings||0) > 0 ? 'var(--green)' : 'var(--text-secondary)' }}>{fmt(r.meetings||0)}</td>
                     </tr>
                   ))}
                 </tbody>
