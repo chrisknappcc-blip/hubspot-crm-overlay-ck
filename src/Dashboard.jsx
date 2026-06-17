@@ -1201,9 +1201,9 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
     }
   }
 
-  const runRepSyncMine = async () => {
+  const runRepSyncMine = async (forceRefresh = false) => {
     if (!myRepName) return
-    saveRepSyncState({ running: true, done: false, updated: 0, skipped: 0, total: 0, progress: `Starting sync for ${myRepName}…` })
+    saveRepSyncState({ running: true, done: false, updated: 0, skipped: 0, total: 0, progress: forceRefresh ? `Force rerunning all ${myRepName} contacts…` : `Starting sync for ${myRepName}…` })
     let totalUpdated = 0, totalSkipped = 0, grandTotal = 0, batchStart = 0
     try {
       while (true) {
@@ -1211,7 +1211,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
         const res = await safeFetch(`/api/hubspot/sync-primary-rep`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ batchStart, batchSize: 50, fullCrm: false, dryRun: false, repFilter: myRepName }),
+          body: JSON.stringify({ batchStart, batchSize: 50, fullCrm: false, dryRun: false, repFilter: myRepName, forceRefresh }),
         })
         totalUpdated += res.updated  || 0
         totalSkipped += res.skipped  || 0
@@ -2120,13 +2120,22 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                             cursor: (repSyncState.running || previewLoading || !myRepName) ? 'not-allowed' : 'pointer' }}>
                           {previewLoading ? '⟳ Previewing…' : `Preview Mine${myRepName ? ` (${myRepName.split(' ')[0]})` : ''}`}
                         </button>
-                        <button onClick={runRepSyncMine} disabled={repSyncState.running || !myRepName}
+                        <button onClick={() => runRepSyncMine(false)} disabled={repSyncState.running || !myRepName}
                           style={{ padding:'6px 10px', background:'none',
                             border:'1px solid var(--accent)',
                             color: (repSyncState.running || !myRepName) ? 'var(--text-tertiary)' : 'var(--accent)',
                             borderRadius:'var(--radius)', fontSize:11, fontWeight:600,
                             cursor: (repSyncState.running || !myRepName) ? 'not-allowed' : 'pointer' }}>
                           {repSyncState.running ? '⟳ Running…' : `Run Mine`}
+                        </button>
+                        <button onClick={() => runRepSyncMine(true)} disabled={repSyncState.running || !myRepName}
+                          title="Reprocess ALL contacts including ones already stamped — use to correct wrong values"
+                          style={{ padding:'6px 10px', background:'none',
+                            border:'1px solid var(--text-tertiary)',
+                            color: (repSyncState.running || !myRepName) ? 'var(--text-tertiary)' : 'var(--text-secondary)',
+                            borderRadius:'var(--radius)', fontSize:11,
+                            cursor: (repSyncState.running || !myRepName) ? 'not-allowed' : 'pointer' }}>
+                          ↺ Force Rerun
                         </button>
                         <button onClick={runDryRun} disabled={repSyncState.running || previewLoading}
                           style={{ padding:'6px 10px', background:'none',
