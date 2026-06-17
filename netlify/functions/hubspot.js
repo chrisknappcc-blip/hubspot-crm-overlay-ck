@@ -5029,7 +5029,7 @@ export const handler = async (event, context) => {
         };
         // These reps do outreach for specific cases (conferences etc) but are never
         // primary_outreach_rep — excluded from the allowed values on the HubSpot property
-        const EXCLUDED_FROM_PRIMARY = new Set(["289209454", "85819247"]); // Irene Wong, Cole Hooper
+        const EXCLUDED_FROM_PRIMARY = new Set(["289209454", "85819247", "743772047"]); // Irene Wong, Cole Hooper, John Hansel
         const ALL_OWNER_ID_TO_NAME = {
           ...Object.fromEntries(Object.entries(BDR_OWNER_IDS).map(([n,id]) => [id, n])),
           ...Object.fromEntries(Object.entries(AE_OWNER_IDS).map(([n,id]) => [id, n])),
