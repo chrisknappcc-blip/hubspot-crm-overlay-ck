@@ -5116,10 +5116,11 @@ export const handler = async (event, context) => {
           // Quick count so the Dashboard can show accurate X-of-Y progress
           const repCountData = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
             filterGroups: [
-              { filters: [
-                  { propertyName: "assigned_bdr",         operator: "EQ",           value: repFilter },
-                  { propertyName: "primary_outreach_rep", operator: "NOT_HAS_PROPERTY" },
-              ]},
+              { filters: skipStamped
+                  ? [{ propertyName: "assigned_bdr", operator: "EQ", value: repFilter },
+                     { propertyName: "primary_outreach_rep", operator: "NOT_HAS_PROPERTY" }]
+                  : [{ propertyName: "assigned_bdr", operator: "EQ", value: repFilter }]
+              },
             ],
             properties: ["hs_object_id"],
             limit: 1,
@@ -5134,16 +5135,22 @@ export const handler = async (event, context) => {
           // Use OR across both filters to catch all of this rep's contacts
           // Exclude contacts that already have primary_outreach_rep set so each run
           // processes a fresh batch — works around HubSpot's 10k search result cap.
+          // forceRefresh bypasses this so already-stamped contacts can be corrected.
+          const skipStamped = !forceRefresh;
+          const repBaseFilters = skipStamped
+            ? [{ propertyName: "assigned_bdr", operator: "EQ", value: repFilter },
+               { propertyName: "primary_outreach_rep", operator: "NOT_HAS_PROPERTY" }]
+            : [{ propertyName: "assigned_bdr", operator: "EQ", value: repFilter }];
+          const repOwnerFilters = repOwnerId
+            ? (skipStamped
+                ? [{ propertyName: "hubspot_owner_id", operator: "EQ", value: repOwnerId },
+                   { propertyName: "primary_outreach_rep", operator: "NOT_HAS_PROPERTY" }]
+                : [{ propertyName: "hubspot_owner_id", operator: "EQ", value: repOwnerId }])
+            : null;
           const repSearchData = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
             filterGroups: [
-              { filters: [
-                  { propertyName: "assigned_bdr",          operator: "EQ",           value: repFilter },
-                  { propertyName: "primary_outreach_rep",  operator: "NOT_HAS_PROPERTY" },
-              ]},
-              ...(repOwnerId ? [{ filters: [
-                  { propertyName: "hubspot_owner_id",       operator: "EQ",           value: repOwnerId },
-                  { propertyName: "primary_outreach_rep",  operator: "NOT_HAS_PROPERTY" },
-              ]}] : []),
+              { filters: repBaseFilters },
+              ...(repOwnerFilters ? [{ filters: repOwnerFilters }] : []),
             ],
             properties: ["hs_object_id"],
             sorts: [{ propertyName: "createdate", direction: "ASCENDING" }],
