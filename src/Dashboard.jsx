@@ -1207,11 +1207,11 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
     let totalUpdated = 0, totalSkipped = 0, grandTotal = 0, batchStart = 0
     try {
       while (true) {
-        // batchSize 25: safe under Netlify's 10s limit (25 contacts × engagement lookups)
+        // batchSize 200: fast path uses contact properties only (no per-contact API calls)
         const res = await safeFetch(`/api/hubspot/sync-primary-rep`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ batchStart, batchSize: 25, fullCrm: false, dryRun: false, repFilter: myRepName }),
+          body: JSON.stringify({ batchStart, batchSize: 200, fullCrm: false, dryRun: false, repFilter: myRepName }),
         })
         totalUpdated += res.updated  || 0
         totalSkipped += res.skipped  || 0
@@ -1223,7 +1223,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
           updated:  totalUpdated,
           skipped:  totalSkipped,
           total:    grandTotal,
-          progress: `Batch ${Math.ceil(batchStart/25)+1} — ${Math.min(batchStart+25,grandTotal||batchStart+25).toLocaleString()} of ${grandTotal ? grandTotal.toLocaleString() : '…'} contacts processed · ${totalUpdated} updated`,
+          progress: `Batch ${Math.ceil(batchStart/200)+1} — ${Math.min(batchStart+200,grandTotal||batchStart+200).toLocaleString()} of ${grandTotal ? grandTotal.toLocaleString() : '…'} contacts processed · ${totalUpdated} updated`,
         })
         if (res.done || !res.hasMore) break
         batchStart = res.nextBatch ?? (batchStart + 25)
