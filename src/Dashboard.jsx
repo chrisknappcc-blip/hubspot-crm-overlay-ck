@@ -1203,16 +1203,36 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
 
   const runRepSyncMine = async () => {
     if (!myRepName) return
-    saveRepSyncState({ running: true, done: false, updated: 0, skipped: 0, total: 0, progress: `Syncing ${myRepName} Gold contacts…` })
+    saveRepSyncState({ running: true, done: false, updated: 0, skipped: 0, total: 0, progress: `Starting sync for ${myRepName}…` })
+    let totalUpdated = 0, totalSkipped = 0, grandTotal = 0, batchStart = 0
     try {
-      const res = await safeFetch(`/api/hubspot/sync-primary-rep`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ batchStart: 0, batchSize: 200, fullCrm: false, dryRun: false, repFilter: myRepName }),
-      })
-      saveRepSyncState({ running: false, done: true, updated: res.updated || 0, skipped: res.skipped || 0, total: res.total || 0 })
+      while (true) {
+        // batchSize 25: safe under Netlify's 10s limit (25 contacts × engagement lookups)
+        const res = await safeFetch(`/api/hubspot/sync-primary-rep`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ batchStart, batchSize: 25, fullCrm: false, dryRun: false, repFilter: myRepName }),
+        })
+        totalUpdated += res.updated  || 0
+        totalSkipped += res.skipped  || 0
+        if (!grandTotal && res.total) grandTotal = res.total
+        const processed = batchStart + (res.batchEnd - res.batchStart || 25)
+        saveRepSyncState({
+          running:  true,
+          done:     false,
+          updated:  totalUpdated,
+          skipped:  totalSkipped,
+          total:    grandTotal,
+          progress: `Batch ${Math.ceil(batchStart/25)+1} — ${Math.min(batchStart+25,grandTotal||batchStart+25).toLocaleString()} of ${grandTotal ? grandTotal.toLocaleString() : '…'} contacts processed · ${totalUpdated} updated`,
+        })
+        if (res.done || !res.hasMore) break
+        batchStart = res.nextBatch ?? (batchStart + 25)
+      }
+      saveRepSyncState({ running: false, done: true, updated: totalUpdated, skipped: totalSkipped, total: grandTotal,
+        progress: `Done — ${totalUpdated.toLocaleString()} updated, ${totalSkipped.toLocaleString()} unchanged out of ${grandTotal.toLocaleString()} contacts` })
     } catch(e) {
-      saveRepSyncState({ running: false, done: false, updated: 0, skipped: 0, total: 0, progress: `Error: ${e.message}` })
+      saveRepSyncState({ running: false, done: false, updated: totalUpdated, skipped: totalSkipped, total: grandTotal,
+        progress: `Error after ${totalUpdated} updates: ${e.message}` })
     }
   }
 
