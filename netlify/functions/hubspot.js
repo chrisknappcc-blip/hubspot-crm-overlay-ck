@@ -5221,51 +5221,32 @@ export const handler = async (event, context) => {
         const NINETY_DAYS_MS  = 90 * 24 * 60 * 60 * 1000;
         const ninetyDaysAgo   = new Date(Date.now() - NINETY_DAYS_MS).toISOString();
 
-        if (!dryRun) {
-          // ── FAST PATH: property-based only ─────────────────────────────────
-          // KEY RULE: if assigned_bdr is set, BDR ALWAYS wins in the fast path.
-          // We cannot tell from contact properties alone whether AE or BDR generated
-          // the most recent activity — notes_last_contacted / hs_last_sales_activity_timestamp
-          // get updated by anyone (BDR email, AE note, system update).
-          // AE override is only applied when NO assigned_bdr exists on the contact.
-          // Use Preview (dry run) with the engagement API for genuine AE-takeover detection.
-          for (const contact of contacts) {
-            const p          = contact.properties || {};
-            const assignedBdr= p.assigned_bdr || null;
-            const ownerId    = String(p.hubspot_owner_id || '');
-            const ownerName  = (ownerId && !EXCLUDED_FROM_PRIMARY.has(ownerId))
-                                 ? (ALL_OWNER_ID_TO_NAME[ownerId] || null) : null;
-            const ownerIsAE  = ownerId && AE_OWNER_ID_SET.has(ownerId) && !EXCLUDED_FROM_PRIMARY.has(ownerId);
-            const lastAct    = p.hs_last_sales_activity_timestamp || p.notes_last_contacted || null;
-
-            // Only let AE win if there is no BDR assigned to this contact
-            const recentAE = !assignedBdr && ownerIsAE && lastAct && lastAct >= ninetyDaysAgo;
-
-            engagementOwners[contact.id] = {
-              ownerId:          recentAE ? ownerId : null,
-              ownerName:        recentAE ? ownerName : null,
-              engType:          recentAE ? 'owner-active' : null,
-              ts:               lastAct  ? new Date(lastAct).getTime() : 0,
-              hasAnyEngagement: !!lastAct,
-              ownerHasEngaged:  !!(ownerId && lastAct),
-            };
-          }
-        } else {
-          // ── DETAILED PATH: engagement API (preview only — small batches) ────
+        {
+          // ── ENGAGEMENT API PATH ─────────────────────────────────────────────
+          // Used for BOTH dry run and live run.
+          // Most recent engagement owner (email, meeting, note, call) wins —
+          // could be BDR or AE, whoever is actually driving activity on the contact.
+          // 
+          // Optimised for speed:
+          //   limit: 3   → only need the most recent engagement, not full history
+          //   ENG_BATCH: 10 → 10 contacts in parallel (vs 5 before)
+          //   50ms gap   → enough to avoid 429s without burning time
+          //
+          // Each batch of 50 contacts: ~500ms search + ~1.5s engagements + ~500ms write = ~2.5s ✅
           const contactsNeedingEngagements = batchIds;
           const MEETING_WINDOW_MS = 90 * 24 * 60 * 60 * 1000;
           const EMAIL_WINDOW_MS   = 60 * 24 * 60 * 60 * 1000;
           const NOTE_WINDOW_MS    = 30 * 24 * 60 * 60 * 1000;
           const nowMs = Date.now();
 
-          const ENG_BATCH = 5;
+          const ENG_BATCH = 10;  // 10 parallel calls; limit:3 keeps each call fast
           for (let bi = 0; bi < contactsNeedingEngagements.length; bi += ENG_BATCH) {
             const chunk = contactsNeedingEngagements.slice(bi, bi + ENG_BATCH);
             await Promise.all(chunk.map(async contactId => {
               try {
                 const engResp = await hsGet(user.userId,
                   `/engagements/v1/engagements/associated/CONTACT/${contactId}/paged`,
-                  { limit: 20 }
+                  { limit: 3 }   // only need most recent — 3 is enough to find the right owner
                 ).catch(() => ({ results: [] }));
 
                 const engRows = engResp.results || [];
@@ -5306,7 +5287,7 @@ export const handler = async (event, context) => {
                 engagementOwners[contactId] = { ownerId:null, ownerName:null, engType:null, ts:0, hasAnyEngagement:false, ownerHasEngaged:false };
               }
             }));
-            if (bi + ENG_BATCH < contactsNeedingEngagements.length) await new Promise(r => setTimeout(r, 300));
+            if (bi + ENG_BATCH < contactsNeedingEngagements.length) await new Promise(r => setTimeout(r, 50));
           }
         }
 
