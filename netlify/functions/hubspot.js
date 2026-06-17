@@ -5114,6 +5114,7 @@ export const handler = async (event, context) => {
         let repTotalCount = 0;   // total contacts for this rep (for progress display)
         if (repFilter && !fullCrm) {
           // Quick count so the Dashboard can show accurate X-of-Y progress
+          const skipStamped = !forceRefresh;
           const repCountData = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
             filterGroups: [
               { filters: skipStamped
@@ -5136,7 +5137,6 @@ export const handler = async (event, context) => {
           // Exclude contacts that already have primary_outreach_rep set so each run
           // processes a fresh batch — works around HubSpot's 10k search result cap.
           // forceRefresh bypasses this so already-stamped contacts can be corrected.
-          const skipStamped = !forceRefresh;
           const repBaseFilters = skipStamped
             ? [{ propertyName: "assigned_bdr", operator: "EQ", value: repFilter },
                { propertyName: "primary_outreach_rep", operator: "NOT_HAS_PROPERTY" }]
