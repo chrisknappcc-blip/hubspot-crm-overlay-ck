@@ -337,6 +337,39 @@ export default async function handler(req) {
   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
   if (req.method !== "POST") return new Response(JSON.stringify({ error: "Method not allowed" }), { status: 405, headers: { ...CORS, "Content-Type": "application/json" } });
 
+  // ── Leadership page fetcher ──────────────────────────────────────────────────
+  // Fetches org's own website once per call to get current leadership context.
+  // Tries paths in priority order; strips HTML; limits to 3000 chars.
+  async function fetchLeadershipPage(domain) {
+    if (!domain) return null;
+    const base = `https://${domain.replace(/^https?:\/\//, '')}`;
+    const paths = ['/about/leadership','/leadership','/about/our-team','/about/team','/about'];
+    for (const path of paths) {
+      try {
+        const r = await fetch(base + path, {
+          headers: { 'User-Agent': 'Mozilla/5.0 (compatible; CipherBot/1.0)' },
+          signal: AbortSignal.timeout(5000),
+          redirect: 'follow',
+        });
+        if (!r.ok) continue;
+        const ct = r.headers.get('content-type') || '';
+        if (!ct.includes('text')) continue;
+        const html = await r.text();
+        // Strip scripts/styles/tags, collapse whitespace
+        const text = html
+          .replace(/<script[\s\S]*?<\/script>/gi, '')
+          .replace(/<style[\s\S]*?<\/style>/gi, '')
+          .replace(/<[^>]+>/g, ' ')
+          .replace(/\s{2,}/g, ' ')
+          .trim();
+        if (text.length > 200) {
+          return { text: text.slice(0, 3000), url: base + path };
+        }
+      } catch { /* timeout or network error — try next path */ }
+    }
+    return null;
+  }
+
   try {
     const body = await req.json();
     const { companyName, domain, missingPersonas = [], existingContacts = [] } = body;
@@ -386,6 +419,12 @@ export default async function handler(req) {
       ? `\n## EXISTING CONTACTS AT ${companyName} IN YOUR CRM\nThese people are already in our CRM for this organization. Study their titles carefully — some may functionally cover a persona even if their title doesn't exactly match the standard titles listed below.\n\n${existingContacts.map(c => `- ${c.name} | ${c.title || 'No title'} | Persona: ${c.persona || 'unassigned'}`).join('\n')}\n`
       : '';
 
+    // Fetch org's leadership page for high-signal first-party context
+    const leadershipPage = await fetchLeadershipPage(domain);
+    const leadershipContext = leadershipPage
+      ? `\n## ORG LEADERSHIP PAGE (${leadershipPage.url})\nThis is the actual content from the organization's own website. Use it as the HIGHEST-CONFIDENCE source — if a name appears here with a matching title, it is almost certainly current.\n\n${leadershipPage.text}\n`
+      : '';
+
     const systemPrompt = `You are an expert healthcare executive researcher embedded in a CRM intelligence platform for Care Continuity, a healthcare SaaS company. Your job is to find the CURRENT person holding a specific leadership role at a health system.
 
 You have deep knowledge of healthcare org structures:
@@ -398,7 +437,7 @@ You have deep knowledge of healthcare org structures:
 Your output is used to populate a CRM. Accuracy is critical. A wrong result creates duplicate contacts and manual cleanup work. When in doubt, return null with confidence: "low" rather than guess.`;
 
     const userPrompt = `Find who currently holds the ${persona} role at ${companyName}.
-${existingContactsText}
+${existingContactsText}${leadershipContext}
 ## ROLE TO FIND
 Persona: ${persona}
 Standard Titles: "${titles}"
@@ -409,14 +448,15 @@ Organization Website: ${domainStr}
 Search the web to identify the current person in this role.
 If the person you find is already in the existing contacts list above, set alreadyInCRM: true AND still include their full name and title in the output — do not return null for name.
 
-## WEB SEARCH
+## WEB SEARCH STRATEGY
+${leadershipContext ? 'The ORG LEADERSHIP PAGE above is your PRIMARY source — check it first before searching.' : 'No leadership page was pre-fetched.'}
 Use a MAXIMUM of 2-3 web searches total. Do not search more than 3 times.
-1. Search: "${companyName}" "${(definition?.titles||[])[0]||persona}" 2024 OR 2025
-2. Search: "${companyName}" ${keywords.split(',').slice(0,3).join(' ')} leadership
+1. ${leadershipContext ? `If the leadership page above already has a clear match: skip to output. Otherwise search:` : `Search:`} "${companyName}" leadership team 2024 OR 2025
+2. Search: "${companyName}" "${(definition?.titles||[])[0]||persona}" 2024 OR 2025
 3. ONLY if needed: "${companyName}" "${persona}" site:linkedin.com
 
-STOP searching as soon as you find a strong match. Do not run all 3 if search 1 finds someone.
-Only use sources from 2022 or later.
+STOP as soon as you find a strong match. Only use sources from 2022 or later.
+If the org leadership page (above) has the answer, DO NOT search — just use it.
 
 ## OUTPUT
 Return ONLY valid JSON with no markdown or explanation:
