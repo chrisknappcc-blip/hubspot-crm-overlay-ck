@@ -1207,11 +1207,11 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
     let totalUpdated = 0, totalSkipped = 0, grandTotal = 0, batchStart = 0
     try {
       while (true) {
-        // batchSize 200: fast path uses contact properties only (no per-contact API calls)
+        // batchSize 50: engagement API runs per contact (limit:3, 10 parallel) — ~2.5s per batch
         const res = await safeFetch(`/api/hubspot/sync-primary-rep`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ batchStart, batchSize: 200, fullCrm: false, dryRun: false, repFilter: myRepName }),
+          body: JSON.stringify({ batchStart, batchSize: 50, fullCrm: false, dryRun: false, repFilter: myRepName }),
         })
         totalUpdated += res.updated  || 0
         totalSkipped += res.skipped  || 0
@@ -1223,7 +1223,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
           updated:  totalUpdated,
           skipped:  totalSkipped,
           total:    grandTotal,
-          progress: `Batch ${Math.ceil(batchStart/200)+1} — ${Math.min(batchStart+200,grandTotal||batchStart+200).toLocaleString()} of ${grandTotal ? grandTotal.toLocaleString() : '…'} contacts processed · ${totalUpdated} updated`,
+          progress: `Batch ${Math.ceil(batchStart/50)+1} — ${Math.min(batchStart+50,grandTotal||batchStart+50).toLocaleString()} of ${grandTotal ? grandTotal.toLocaleString() : '…'} contacts processed · ${totalUpdated} updated`,
         })
         if (res.done || !res.hasMore) break
         batchStart = res.nextBatch ?? (batchStart + 25)
