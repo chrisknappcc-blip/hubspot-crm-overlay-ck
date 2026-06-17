@@ -5116,7 +5116,10 @@ export const handler = async (event, context) => {
           // Quick count so the Dashboard can show accurate X-of-Y progress
           const repCountData = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
             filterGroups: [
-              { filters: [{ propertyName: "assigned_bdr", operator: "EQ", value: repFilter }] },
+              { filters: [
+                  { propertyName: "assigned_bdr",         operator: "EQ",           value: repFilter },
+                  { propertyName: "primary_outreach_rep", operator: "NOT_HAS_PROPERTY" },
+              ]},
             ],
             properties: ["hs_object_id"],
             limit: 1,
@@ -5129,13 +5132,21 @@ export const handler = async (event, context) => {
                { propertyName: "hubspot_owner_id", operator: "EQ", value: repOwnerId }]
             : [{ propertyName: "assigned_bdr", operator: "EQ", value: repFilter }];
           // Use OR across both filters to catch all of this rep's contacts
+          // Exclude contacts that already have primary_outreach_rep set so each run
+          // processes a fresh batch — works around HubSpot's 10k search result cap.
           const repSearchData = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
             filterGroups: [
-              { filters: [{ propertyName: "assigned_bdr", operator: "EQ", value: repFilter }] },
-              ...(repOwnerId ? [{ filters: [{ propertyName: "hubspot_owner_id", operator: "EQ", value: repOwnerId }] }] : []),
+              { filters: [
+                  { propertyName: "assigned_bdr",          operator: "EQ",           value: repFilter },
+                  { propertyName: "primary_outreach_rep",  operator: "NOT_HAS_PROPERTY" },
+              ]},
+              ...(repOwnerId ? [{ filters: [
+                  { propertyName: "hubspot_owner_id",       operator: "EQ",           value: repOwnerId },
+                  { propertyName: "primary_outreach_rep",  operator: "NOT_HAS_PROPERTY" },
+              ]}] : []),
             ],
             properties: ["hs_object_id"],
-            sorts: [{ propertyName: "lastmodifieddate", direction: "DESCENDING" }],
+            sorts: [{ propertyName: "createdate", direction: "ASCENDING" }],
             limit: batchSize,
             after: batchStart > 0 ? (repNextCursor || String(batchStart)) : undefined,
           }).catch(() => ({ results: [], total: 0 }));
