@@ -5104,7 +5104,18 @@ export const handler = async (event, context) => {
         // by assigned_bdr — much faster than going through Gold companies.
         let repDirectIds = [];
         let repNextCursor = null;
+        let repTotalCount = 0;   // total contacts for this rep (for progress display)
         if (repFilter && !fullCrm) {
+          // Quick count so the Dashboard can show accurate X-of-Y progress
+          const repCountData = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
+            filterGroups: [
+              { filters: [{ propertyName: "assigned_bdr", operator: "EQ", value: repFilter }] },
+            ],
+            properties: ["hs_object_id"],
+            limit: 1,
+          }).catch(() => ({ total: 0 }));
+          repTotalCount = repCountData.total || 0;
+
           const repOwnerId = BDR_OWNER_IDS[repFilter] || AE_OWNER_IDS[repFilter] || null;
           const repFilters = repOwnerId
             ? [{ propertyName: "assigned_bdr", operator: "EQ", value: repFilter },
@@ -5420,7 +5431,7 @@ export const handler = async (event, context) => {
           done:          !hasMore && !moreContactPages,
           updated,
           skipped,
-          total:         fullCrm ? (fullCrmTotal || total) : total,
+          total:         fullCrm ? (fullCrmTotal || total) : repFilter ? repTotalCount : total,
           batchStart,
           batchEnd:      batchStart + batchIds.length,
           nextBatch,
