@@ -5223,14 +5223,23 @@ export const handler = async (event, context) => {
 
         if (!dryRun) {
           // ── FAST PATH: property-based only ─────────────────────────────────
+          // KEY RULE: if assigned_bdr is set, BDR ALWAYS wins in the fast path.
+          // We cannot tell from contact properties alone whether AE or BDR generated
+          // the most recent activity — notes_last_contacted / hs_last_sales_activity_timestamp
+          // get updated by anyone (BDR email, AE note, system update).
+          // AE override is only applied when NO assigned_bdr exists on the contact.
+          // Use Preview (dry run) with the engagement API for genuine AE-takeover detection.
           for (const contact of contacts) {
-            const p        = contact.properties || {};
-            const ownerId  = String(p.hubspot_owner_id || '');
-            const ownerName= (ownerId && !EXCLUDED_FROM_PRIMARY.has(ownerId))
-                               ? (ALL_OWNER_ID_TO_NAME[ownerId] || null) : null;
-            const ownerIsAE= ownerId && AE_OWNER_ID_SET.has(ownerId) && !EXCLUDED_FROM_PRIMARY.has(ownerId);
-            const lastAct  = p.hs_last_sales_activity_timestamp || p.notes_last_contacted || null;
-            const recentAE = ownerIsAE && lastAct && lastAct >= ninetyDaysAgo;
+            const p          = contact.properties || {};
+            const assignedBdr= p.assigned_bdr || null;
+            const ownerId    = String(p.hubspot_owner_id || '');
+            const ownerName  = (ownerId && !EXCLUDED_FROM_PRIMARY.has(ownerId))
+                                 ? (ALL_OWNER_ID_TO_NAME[ownerId] || null) : null;
+            const ownerIsAE  = ownerId && AE_OWNER_ID_SET.has(ownerId) && !EXCLUDED_FROM_PRIMARY.has(ownerId);
+            const lastAct    = p.hs_last_sales_activity_timestamp || p.notes_last_contacted || null;
+
+            // Only let AE win if there is no BDR assigned to this contact
+            const recentAE = !assignedBdr && ownerIsAE && lastAct && lastAct >= ninetyDaysAgo;
 
             engagementOwners[contact.id] = {
               ownerId:          recentAE ? ownerId : null,
