@@ -5029,6 +5029,13 @@ export const handler = async (event, context) => {
         };
         // These reps do outreach for specific cases (conferences etc) but are never
         // primary_outreach_rep — excluded from the allowed values on the HubSpot property
+        // primary_outreach_rep is a HubSpot dropdown — written values must exactly match
+        // the configured option labels. Map any owner name mismatches here.
+        const PRIMARY_REP_NAME_NORM = {
+          "Joseph Haine": "Joe Haine",
+        };
+        const normPrimaryRep = (name) => PRIMARY_REP_NAME_NORM[name] || name;
+
         const EXCLUDED_FROM_PRIMARY = new Set(["289209454", "85819247", "743772047"]); // Irene Wong, Cole Hooper, John Hansel
         const ALL_OWNER_ID_TO_NAME = {
           ...Object.fromEntries(Object.entries(BDR_OWNER_IDS).map(([n,id]) => [id, n])),
@@ -5350,8 +5357,8 @@ export const handler = async (event, context) => {
             // don't assign them — leave newRep null (admin ownership ≠ active rep)
           }
 
-          if (newRep && newRep !== currentRep) {
-            updates.push({ id: contact.id, properties: { primary_outreach_rep: newRep } });
+          if (newRep && normPrimaryRep(newRep) !== currentRep) {
+            updates.push({ id: contact.id, properties: { primary_outreach_rep: normPrimaryRep(newRep) } });
           } else {
             skipped++;
           }
