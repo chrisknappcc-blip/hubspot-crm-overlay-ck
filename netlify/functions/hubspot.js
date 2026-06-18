@@ -5361,6 +5361,7 @@ export const handler = async (event, context) => {
             };
           }
 
+        } // end engagement path block
 
         // Step 5: Determine new primary_outreach_rep for each contact
         const updates = [];
