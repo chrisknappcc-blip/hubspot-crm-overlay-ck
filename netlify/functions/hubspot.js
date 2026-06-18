@@ -5246,86 +5246,112 @@ export const handler = async (event, context) => {
           const NOTE_WINDOW_MS    = 30 * 24 * 60 * 60 * 1000;
           const nowMs = Date.now();
 
-          // Use v3 CRM search (not deprecated v1) — returns full data for emails, meetings, notes.
-          // For each contact: 3 parallel searches (email, meeting, note), limit:1, sorted by most recent.
-          // 10 contacts × 3 calls in parallel = 30 simultaneous API calls per sub-batch (~300ms).
-          const ENG_BATCH = 10;
-          for (let bi = 0; bi < contactsNeedingEngagements.length; bi += ENG_BATCH) {
-            const chunk = contactsNeedingEngagements.slice(bi, bi + ENG_BATCH);
-            await Promise.all(chunk.map(async contactId => {
-              try {
-                const since = new Date(nowMs - MEETING_WINDOW_MS).toISOString();  // 90 days
-                const sinceEmail = new Date(nowMs - EMAIL_WINDOW_MS).toISOString();  // 60 days
-                const sinceNote  = new Date(nowMs - NOTE_WINDOW_MS).toISOString();   // 30 days
+          // BATCH ENGAGEMENT LOOKUP — 4 API calls for the whole batch instead of 3×N calls.
+          //
+          // Strategy: search emails + meetings for ALL contacts in the batch at once
+          // using "associations.contact IN [ids]" filter. Then batch-read associations
+          // to map each result back to its contact. Winner = most recent per contact.
+          //
+          // 50 contacts → 4 total API calls (2 searches + 2 assoc batch reads)
+          // vs old approach → 150 calls (3 per contact). 37× fewer calls, no rate limits.
 
-                // Parallel: last email + last meeting + last note for this contact
-                const [emailRes, meetingRes, noteRes] = await Promise.all([
-                  hsPost(user.userId, "/crm/v3/objects/emails/search", {
-                    filterGroups: [{ filters: [
-                      { propertyName: "associations.contact", operator: "EQ",  value: contactId },
-                      { propertyName: "hs_timestamp",         operator: "GTE", value: sinceEmail },
-                    ]}],
-                    properties: ["hs_timestamp", "hubspot_owner_id"],
-                    sorts: [{ propertyName: "hs_timestamp", direction: "DESCENDING" }],
-                    limit: 1,
-                  }).catch(() => ({ results: [] })),
+          const since90  = new Date(nowMs - MEETING_WINDOW_MS).toISOString();
+          const since60  = new Date(nowMs - EMAIL_WINDOW_MS).toISOString();
+          const contactIdStrs = contactsNeedingEngagements.map(String);
 
-                  hsPost(user.userId, "/crm/v3/objects/meetings/search", {
-                    filterGroups: [{ filters: [
-                      { propertyName: "associations.contact",  operator: "EQ",  value: contactId },
-                      { propertyName: "hs_meeting_start_time", operator: "GTE", value: since },
-                    ]}],
-                    properties: ["hs_meeting_start_time", "hubspot_owner_id"],
-                    sorts: [{ propertyName: "hs_meeting_start_time", direction: "DESCENDING" }],
-                    limit: 1,
-                  }).catch(() => ({ results: [] })),
-
-                  hsPost(user.userId, "/crm/v3/objects/notes/search", {
-                    filterGroups: [{ filters: [
-                      { propertyName: "associations.contact", operator: "EQ",  value: contactId },
-                      { propertyName: "hs_timestamp",         operator: "GTE", value: sinceNote },
-                    ]}],
-                    properties: ["hs_timestamp", "hubspot_owner_id"],
-                    sorts: [{ propertyName: "hs_timestamp", direction: "DESCENDING" }],
-                    limit: 1,
-                  }).catch(() => ({ results: [] })),
-                ]);
-
-                // Build candidates from each type
-                const candidates = [];
-                const eRow = (emailRes.results   || [])[0];
-                const mRow = (meetingRes.results || [])[0];
-                const nRow = (noteRes.results    || [])[0];
-
-                const emailTs   = eRow?.properties?.hs_timestamp         ? new Date(eRow.properties.hs_timestamp).getTime()          : 0;
-                const meetingTs = mRow?.properties?.hs_meeting_start_time ? new Date(mRow.properties.hs_meeting_start_time).getTime() : 0;
-                const noteTs    = nRow?.properties?.hs_timestamp          ? new Date(nRow.properties.hs_timestamp).getTime()          : 0;
-
-                if (emailTs   > 0 && eRow?.properties?.hubspot_owner_id) candidates.push({ ownerId: String(eRow.properties.hubspot_owner_id),  ts: emailTs,   engType: 'email'   });
-                if (meetingTs > 0 && mRow?.properties?.hubspot_owner_id) candidates.push({ ownerId: String(mRow.properties.hubspot_owner_id),  ts: meetingTs, engType: 'meeting' });
-                if (noteTs    > 0 && nRow?.properties?.hubspot_owner_id) candidates.push({ ownerId: String(nRow.properties.hubspot_owner_id),  ts: noteTs,    engType: 'note'    });
-
-                // Winner = most recent engagement, not excluded
-                const winner = candidates
-                  .filter(c => ALL_OWNER_ID_TO_NAME[c.ownerId] && !EXCLUDED_FROM_PRIMARY.has(c.ownerId))
-                  .sort((a, b) => b.ts - a.ts)[0] || null;
-
-                const ownerName = winner ? (ALL_OWNER_ID_TO_NAME[winner.ownerId] || null) : null;
-                const contactOwnerId = String(contactMap[contactId]?.properties?.hubspot_owner_id || '');
-
-                engagementOwners[contactId] = {
-                  ownerId:          winner?.ownerId   || null,
-                  ownerName,
-                  engType:          winner?.engType   || null,
-                  ts:               winner?.ts        || 0,
-                  hasAnyEngagement: candidates.length > 0,
-                  ownerHasEngaged:  candidates.some(c => c.ownerId === contactOwnerId),
-                };
-              } catch {
-                engagementOwners[contactId] = { ownerId:null, ownerName:null, engType:null, ts:0, hasAnyEngagement:false, ownerHasEngaged:false };
+          // helper: batch-read associations, returns map engId → contactId
+          const batchAssoc = async (objectType, ids) => {
+            const map = {};
+            for (let i = 0; i < ids.length; i += 100) {
+              const chunk = ids.slice(i, i + 100);
+              const res = await hsPost(user.userId,
+                `/crm/v4/associations/${objectType}/contacts/batch/read`,
+                { inputs: chunk.map(id => ({ id })) }
+              ).catch(() => ({ results: [] }));
+              for (const r of (res.results || [])) {
+                const toId = (r.to || [])[0]?.toObjectId || (r.to || [])[0]?.id;
+                if (r.from?.id && toId) map[String(r.from.id)] = String(toId);
               }
-            }));
-            if (bi + ENG_BATCH < contactsNeedingEngagements.length) await new Promise(r => setTimeout(r, 100));
+              if (i + 100 < ids.length) await new Promise(r => setTimeout(r, 100));
+            }
+            return map;
+          };
+
+          try {
+            // Two parallel searches: emails (60d) + meetings (90d)
+            const [emailRes, meetingRes] = await Promise.all([
+              hsPost(user.userId, "/crm/v3/objects/emails/search", {
+                filterGroups: [{ filters: [
+                  { propertyName: "associations.contact", operator: "IN",  values: contactIdStrs },
+                  { propertyName: "hs_timestamp",         operator: "GTE", value: since60 },
+                ]}],
+                properties: ["hs_timestamp", "hubspot_owner_id"],
+                sorts: [{ propertyName: "hs_timestamp", direction: "DESCENDING" }],
+                limit: 200,
+              }).catch(() => ({ results: [] })),
+
+              hsPost(user.userId, "/crm/v3/objects/meetings/search", {
+                filterGroups: [{ filters: [
+                  { propertyName: "associations.contact",  operator: "IN",  values: contactIdStrs },
+                  { propertyName: "hs_meeting_start_time", operator: "GTE", value: since90 },
+                ]}],
+                properties: ["hs_meeting_start_time", "hubspot_owner_id"],
+                sorts: [{ propertyName: "hs_meeting_start_time", direction: "DESCENDING" }],
+                limit: 200,
+              }).catch(() => ({ results: [] })),
+            ]);
+
+            // Batch-read associations to map each result → contact ID
+            const emailIds   = (emailRes.results   || []).map(r => String(r.id));
+            const meetingIds = (meetingRes.results || []).map(r => String(r.id));
+
+            const [emailAssoc, meetingAssoc] = await Promise.all([
+              emailIds.length   > 0 ? batchAssoc("emails",   emailIds)   : Promise.resolve({}),
+              meetingIds.length > 0 ? batchAssoc("meetings", meetingIds) : Promise.resolve({}),
+            ]);
+
+            // Build per-contact winner map
+            const winnerByContact = {};
+
+            const consider = (contactId, ownerId, ts, engType) => {
+              if (!contactId || !ownerId) return;
+              const ownerName = ALL_OWNER_ID_TO_NAME[ownerId];
+              if (!ownerName || EXCLUDED_FROM_PRIMARY.has(ownerId)) return;
+              const prev = winnerByContact[contactId];
+              if (!prev || ts > prev.ts) {
+                winnerByContact[contactId] = { ownerId, ownerName, ts, engType };
+              }
+            };
+
+            for (const e of (emailRes.results || [])) {
+              const contactId = emailAssoc[String(e.id)];
+              const ts = e.properties?.hs_timestamp ? new Date(e.properties.hs_timestamp).getTime() : 0;
+              if (ts > 0) consider(contactId, String(e.properties?.hubspot_owner_id || ''), ts, 'email');
+            }
+            for (const m of (meetingRes.results || [])) {
+              const contactId = meetingAssoc[String(m.id)];
+              const ts = m.properties?.hs_meeting_start_time ? new Date(m.properties.hs_meeting_start_time).getTime() : 0;
+              if (ts > 0) consider(contactId, String(m.properties?.hubspot_owner_id || ''), ts, 'meeting');
+            }
+
+            // Populate engagementOwners for each contact in batch
+            for (const contactId of contactsNeedingEngagements) {
+              const winner = winnerByContact[contactId] || null;
+              const contactOwnerId = String(contactMap[contactId]?.properties?.hubspot_owner_id || '');
+              engagementOwners[contactId] = {
+                ownerId:          winner?.ownerId   || null,
+                ownerName:        winner?.ownerName || null,
+                engType:          winner?.engType   || null,
+                ts:               winner?.ts        || 0,
+                hasAnyEngagement: !!winner,
+                ownerHasEngaged:  !!(winner && winner.ownerId === contactOwnerId),
+              };
+            }
+          } catch (err) {
+            // Fallback: no engagement data, let Step 5 use assigned_bdr
+            for (const contactId of contactsNeedingEngagements) {
+              engagementOwners[contactId] = { ownerId:null, ownerName:null, engType:null, ts:0, hasAnyEngagement:false, ownerHasEngaged:false };
+            }
           }
         }
 
