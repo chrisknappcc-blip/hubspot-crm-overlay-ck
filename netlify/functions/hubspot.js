@@ -5151,8 +5151,10 @@ export const handler = async (event, context) => {
           // (not numeric offset) — avoids the 10k result cap on paginated searches.
           // Normal run: createdate ASC + numeric after works fine since NOT_HAS_PROPERTY
           // keeps the set below 10k.
+          // ASCENDING: processed contacts get new lastmodifieddate (move to end of sort)
+          // so each Force Rerun naturally picks up the next unprocessed 10k.
           const repSortProp = forceRefresh ? "lastmodifieddate" : "createdate";
-          const repSortDir  = forceRefresh ? "DESCENDING" : "ASCENDING";
+          const repSortDir  = "ASCENDING";
 
           const repSearchData = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
             filterGroups: [
