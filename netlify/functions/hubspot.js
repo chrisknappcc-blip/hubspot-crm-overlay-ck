@@ -5246,55 +5246,86 @@ export const handler = async (event, context) => {
           const NOTE_WINDOW_MS    = 30 * 24 * 60 * 60 * 1000;
           const nowMs = Date.now();
 
-          const ENG_BATCH = 10;  // 10 parallel calls; limit:3 keeps each call fast
+          // Use v3 CRM search (not deprecated v1) — returns full data for emails, meetings, notes.
+          // For each contact: 3 parallel searches (email, meeting, note), limit:1, sorted by most recent.
+          // 10 contacts × 3 calls in parallel = 30 simultaneous API calls per sub-batch (~300ms).
+          const ENG_BATCH = 10;
           for (let bi = 0; bi < contactsNeedingEngagements.length; bi += ENG_BATCH) {
             const chunk = contactsNeedingEngagements.slice(bi, bi + ENG_BATCH);
             await Promise.all(chunk.map(async contactId => {
               try {
-                const engResp = await hsGet(user.userId,
-                  `/engagements/v1/engagements/associated/CONTACT/${contactId}/paged`,
-                  { limit: 3 }   // only need most recent — 3 is enough to find the right owner
-                ).catch(() => ({ results: [] }));
+                const since = new Date(nowMs - MEETING_WINDOW_MS).toISOString();  // 90 days
+                const sinceEmail = new Date(nowMs - EMAIL_WINDOW_MS).toISOString();  // 60 days
+                const sinceNote  = new Date(nowMs - NOTE_WINDOW_MS).toISOString();   // 30 days
 
-                const engRows = engResp.results || [];
-                let bestMeeting = null, bestEmail = null, bestNote = null;
-                let hasAnyEngagement = false, ownerHasEngaged = false;
+                // Parallel: last email + last meeting + last note for this contact
+                const [emailRes, meetingRes, noteRes] = await Promise.all([
+                  hsPost(user.userId, "/crm/v3/objects/emails/search", {
+                    filterGroups: [{ filters: [
+                      { propertyName: "associations.contact", operator: "EQ",  value: contactId },
+                      { propertyName: "hs_timestamp",         operator: "GTE", value: sinceEmail },
+                    ]}],
+                    properties: ["hs_timestamp", "hubspot_owner_id"],
+                    sorts: [{ propertyName: "hs_timestamp", direction: "DESCENDING" }],
+                    limit: 1,
+                  }).catch(() => ({ results: [] })),
+
+                  hsPost(user.userId, "/crm/v3/objects/meetings/search", {
+                    filterGroups: [{ filters: [
+                      { propertyName: "associations.contact",  operator: "EQ",  value: contactId },
+                      { propertyName: "hs_meeting_start_time", operator: "GTE", value: since },
+                    ]}],
+                    properties: ["hs_meeting_start_time", "hubspot_owner_id"],
+                    sorts: [{ propertyName: "hs_meeting_start_time", direction: "DESCENDING" }],
+                    limit: 1,
+                  }).catch(() => ({ results: [] })),
+
+                  hsPost(user.userId, "/crm/v3/objects/notes/search", {
+                    filterGroups: [{ filters: [
+                      { propertyName: "associations.contact", operator: "EQ",  value: contactId },
+                      { propertyName: "hs_timestamp",         operator: "GTE", value: sinceNote },
+                    ]}],
+                    properties: ["hs_timestamp", "hubspot_owner_id"],
+                    sorts: [{ propertyName: "hs_timestamp", direction: "DESCENDING" }],
+                    limit: 1,
+                  }).catch(() => ({ results: [] })),
+                ]);
+
+                // Build candidates from each type
+                const candidates = [];
+                const eRow = (emailRes.results   || [])[0];
+                const mRow = (meetingRes.results || [])[0];
+                const nRow = (noteRes.results    || [])[0];
+
+                const emailTs   = eRow?.properties?.hs_timestamp         ? new Date(eRow.properties.hs_timestamp).getTime()          : 0;
+                const meetingTs = mRow?.properties?.hs_meeting_start_time ? new Date(mRow.properties.hs_meeting_start_time).getTime() : 0;
+                const noteTs    = nRow?.properties?.hs_timestamp          ? new Date(nRow.properties.hs_timestamp).getTime()          : 0;
+
+                if (emailTs   > 0 && eRow?.properties?.hubspot_owner_id) candidates.push({ ownerId: String(eRow.properties.hubspot_owner_id),  ts: emailTs,   engType: 'email'   });
+                if (meetingTs > 0 && mRow?.properties?.hubspot_owner_id) candidates.push({ ownerId: String(mRow.properties.hubspot_owner_id),  ts: meetingTs, engType: 'meeting' });
+                if (noteTs    > 0 && nRow?.properties?.hubspot_owner_id) candidates.push({ ownerId: String(nRow.properties.hubspot_owner_id),  ts: noteTs,    engType: 'note'    });
+
+                // Winner = most recent engagement, not excluded
+                const winner = candidates
+                  .filter(c => ALL_OWNER_ID_TO_NAME[c.ownerId] && !EXCLUDED_FROM_PRIMARY.has(c.ownerId))
+                  .sort((a, b) => b.ts - a.ts)[0] || null;
+
+                const ownerName = winner ? (ALL_OWNER_ID_TO_NAME[winner.ownerId] || null) : null;
                 const contactOwnerId = String(contactMap[contactId]?.properties?.hubspot_owner_id || '');
 
-                for (const e of engRows) {
-                  const eng     = e.engagement  || {};
-                  const type    = eng.type;
-                  const ownerId = String(eng.ownerId || '');
-                  const ts      = eng.timestamp || eng.createdAt || 0;
-                  const ownerName = ALL_OWNER_ID_TO_NAME[ownerId];
-                  if (!ownerName || EXCLUDED_FROM_PRIMARY.has(ownerId)) continue;
-                  hasAnyEngagement = true;
-                  if (ownerId === contactOwnerId) ownerHasEngaged = true;
-                  const age = nowMs - ts;
-                  if (type === 'MEETING' && age <= MEETING_WINDOW_MS) {
-                    if (!bestMeeting || ts > bestMeeting.ts) bestMeeting = { ownerId, ownerName, ts, engType:'meeting' };
-                  }
-                  if (type === 'EMAIL' && age <= EMAIL_WINDOW_MS) {
-                    const dir = ((e.metadata||{}).direction||(e.metadata||{}).emailType||'').toUpperCase();
-                    if (dir !== 'INCOMING_EMAIL' && dir !== 'INCOMING') {
-                      if (!bestEmail || ts > bestEmail.ts) bestEmail = { ownerId, ownerName, ts, engType:'email' };
-                    }
-                  }
-                  if ((type === 'NOTE' || type === 'CALL') && age <= NOTE_WINDOW_MS) {
-                    if (!bestNote || ts > bestNote.ts) bestNote = { ownerId, ownerName, ts, engType: type === 'CALL' ? 'call' : 'note' };
-                  }
-                }
-                const winner = bestMeeting || bestEmail || bestNote;
                 engagementOwners[contactId] = {
-                  ownerId: winner?.ownerId||null, ownerName: winner?.ownerName||null,
-                  engType: winner?.engType||null, ts: winner?.ts||0,
-                  hasAnyEngagement, ownerHasEngaged,
+                  ownerId:          winner?.ownerId   || null,
+                  ownerName,
+                  engType:          winner?.engType   || null,
+                  ts:               winner?.ts        || 0,
+                  hasAnyEngagement: candidates.length > 0,
+                  ownerHasEngaged:  candidates.some(c => c.ownerId === contactOwnerId),
                 };
               } catch {
                 engagementOwners[contactId] = { ownerId:null, ownerName:null, engType:null, ts:0, hasAnyEngagement:false, ownerHasEngaged:false };
               }
             }));
-            if (bi + ENG_BATCH < contactsNeedingEngagements.length) await new Promise(r => setTimeout(r, 50));
+            if (bi + ENG_BATCH < contactsNeedingEngagements.length) await new Promise(r => setTimeout(r, 100));
           }
         }
 
