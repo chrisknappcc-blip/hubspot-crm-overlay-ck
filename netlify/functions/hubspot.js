@@ -5147,13 +5147,20 @@ export const handler = async (event, context) => {
                    { propertyName: "primary_outreach_rep", operator: "NOT_HAS_PROPERTY" }]
                 : [{ propertyName: "hubspot_owner_id", operator: "EQ", value: repOwnerId }])
             : null;
+          // For forceRefresh: sort by lastmodifieddate DESC and use HubSpot's cursor
+          // (not numeric offset) — avoids the 10k result cap on paginated searches.
+          // Normal run: createdate ASC + numeric after works fine since NOT_HAS_PROPERTY
+          // keeps the set below 10k.
+          const repSortProp = forceRefresh ? "lastmodifieddate" : "createdate";
+          const repSortDir  = forceRefresh ? "DESCENDING" : "ASCENDING";
+
           const repSearchData = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
             filterGroups: [
               { filters: repBaseFilters },
               ...(repOwnerFilters ? [{ filters: repOwnerFilters }] : []),
             ],
             properties: ["hs_object_id"],
-            sorts: [{ propertyName: "createdate", direction: "ASCENDING" }],
+            sorts: [{ propertyName: repSortProp, direction: repSortDir }],
             limit: batchSize,
             after: batchStart > 0 ? (repNextCursor || String(batchStart)) : undefined,
           }).catch(() => ({ results: [], total: 0 }));
@@ -5264,7 +5271,7 @@ export const handler = async (event, context) => {
             // John Hansel excluded (EXCLUDED_FROM_PRIMARY)
           ];
           const since90 = new Date(nowMs - MEETING_WINDOW_MS).toISOString();
-          const since60 = new Date(nowMs - EMAIL_WINDOW_MS).toISOString();
+          const since14d = new Date(nowMs - 14 * 24 * 60 * 60 * 1000).toISOString(); // emails: 14d window only
 
           // Fetch all pages of an engagement type for a given owner
           const fetchOwnerEngs = async (path, ownerProp, tsKey, since, ownerId) => {
@@ -5322,7 +5329,7 @@ export const handler = async (event, context) => {
             // Fetch emails + meetings for all AEs in parallel
             const [emailEngs, meetingEngs] = await Promise.all([
               Promise.all(AE_OWNERS.map(ae =>
-                fetchOwnerEngs("/crm/v3/objects/emails/search",    "hs_timestamp",         "hs_timestamp",         since60, ae.id)
+                fetchOwnerEngs("/crm/v3/objects/emails/search",    "hs_timestamp",         "hs_timestamp",         since14d, ae.id)
                   .then(rows => rows.map(r => ({ ...r, ownerName: ae.name })))
               )).then(arr => arr.flat()),
 
