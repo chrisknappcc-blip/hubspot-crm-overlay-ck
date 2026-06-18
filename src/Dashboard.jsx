@@ -1207,11 +1207,11 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
     let totalUpdated = 0, totalSkipped = 0, grandTotal = 0, batchStart = 0
     try {
       while (true) {
-        // batchSize 50: 4 total API calls per batch (2 batch searches + 2 assoc reads)
+        // batchSize 100: reverse lookup pre-builds AE map once per call (~2-3s), then contact lookup is instant
         const res = await safeFetch(`/api/hubspot/sync-primary-rep`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ batchStart, batchSize: 50, fullCrm: false, dryRun: false, repFilter: myRepName, forceRefresh }),
+          body: JSON.stringify({ batchStart, batchSize: 100, fullCrm: false, dryRun: false, repFilter: myRepName, forceRefresh }),
         })
         totalUpdated += res.updated  || 0
         totalSkipped += res.skipped  || 0
@@ -1223,7 +1223,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
           updated:  totalUpdated,
           skipped:  totalSkipped,
           total:    grandTotal,
-          progress: `Batch ${Math.ceil(batchStart/50)+1} — ${Math.min(batchStart+50,grandTotal||batchStart+50).toLocaleString()} of ${grandTotal ? grandTotal.toLocaleString() : '…'} contacts processed · ${totalUpdated} updated`,
+          progress: `Batch ${Math.ceil(batchStart/100)+1} — ${Math.min(batchStart+100,grandTotal||batchStart+100).toLocaleString()} of ${grandTotal ? grandTotal.toLocaleString() : '…'} contacts processed · ${totalUpdated} updated`,
         })
         if (res.done || !res.hasMore) break
         batchStart = res.nextBatch ?? (batchStart + 25)
