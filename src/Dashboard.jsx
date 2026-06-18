@@ -1207,7 +1207,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
     let totalUpdated = 0, totalSkipped = 0, grandTotal = 0, batchStart = 0
     try {
       while (true) {
-        // batchSize 50: engagement API runs per contact (limit:3, 10 parallel) — ~2.5s per batch
+        // batchSize 50: 4 total API calls per batch (2 batch searches + 2 assoc reads)
         const res = await safeFetch(`/api/hubspot/sync-primary-rep`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
