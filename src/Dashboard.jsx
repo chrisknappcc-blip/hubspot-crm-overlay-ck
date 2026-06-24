@@ -1106,6 +1106,22 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
   const [botSignals, setBotSignals]   = useState([])
   const [contacts, setContacts]           = useState([])
   const [contactsTotal, setContactsTotal] = useState(0)
+  const [repSyncCoverage, setRepSyncCoverage] = useState({ remaining: null, total: null, loading: false })
+
+  const fetchSyncCoverage = async (repName) => {
+    if (!repName) return
+    setRepSyncCoverage(c => ({ ...c, loading: true }))
+    try {
+      const [totalRes, remainRes] = await Promise.all([
+        safeFetch(`/api/hubspot/sync-primary-rep`, { method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ batchSize:1, dryRun:true, repFilter:repName, forceRefresh:true }) }),
+        safeFetch(`/api/hubspot/sync-primary-rep`, { method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ batchSize:1, dryRun:true, repFilter:repName, forceRefresh:false }) }),
+      ])
+      setRepSyncCoverage({ remaining: remainRes.total ?? null, total: totalRes.total ?? null, loading: false })
+    } catch { setRepSyncCoverage(c => ({ ...c, loading: false })) }
+  }
+
   const [repSyncState, setRepSyncState]   = useState(() => {
     try {
       const saved = sessionStorage.getItem('repSyncState')
@@ -1230,6 +1246,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
       }
       saveRepSyncState({ running: false, done: true, updated: totalUpdated, skipped: totalSkipped, total: grandTotal,
         progress: `Done — ${totalUpdated.toLocaleString()} updated, ${totalSkipped.toLocaleString()} unchanged out of ${grandTotal.toLocaleString()} contacts` })
+      fetchSyncCoverage(myRepName)
     } catch(e) {
       saveRepSyncState({ running: false, done: false, updated: totalUpdated, skipped: totalSkipped, total: grandTotal,
         progress: `Error after ${totalUpdated} updates: ${e.message}` })
@@ -1782,6 +1799,8 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
     } catch { /* polling errors are silent */ }
   }, [lastPollTime, filterBdr])
 
+  useEffect(() => { if (myRepName) fetchSyncCoverage(myRepName) }, [myRepName])  // eslint-disable-line
+
   useEffect(() => { fetchData() }, [fetchData])
   useEffect(() => { fetchTodos(); syncTodos() }, [fetchTodos, syncTodos])
 
@@ -2099,15 +2118,38 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                           Primary Outreach Rep Sync
                         </div>
                         <div style={{ fontSize:11, color:'var(--text-tertiary)' }}>
-                          {repSyncState.done
-                            ? `✓ Complete — ${repSyncState.updated.toLocaleString()} updated · ${repSyncState.skipped.toLocaleString()} unchanged · ${repSyncState.total.toLocaleString()} ${syncMode === 'fullcrm' ? 'CRM' : 'Gold'} contacts`
-                            : repSyncState.running
+                          {repSyncState.running
                             ? repSyncState.progress
+                            : repSyncState.done
+                            ? `✓ Complete — ${repSyncState.updated.toLocaleString()} updated · ${repSyncState.skipped.toLocaleString()} unchanged`
                             : 'Sets primary_outreach_rep based on most recent engagement owner. AE activity overrides BDR. Existing customers and Do Not Contact skipped.'}
                         </div>
+                        {/* Coverage bar */}
+                        {repSyncCoverage.total > 0 && (
+                          <div style={{ marginTop:5 }}>
+                            <div style={{ display:'flex', justifyContent:'space-between', fontSize:10, color:'var(--text-tertiary)', marginBottom:3 }}>
+                              <span>
+                                {repSyncCoverage.loading ? 'Checking…' :
+                                 repSyncCoverage.remaining === 0 ? '✓ All contacts stamped' :
+                                 `${(repSyncCoverage.total - (repSyncCoverage.remaining||0)).toLocaleString()} of ${repSyncCoverage.total.toLocaleString()} stamped`}
+                              </span>
+                              {!repSyncCoverage.loading && repSyncCoverage.remaining > 0 && (
+                                <span style={{ color:'var(--accent)' }}>{repSyncCoverage.remaining.toLocaleString()} remaining</span>
+                              )}
+                            </div>
+                            <div style={{ height:4, background:'var(--border)', borderRadius:2, overflow:'hidden' }}>
+                              <div style={{
+                                height:'100%', borderRadius:2,
+                                background: repSyncCoverage.remaining === 0 ? 'var(--green)' : 'var(--accent)',
+                                width: `${Math.round(((repSyncCoverage.total - (repSyncCoverage.remaining||0)) / repSyncCoverage.total) * 100)}%`,
+                                transition: 'width 0.5s ease',
+                              }} />
+                            </div>
+                          </div>
+                        )}
                       </div>
                       {repSyncState.running && (
-                        <div style={{ fontSize:11, color:'var(--accent)' }}>
+                        <div style={{ fontSize:11, color:'var(--accent)', flexShrink:0 }}>
                           {repSyncState.total > 0 ? `${Math.round(((repSyncState.updated+repSyncState.skipped)/repSyncState.total)*100)}%` : '…'}
                         </div>
                       )}
