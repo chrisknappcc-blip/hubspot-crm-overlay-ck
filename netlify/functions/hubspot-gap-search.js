@@ -457,14 +457,18 @@ export default async function handler(req) {
     // try each authority level in sequence until something is found.
     const searchKeyword = PERSONA_SEARCH_KEYWORDS[persona] || persona.toLowerCase();
     const orgShort = companyName.replace(/ healthcare$/i,'').replace(/ health system$/i,'').replace(/ health$/i,'').trim();
+    // Use quotes around searchKeyword to avoid generic word matches (e.g., "patient access"
+    // vs patient portal access pages). ZoomInfo and LinkedIn are critical for director-level.
+    const kw = `"${searchKeyword}"`;
     const deterministicQueries = [
       `${companyName} site:theorg.com`,
       `site:${domain} ${searchKeyword}`,
-      `${companyName} ${searchKeyword}`,
-      `${orgShort} ${searchKeyword} officer`,
-      `${orgShort} ${searchKeyword} vice president`,
-      `${orgShort} ${searchKeyword} director`,
-      `${orgShort} ${searchKeyword} manager`,
+      `${companyName} ${kw}`,
+      `${orgShort} ${kw} officer OR "vice president"`,
+      `${orgShort} ${kw} director`,
+      `${orgShort} ${kw} director site:zoominfo.com`,
+      `${orgShort} ${kw} director site:linkedin.com`,
+      `${orgShort} ${kw} manager site:zoominfo.com`,
     ].map((q, i) => `${i + 1}. ${q}`).join('\n');
 
     const systemPrompt = `You are an expert healthcare executive researcher embedded in a CRM intelligence platform for Care Continuity, a healthcare SaaS company. Your job is: given a PERSONA ROLE and an org, determine whether an existing CRM contact already functionally covers it, and if not, find who currently holds it.
