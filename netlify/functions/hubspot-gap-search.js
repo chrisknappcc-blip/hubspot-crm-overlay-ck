@@ -274,6 +274,34 @@ const PERSONA_DEFINITIONS = {
 };
 
 
+// ─── Persona Search Keywords ─────────────────────────────────────────────────
+// Short keyword(s) used to build deterministic search queries for each persona.
+// These are what a human would type into Google: "org quality director"
+const PERSONA_SEARCH_KEYWORDS = {
+  "Access/Patient Access":  "patient access",
+  "Ambulatory/Urgent Care": "ambulatory urgent care",
+  "Business Development":   "business development",
+  "Case Management":        "case management care coordination",
+  "Chief Clinical Officer": "chief clinical officer",
+  "Clinical Operations":    "clinical operations",
+  "Emergency Department":   "emergency department",
+  "Executive/Leadership":   "executive leadership",
+  "Finance":                "finance revenue cycle",
+  "Innovation":             "innovation digital",
+  "Medical Group":          "medical group physician enterprise",
+  "Medical":                "medical informatics clinical informatics",
+  "Medical Officer":        "chief medical officer",
+  "Nursing Officer":        "nursing chief nurse",
+  "Operating Officer":      "operations chief operating",
+  "Patient Experience":     "patient experience",
+  "Physician Executive":    "physician enterprise medical staff",
+  "Population Health":      "population health value based care",
+  "Quality Officer":        "quality patient safety",
+  "Service Line":           "service line oncology cardiology",
+  "Strategy":               "strategy planning",
+  "Value Based Care":       "value based care ACO",
+};
+
 // ─── CRM Contact Pre-Check ───────────────────────────────────────────────────
 // Deterministic keyword matching so the model can't reason past explicit rules.
 // Returns the matching contact object, or null.
@@ -425,6 +453,20 @@ export default async function handler(req) {
       ? `\n## ORG LEADERSHIP PAGE (${leadershipPage.url})\nThis is the actual content from the organization's own website. Use it as the HIGHEST-CONFIDENCE source — if a name appears here with a matching title, it is almost certainly current.\n\n${leadershipPage.text}\n`
       : '';
 
+    // Generate deterministic search queries — same logic a human uses:
+    // try each authority level in sequence until something is found.
+    const searchKeyword = PERSONA_SEARCH_KEYWORDS[persona] || persona.toLowerCase();
+    const orgShort = companyName.replace(/ healthcare$/i,'').replace(/ health system$/i,'').replace(/ health$/i,'').trim();
+    const deterministicQueries = [
+      `site:${domain} ${searchKeyword}`,
+      `${companyName} ${searchKeyword}`,
+      `${orgShort} ${searchKeyword} officer`,
+      `${orgShort} ${searchKeyword} vice president`,
+      `${orgShort} ${searchKeyword} director`,
+      `${orgShort} ${searchKeyword} manager`,
+      `${orgShort} ${searchKeyword} site:linkedin.com OR site:theorg.com`,
+    ].map((q, i) => `${i + 1}. ${q}`).join('\n');
+
     const systemPrompt = `You are an expert healthcare executive researcher embedded in a CRM intelligence platform for Care Continuity, a healthcare SaaS company. Your job is: given a PERSONA ROLE and an org, determine whether an existing CRM contact already functionally covers it, and if not, find who currently holds it.
 
 ## FUNCTIONAL TITLE EQUIVALENCE (critical — memorize these)
@@ -517,22 +559,16 @@ If ANY existing contact functionally covers ${persona}:
 ${leadershipContext ? "Leadership page content was pre-fetched above — check it for a match before additional searching." : "No leadership page was pre-fetched."}
 Use a MAXIMUM of 3 web searches. Stop as soon as you find a strong match.
 
-Search order — org website first, then external, then cascade hierarchy:
-1. site:${domainStr} ${persona} OR site:${domainStr} ${(definition?.titles||[])[0]||persona}
-   → This surfaces the org's own leadership bio pages. If a name appears here, IT IS THE ANSWER — do not override with external sources.
-   → Try fetching the bio page directly: ${domainStr}/about-us/leadership/{firstname-lastname}
+## EXACT SEARCHES — run these in order, stop at the first strong match
+${deterministicQueries}
 
-2. ${companyName} ${persona} (simple, no quotes — finds The Org, ZoomInfo, LinkedIn)
-   → If this conflicts with search 1, trust search 1 (org website wins).
-
-3. ONLY if searches 1-2 return nothing: cascade down the title hierarchy
-   → Try Director-level: "${companyName}" "Director" "${persona}" OR "${companyName}" director ${persona.toLowerCase()}
-   → Many orgs fill these functions at Director level with no VP above them.
-
-When a search result snippet shows a name + title from theorg.com, zoominfo.com, or linkedin.com, that is useful signal — but always check if the org's own website confirms it.
-If the org website is mentioned in any result, fetch the bio page: ${domainStr}/about-us/leadership/{name}
-
-Do NOT use year restrictions in queries — they reduce coverage.
+Rules:
+- Run search 1 first (org website). If it returns a bio page with a matching title, that person IS the answer — fetch their bio page and stop.
+- If search 1 returns nothing useful, run search 2, then 3, then 4, etc.
+- Stop as soon as you find a current person with a relevant title at ${companyName}.
+- Do NOT skip levels. A Director of Patient Safety IS a valid result.
+- If the org website (\`site:${domainStr}\`) confirms a name, it beats any other source.
+- When a search result shows a name + title, try fetching their bio page at ${domainStr}/about-us/leadership/{firstname-lastname}
 
 ## OUTPUT
 Return ONLY valid JSON, no markdown, no explanation:
