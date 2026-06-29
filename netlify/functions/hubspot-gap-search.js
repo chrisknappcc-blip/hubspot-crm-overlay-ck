@@ -654,7 +654,7 @@ Return ONLY valid JSON, no markdown, no explanation:
         body: JSON.stringify({
           model:      "claude-haiku-4-5-20251001",
           max_tokens: 1500,
-          system: "You are a search executor. Run the two search queries given. Return the results as text. Nothing else.",
+          system: "You are a search executor. Run the two search queries. Look especially for: (1) their current employer on LinkedIn, (2) whether they appear on the org website. Return the raw results as text.",
           tools: [{ type: "web_search_20250305", name: "web_search" }],
           messages: [{ role: "user", content:
             `Run these two verification searches for ${candidateName}:\n` +
@@ -684,7 +684,7 @@ Return ONLY valid JSON, no markdown, no explanation:
         body: JSON.stringify({
           model:      "claude-haiku-4-5-20251001",
           max_tokens: 800,
-          system: "You are a CRM data validator. Given a candidate finding and verification search results, output the final JSON. If verification shows the person now works elsewhere, set name to null and confidence to low.",
+          system: "You are a CRM data validator. Output final JSON. Rule: ONLY set name to null if verification shows the person NOW works at a DIFFERENT org. If verification is inconclusive, keep the name but set confidence to medium and add unverified note. Do not null just because LinkedIn search returned no results.",
           messages: [{ role: "user", content: finalPrompt }],
         }),
       });
