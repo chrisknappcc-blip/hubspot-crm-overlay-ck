@@ -425,55 +425,102 @@ export default async function handler(req) {
       ? `\n## ORG LEADERSHIP PAGE (${leadershipPage.url})\nThis is the actual content from the organization's own website. Use it as the HIGHEST-CONFIDENCE source — if a name appears here with a matching title, it is almost certainly current.\n\n${leadershipPage.text}\n`
       : '';
 
-    const systemPrompt = `You are an expert healthcare executive researcher embedded in a CRM intelligence platform for Care Continuity, a healthcare SaaS company. Your job is to find the CURRENT person holding a specific leadership role at a health system.
+    const systemPrompt = `You are an expert healthcare executive researcher embedded in a CRM intelligence platform for Care Continuity, a healthcare SaaS company. Your job is: given a PERSONA ROLE and an org, determine whether an existing CRM contact already functionally covers it, and if not, find who currently holds it.
 
-You have deep knowledge of healthcare org structures:
-- Large health systems (>1000 beds) typically have all C-suite roles filled
-- Titles are non-standard — "VP Ambulatory Chief Medical Officer, Multispecialty Services" is an Ambulatory/Urgent Care role
-- Role function matters more than exact title — reason about what the person actually does
-- People stay in roles for 3-10 years — recent hires are more likely to be correct than decade-old results
-- IGNORE any source older than 2022 — healthcare leadership turns over frequently
+## FUNCTIONAL TITLE EQUIVALENCE (critical — memorize these)
+These non-standard titles FUNCTIONALLY cover the persona listed. Do not search if an existing contact matches:
 
-Your output is used to populate a CRM. Accuracy is critical. A wrong result creates duplicate contacts and manual cleanup work. When in doubt, return null with confidence: "low" rather than guess.`;
+Operating Officer: Chief Operating Officer, COO, EVP Operations, SVP Operations, President & COO, EVP & COO, Chief Administrative Officer when they also have COO scope
+Nursing Officer:   Chief Nursing Officer, CNO, Chief Nursing Executive, CNE, Chief Nurse Executive, SVP Patient Care Services, EVP Patient Care
+Medical Officer:   Chief Medical Officer, CMO, SVP Medical Affairs, VP Medical Affairs, Chief of Medicine, Physician-in-Chief, EVP & CMO
+Strategy:          Chief Strategy Officer, CSO, SVP Strategy, VP Strategy, VP Strategic Planning, Chief Planning Officer
+Finance:           Chief Financial Officer, CFO, SVP Finance, VP Finance, VP Revenue Cycle, EVP Finance, EVP & CFO
+Innovation:        Chief Digital Officer, CDO, Chief Innovation Officer, CINO, Chief Transformation Officer, SVP Digital Transformation, VP Innovation
+Quality Officer:   Chief Quality Officer, CQO, Chief Patient Safety Officer, SVP Quality & Safety, VP Quality, VP Clinical Excellence
+Patient Experience: Chief Experience Officer, CXO, Chief Patient Experience Officer, SVP Patient Experience, VP Patient Experience, VP Service Excellence
+Business Development: Chief Business Development Officer, CBDO, Chief Growth Officer, SVP Business Development, VP Business Development, VP Strategic Partnerships
+Population Health:  Chief Population Health Officer, SVP Population Health, VP Population Health, VP Value-Based Care & Population Health
+Case Management:   VP Case Management, VP Care Management, VP Care Transitions, SVP Care Coordination, Chief Care Management Officer
+Value Based Care:  Chief Value Officer, SVP Value Based Care, VP Value Based Care, VP ACO, Chief ACO Officer, SVP Value Transformation
+Clinical Operations: Chief Clinical Operations Officer, VP Clinical Operations, VP Clinical Services, SVP Clinical Operations
+Physician Executive: Chief Physician Executive, CPE, Chief Physician Officer, SVP Physician Enterprise, VP Physician Integration
+Executive/Leadership: CEO, President, COO when acting as #2, EVP, SVP, Executive Director — any C-suite or senior VP not covered by a more specific persona
 
-    const userPrompt = `Find who currently holds the ${persona} role at ${companyName}.
+## EXISTING CONTACT EVALUATION (do this BEFORE searching)
+Before using any search tool, reason carefully: does any existing CRM contact FUNCTIONALLY cover this persona?
+- Do NOT rely on the target_persona field — it is often blank even when the contact covers the role
+- DO read their job title and reason about what they actually do
+- A "Chief Administrative Officer" covering COO duties = covers Operating Officer
+- A "Chief Nurse Executive" = covers Nursing Officer
+- A "Chief Digital Officer" = covers Innovation
+- An "EVP, Academic Group" at a teaching hospital = covers Executive/Leadership
+- If an existing contact functionally covers the role: set alreadyInCRM: true, return their name/title, skip web search
+
+## HEALTHCARE WEBSITE KNOWLEDGE
+Most health system leadership pages load exec names via JavaScript — the raw HTML may only show navigation, not names.
+Individual bio pages are usually at paths like:
+  domain.org/about-us/leadership/{firstname-lastname}
+  domain.org/about/leadership/{name}
+  domain.org/leadership/team/{name}
+When a specific name is mentioned in a search result snippet, note the URL pattern and use it directly.
+
+## ACCURACY RULES
+- Only use sources from 2022 or later. Titles change — a person who was CFO in 2019 may now be CEO.
+- If a search result says "former" or "previously" — ignore that person.
+- If the org website has an individual bio page for the exec — that is highest confidence.
+- When in doubt, return confidence: "low" rather than guess.
+
+Your output populates a CRM. A wrong result creates duplicates and manual cleanup.`;
+
+
+    const userPrompt = `## TASK
+Determine who currently holds the **${persona}** role at **${companyName}**.
+
 ${existingContactsText}${leadershipContext}
-## ROLE TO FIND
-Persona: ${persona}
-Standard Titles: "${titles}"
-Role Keywords: ${keywords}
-Organization Website: ${domainStr}
+## ROLE DETAILS
+Persona:         ${persona}
+Standard Titles: ${titles}
+Keywords:        ${keywords}
+Org Website:     ${domainStr}
 
-## YOUR TASK: FIND WHO CURRENTLY HOLDS THE ${persona} ROLE AT ${companyName}
-Search the web to identify the current person in this role.
-If the person you find is already in the existing contacts list above, set alreadyInCRM: true AND still include their full name and title in the output — do not return null for name.
+## STEP 1 — EVALUATE EXISTING CRM CONTACTS FIRST (no search needed if match found)
+Read each existing contact above. For each one:
+- What does their title indicate they actually DO at this organization?
+- Does their functional role cover **${persona}**? Use the functional equivalence rules in your system instructions.
+- A blank target_persona field does NOT mean the contact doesn't cover this role.
+- Titles can change — an "EVP Chief Administrative Officer" may now be COO.
 
-## WEB SEARCH STRATEGY
-${leadershipContext ? 'The ORG LEADERSHIP PAGE above is your PRIMARY source — check it first before searching.' : 'No leadership page was pre-fetched.'}
-Use a MAXIMUM of 2-3 web searches total. Do not search more than 3 times.
-1. ${leadershipContext ? `If the leadership page above already has a clear match: skip to output. Otherwise search:` : `Search:`} "${companyName}" leadership team 2024 OR 2025
-2. Search: "${companyName}" "${(definition?.titles||[])[0]||persona}" 2024 OR 2025
+If ANY existing contact functionally covers ${persona}:
+→ Set alreadyInCRM: true, use their name and CURRENT title (verify via web if title seems stale), skip to OUTPUT.
+
+## STEP 2 — WEB SEARCH (only if no existing contact covers this role)
+${leadershipContext ? "Leadership page content was pre-fetched above — check it for a match before additional searching." : "No leadership page was pre-fetched."}
+Use a MAXIMUM of 3 web searches. Stop as soon as you find a strong match.
+
+Search order:
+1. "${companyName}" "${(definition?.titles||[])[0] || persona}" 2024 OR 2025
+2. site:${domainStr} ${(definition?.titles||[])[0] || persona}
 3. ONLY if needed: "${companyName}" "${persona}" site:linkedin.com
 
-STOP as soon as you find a strong match. Only use sources from 2022 or later.
-If the org leadership page (above) has the answer, DO NOT search — just use it.
+When a search result mentions a person, try fetching their individual org bio page — it is the highest-confidence source. Bio pages are typically at URLs like: ${domainStr}/about-us/leadership/{firstname-lastname}
+
+Only use sources from 2022 or later. If a result says "former" or "previously" — skip that person.
 
 ## OUTPUT
-Return ONLY valid JSON with no markdown or explanation:
+Return ONLY valid JSON, no markdown, no explanation:
 {
   "name": "Full Name or null",
   "title": "Exact current title or null",
-  "linkedinUrl": "https://linkedin.com/in/... or null",
+  "linkedinUrl": "URL or null",
   "email": "email or null",
   "emailConfidence": "found/pattern/unknown",
   "sourceUrl": "URL where found or null",
-  "sourceYear": "2024 etc or null",
-  "confidence": "high/medium/low/existing_crm_contact",
+  "sourceYear": "2024 or null",
+  "confidence": "high/medium/low",
   "alreadyInCRM": true or false,
-  "titleFitReasoning": "Why this title fits ${persona}",
-  "notes": "How found, caveats"
-}`;
-
+  "titleFitReasoning": "One sentence: why this title covers ${persona}",
+  "notes": "Any caveats"
+}\`
     const response = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
