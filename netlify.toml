@@ -14,6 +14,11 @@ included_files = ["netlify/functions/utils/**"]
 timeout = 26
 
 [[redirects]]
+from = "/api/hubspot-gap-search"
+to = "/.netlify/functions/hubspot-gap-search"
+status = 200
+
+[[redirects]]
 from = "/api/hubspot/*"
 to = "/.netlify/functions/hubspot/:splat"
 status = 200
