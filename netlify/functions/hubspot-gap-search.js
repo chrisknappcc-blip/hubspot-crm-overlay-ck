@@ -458,13 +458,13 @@ export default async function handler(req) {
     const searchKeyword = PERSONA_SEARCH_KEYWORDS[persona] || persona.toLowerCase();
     const orgShort = companyName.replace(/ healthcare$/i,'').replace(/ health system$/i,'').replace(/ health$/i,'').trim();
     const deterministicQueries = [
+      `${companyName} site:theorg.com`,
       `site:${domain} ${searchKeyword}`,
       `${companyName} ${searchKeyword}`,
       `${orgShort} ${searchKeyword} officer`,
       `${orgShort} ${searchKeyword} vice president`,
       `${orgShort} ${searchKeyword} director`,
       `${orgShort} ${searchKeyword} manager`,
-      `${orgShort} ${searchKeyword} site:linkedin.com OR site:theorg.com`,
     ].map((q, i) => `${i + 1}. ${q}`).join('\n');
 
     const systemPrompt = `You are an expert healthcare executive researcher embedded in a CRM intelligence platform for Care Continuity, a healthcare SaaS company. Your job is: given a PERSONA ROLE and an org, determine whether an existing CRM contact already functionally covers it, and if not, find who currently holds it.
@@ -528,8 +528,11 @@ Emergency Department hierarchy: Chief Emergency Medicine → VP Emergency Servic
 If you find someone at Director level, return them — a Director of Patient Safety is a real contact, not a consolation prize.
 
 ## ACCURACY RULES
-- The org's own website overrides all other sources, even if the external source is more recent-looking.
-- If a result says "former" or "previously" — ignore that person.
+- theorg.com + the org's own website are ground truth — they override PDFs, news articles, coalition lists.
+- A single third-party document (FDA filing, conference list, news article) = confidence "medium" at best, never "high".
+- confidence "high" requires: org website bio page OR theorg.com showing this person in this role.
+- If a result says "former" or "previously" — ignore that person, keep searching.
+- If a function is outsourced to a vendor, still find who INSIDE the org manages it — search director level.
 - When in doubt, return confidence: "low" rather than guess.
 
 Your output populates a CRM. A wrong result creates duplicates and manual cleanup.`;
@@ -563,12 +566,14 @@ Use a MAXIMUM of 3 web searches. Stop as soon as you find a strong match.
 ${deterministicQueries}
 
 Rules:
-- Run search 1 first (org website). If it returns a bio page with a matching title, that person IS the answer — fetch their bio page and stop.
-- If search 1 returns nothing useful, run search 2, then 3, then 4, etc.
-- Stop as soon as you find a current person with a relevant title at ${companyName}.
+- ALWAYS run search 1 (theorg.com) first — it has a current org chart. Extract the name and title shown for this persona.
+- Then run search 2 (org website). If a bio page appears with a matching title, that person IS the answer.
+- Continue through the list. Do NOT stop after one source — cross-check at least 2 sources before concluding.
+- A single document (PDF, news article, coalition list) from any year is NOT enough for high confidence. You must verify with theorg.com OR the org's own website.
+- If theorg.com shows Person A and a 2022 document shows Person B, return Person A (theorg.com is more current).
 - Do NOT skip levels. A Director of Patient Safety IS a valid result.
-- If the org website (\`site:${domainStr}\`) confirms a name, it beats any other source.
-- When a search result shows a name + title, try fetching their bio page at ${domainStr}/about-us/leadership/{firstname-lastname}
+- If a function is outsourced (e.g., revenue cycle to a vendor), STILL search for the internal Director or VP who manages that relationship — someone inside the org owns it.
+- When a result shows a name + title, try fetching their bio page at ${domainStr}/about-us/leadership/{firstname-lastname}
 
 ## OUTPUT
 Return ONLY valid JSON, no markdown, no explanation:
