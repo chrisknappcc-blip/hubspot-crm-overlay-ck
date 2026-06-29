@@ -13,6 +13,9 @@ included_files = ["netlify/functions/utils/**"]
 [functions."contact-intel"]
 timeout = 26
 
+[functions."hubspot-gap-search"]
+timeout = 60
+
 [[redirects]]
 from = "/api/hubspot-gap-search"
 to = "/.netlify/functions/hubspot-gap-search"
