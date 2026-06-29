@@ -464,10 +464,30 @@ Individual bio pages are usually at paths like:
   domain.org/leadership/team/{name}
 When a specific name is mentioned in a search result snippet, note the URL pattern and use it directly.
 
+## SOURCE PRIORITY (strict — do not override this order)
+1. **The org's own website** (`site:{domain}`) — this is ground truth. A person listed on the org's leadership page beats any external source regardless of date. If the website says X holds the role, X is the answer.
+2. **Multiple corroborating external sources** (The Org + ZoomInfo + LinkedIn all agreeing) — high confidence.
+3. **Single external source** (one LinkedIn post, one news article, one PDF) — medium confidence, flag it.
+4. Never let a single third-party document override the org's own leadership page.
+
+## TITLE HIERARCHY — search ALL levels, not just C-suite
+If a C-suite or SVP search returns nothing, cascade DOWN the hierarchy. Many orgs fill these functions at Director level:
+
+Quality Officer hierarchy:     Chief Quality Officer → SVP Quality → VP Quality → Director Quality Management → Director Patient Safety
+Patient Access hierarchy:      Chief Patient Access Officer → VP Patient Access → Director Patient Access → Director Revenue Cycle → Patient Access Director
+Nursing Officer hierarchy:     Chief Nursing Officer → VP Nursing → Director of Nursing → Associate CNO
+Case Management hierarchy:     VP Case Management → Director Care Management → Director Case Management → Director Care Transitions
+Population Health hierarchy:   SVP Population Health → VP Population Health → Director Population Health → Director Care Management
+Clinical Operations hierarchy: VP Clinical Operations → Director Clinical Operations → Director Clinical Services
+Service Line hierarchy:        SVP Service Lines → VP Service Lines → Director Oncology → Director Cardiology (use most senior service line director)
+Physician Executive hierarchy: Chief Physician Executive → SVP Physician Enterprise → VP Medical Staff → Medical Director (employed physician group)
+Emergency Department hierarchy: Chief Emergency Medicine → VP Emergency Services → Medical Director Emergency → ED Director
+
+If you find someone at Director level, return them — a Director of Patient Safety is a real contact, not a consolation prize.
+
 ## ACCURACY RULES
-- Only use sources from 2022 or later. Titles change — a person who was CFO in 2019 may now be CEO.
-- If a search result says "former" or "previously" — ignore that person.
-- If the org website has an individual bio page for the exec — that is highest confidence.
+- The org's own website overrides all other sources, even if the external source is more recent-looking.
+- If a result says "former" or "previously" — ignore that person.
 - When in doubt, return confidence: "low" rather than guess.
 
 Your output populates a CRM. A wrong result creates duplicates and manual cleanup.`;
@@ -497,16 +517,22 @@ If ANY existing contact functionally covers ${persona}:
 ${leadershipContext ? "Leadership page content was pre-fetched above — check it for a match before additional searching." : "No leadership page was pre-fetched."}
 Use a MAXIMUM of 3 web searches. Stop as soon as you find a strong match.
 
-Search order — start SIMPLE, get specific only if needed:
-1. ${companyName} ${persona} (no quotes — this is how a human would Google it, and it finds The Org, ZoomInfo, LinkedIn results)
-2. "${companyName}" ${(definition?.titles||[])[0] || persona} site:linkedin.com OR site:theorg.com OR site:zoominfo.com
-3. ONLY if still needed: site:${domainStr} leadership ${persona}
+Search order — org website first, then external, then cascade hierarchy:
+1. site:${domainStr} ${persona} OR site:${domainStr} ${(definition?.titles||[])[0]||persona}
+   → This surfaces the org's own leadership bio pages. If a name appears here, IT IS THE ANSWER — do not override with external sources.
+   → Try fetching the bio page directly: ${domainStr}/about-us/leadership/{firstname-lastname}
 
-When a search result snippet shows a name + title (e.g. from theorg.com, zoominfo.com, linkedin.com), that is a strong signal — use it.
-If the org website is mentioned, try fetching the individual bio page: ${domainStr}/about-us/leadership/{firstname-lastname}
+2. ${companyName} ${persona} (simple, no quotes — finds The Org, ZoomInfo, LinkedIn)
+   → If this conflicts with search 1, trust search 1 (org website wins).
 
-Only use sources from 2022 or later. If a result says "former" or "previously" — skip that person.
-Do NOT use year restrictions like "2024 OR 2025" in search queries — they reduce coverage.
+3. ONLY if searches 1-2 return nothing: cascade down the title hierarchy
+   → Try Director-level: "${companyName}" "Director" "${persona}" OR "${companyName}" director ${persona.toLowerCase()}
+   → Many orgs fill these functions at Director level with no VP above them.
+
+When a search result snippet shows a name + title from theorg.com, zoominfo.com, or linkedin.com, that is useful signal — but always check if the org's own website confirms it.
+If the org website is mentioned in any result, fetch the bio page: ${domainStr}/about-us/leadership/{name}
+
+Do NOT use year restrictions in queries — they reduce coverage.
 
 ## OUTPUT
 Return ONLY valid JSON, no markdown, no explanation:
