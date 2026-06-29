@@ -465,7 +465,7 @@ Individual bio pages are usually at paths like:
 When a specific name is mentioned in a search result snippet, note the URL pattern and use it directly.
 
 ## SOURCE PRIORITY (strict — do not override this order)
-1. **The org's own website** (`site:{domain}`) — this is ground truth. A person listed on the org's leadership page beats any external source regardless of date. If the website says X holds the role, X is the answer.
+1. **The org's own website** (\`site:{domain}\`) — this is ground truth. A person listed on the org's leadership page beats any external source regardless of date. If the website says X holds the role, X is the answer.
 2. **Multiple corroborating external sources** (The Org + ZoomInfo + LinkedIn all agreeing) — high confidence.
 3. **Single external source** (one LinkedIn post, one news article, one PDF) — medium confidence, flag it.
 4. Never let a single third-party document override the org's own leadership page.
