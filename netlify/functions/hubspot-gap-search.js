@@ -497,14 +497,16 @@ If ANY existing contact functionally covers ${persona}:
 ${leadershipContext ? "Leadership page content was pre-fetched above — check it for a match before additional searching." : "No leadership page was pre-fetched."}
 Use a MAXIMUM of 3 web searches. Stop as soon as you find a strong match.
 
-Search order:
-1. "${companyName}" "${(definition?.titles||[])[0] || persona}" 2024 OR 2025
-2. site:${domainStr} ${(definition?.titles||[])[0] || persona}
-3. ONLY if needed: "${companyName}" "${persona}" site:linkedin.com
+Search order — start SIMPLE, get specific only if needed:
+1. ${companyName} ${persona} (no quotes — this is how a human would Google it, and it finds The Org, ZoomInfo, LinkedIn results)
+2. "${companyName}" ${(definition?.titles||[])[0] || persona} site:linkedin.com OR site:theorg.com OR site:zoominfo.com
+3. ONLY if still needed: site:${domainStr} leadership ${persona}
 
-When a search result mentions a person, try fetching their individual org bio page — it is the highest-confidence source. Bio pages are typically at URLs like: ${domainStr}/about-us/leadership/{firstname-lastname}
+When a search result snippet shows a name + title (e.g. from theorg.com, zoominfo.com, linkedin.com), that is a strong signal — use it.
+If the org website is mentioned, try fetching the individual bio page: ${domainStr}/about-us/leadership/{firstname-lastname}
 
 Only use sources from 2022 or later. If a result says "former" or "previously" — skip that person.
+Do NOT use year restrictions like "2024 OR 2025" in search queries — they reduce coverage.
 
 ## OUTPUT
 Return ONLY valid JSON, no markdown, no explanation:
