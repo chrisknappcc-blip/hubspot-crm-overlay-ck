@@ -565,15 +565,14 @@ Use a MAXIMUM of 3 web searches. Stop as soon as you find a strong match.
 ## EXACT SEARCHES — run these in order, stop at the first strong match
 ${deterministicQueries}
 
-Rules:
-- ALWAYS run search 1 (theorg.com) first — it has a current org chart. Extract the name and title shown for this persona.
-- Then run search 2 (org website). If a bio page appears with a matching title, that person IS the answer.
-- Continue through the list. Do NOT stop after one source — cross-check at least 2 sources before concluding.
-- A single document (PDF, news article, coalition list) from any year is NOT enough for high confidence. You must verify with theorg.com OR the org's own website.
-- If theorg.com shows Person A and a 2022 document shows Person B, return Person A (theorg.com is more current).
-- Do NOT skip levels. A Director of Patient Safety IS a valid result.
-- If a function is outsourced (e.g., revenue cycle to a vendor), STILL search for the internal Director or VP who manages that relationship — someone inside the org owns it.
-- When a result shows a name + title, try fetching their bio page at ${domainStr}/about-us/leadership/{firstname-lastname}
+MANDATORY RULES — do not skip any:
+1. Run ALL searches in the list above. Every single one. Do not stop early.
+2. Even if search 1 returns a name — still run searches 2-7. You need multiple sources.
+3. Even if the function appears outsourced — still run director-level searches. Someone internal manages it.
+4. Collect results from ALL searches, then decide who the best match is.
+5. theorg.com or org website = high confidence. Single PDF/article = medium only.
+6. If searches disagree, use the most recent source from theorg.com or org website.
+7. A Director-level person IS a valid result — do not return null just because there is no C-suite title.
 
 ## OUTPUT
 Return ONLY valid JSON, no markdown, no explanation:
@@ -600,10 +599,6 @@ Return ONLY valid JSON, no markdown, no explanation:
       body: JSON.stringify({
         model:      "claude-haiku-4-5-20251001",
         max_tokens: 2000,
-        thinking: {
-          type:          "enabled",
-          budget_tokens: 1024,
-        },
         system: systemPrompt,
         tools: [{
           type: "web_search_20250305",
