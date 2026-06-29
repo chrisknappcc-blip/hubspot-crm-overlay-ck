@@ -593,33 +593,45 @@ Return ONLY valid JSON, no markdown, no explanation:
   "titleFitReasoning": "One sentence: why this title covers ${persona}",
   "notes": "Any caveats"
 }`
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
+    // ─── PHASE 1: Search execution ──────────────────────────────────────────────
+    // Haiku's only job here is to call web_search for every query and return snippets.
+    // No analysis, no stopping decisions. Separate from Phase 2 so both are reliable.
+    const searchResp = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
-      headers: {
-        "Content-Type":      "application/json",
-        "x-api-key":         ANTHROPIC_API_KEY,
-        "anthropic-version": "2023-06-01",
-      },
+      headers: { "Content-Type": "application/json", "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01" },
       body: JSON.stringify({
         model:      "claude-haiku-4-5-20251001",
-        max_tokens: 2000,
-        system: systemPrompt,
-        tools: [{
-          type: "web_search_20250305",
-          name: "web_search",
-        }],
-        messages: [{ role: "user", content: userPrompt }],
+        max_tokens: 4000,
+        system: "You are a search executor. Your ONLY job is to run web searches. For EVERY numbered query in the user message, call the web_search tool with that exact query string. Run all of them — do not skip any. After all searches are done, return a JSON array: [{query, snippets: [top 3 result titles+snippets]}]. Nothing else.",
+        tools: [{ type: "web_search_20250305", name: "web_search" }],
+        messages: [{ role: "user", content: `Run ALL of these searches in order:\n${deterministicQueries}` }],
       }),
     });
+    if (!searchResp.ok) throw new Error(`Search phase error ${searchResp.status}: ${(await searchResp.text()).slice(0,200)}`);
+    const searchData = await searchResp.json();
 
-    if (!response.ok) {
-      const err = await response.text();
-      throw new Error(`Claude API error ${response.status}: ${err.slice(0, 300)}`);
-    }
+    // Collect all text + tool result blocks from the search phase
+    const searchSnippets = (searchData.content || [])
+      .filter(b => b.type === "text" || b.type === "tool_result")
+      .map(b => b.type === "text" ? b.text : JSON.stringify(b.content).slice(0, 800))
+      .join("\n---\n")
+      .slice(0, 8000); // cap to avoid phase 2 bloat
 
-    const data = await response.json();
+    // ─── PHASE 2: Analysis ───────────────────────────────────────────────────────
+    // Takes all search snippets. No web_search tool. Just extracts the best match.
+    const analyzeResp = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01" },
+      body: JSON.stringify({
+        model:      "claude-haiku-4-5-20251001",
+        max_tokens: 1000,
+        system: systemPrompt,
+        messages: [{ role: "user", content: userPrompt + "\n\n## SEARCH RESULTS FROM ALL QUERIES\n" + searchSnippets }],
+      }),
+    });
+    if (!analyzeResp.ok) throw new Error(`Analyze phase error ${analyzeResp.status}: ${(await analyzeResp.text()).slice(0,200)}`);
 
-    // Extract final text block (skip thinking blocks)
+    const data = await analyzeResp.json();
     const textBlocks = (data.content || []).filter(b => b.type === "text");
     const rawText    = textBlocks.map(b => b.text).join("\n").trim();
 
