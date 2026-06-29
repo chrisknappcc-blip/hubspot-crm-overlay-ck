@@ -5851,12 +5851,11 @@ function GoldCommandTab({ accounts, loading, onRefresh, safeFetch, filterBdr, se
         }),
       })
       const found = (data.found || []).find(f => f.persona === persona) || null
-      // Update state then save — use callback form so save sees latest merged state
-      setGapState(s => {
-        const merged = { ...s, [key]: { status: 'done', result: found } }
-        gapStateRef.current = merged  // keep ref in sync for save
-        return merged
-      })
+      // Compute merged synchronously using ref (always current), update ref immediately,
+      // then set React state. This ensures gapStateRef.current is ready before saveGapCache.
+      const merged = { ...gapStateRef.current, [key]: { status: 'done', result: found } }
+      gapStateRef.current = merged
+      setGapState(merged)
     } catch(e) {
       setGapState(s => ({ ...s, [key]: { status: 'error', result: null, error: e.message } }))
     }
