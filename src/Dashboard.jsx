@@ -1413,6 +1413,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
   const [goldTabTier, setGoldTabTier]     = useState('')
   const [gapResults, setGapResults]       = useState({}) // keyed by companyId
   const [gapSearching, setGapSearching]   = useState({}) // keyed by companyId
+  const gapStateRef = useRef({}) // always-current gapState for saving without stale closures
   const [gapBatchRunning, setGapBatchRunning] = useState(false)
   const [gapBatchProgress, setGapBatchProgress] = useState('')
   const [expandedGaps, setExpandedGaps]   = useState({}) // keyed by companyId
@@ -5850,13 +5851,10 @@ function GoldCommandTab({ accounts, loading, onRefresh, safeFetch, filterBdr, se
         }),
       })
       const found = (data.found || []).find(f => f.persona === persona) || null
+      // Update state then save — use callback form so save sees latest merged state
       setGapState(s => {
         const merged = { ...s, [key]: { status: 'done', result: found } }
-        // Save inside updater so we always have latest merged state, not stale closure
-        safeFetch('/api/hubspot/gap-cache', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ gapState: merged, gapLastRun: {} }),
-        }).catch(() => {})
+        gapStateRef.current = merged  // keep ref in sync for save
         return merged
       })
     } catch(e) {
@@ -5973,14 +5971,14 @@ function GoldCommandTab({ accounts, loading, onRefresh, safeFetch, filterBdr, se
       await searchGap(account.id, account.name, account.domain, persona, account.contacts || [])
       // Save after each result so a crash doesn't lose progress
       const newLastRun = { ...gapLastRun, [account.id]: new Date().toISOString() }
-      saveGapCache(gapState, newLastRun)
+      saveGapCache(gapStateRef.current, newLastRun)
       await new Promise(r => setTimeout(r, 1500))
     }
     const newLastRun = { ...gapLastRun, [account.id]: new Date().toISOString() }
     setGapLastRun(newLastRun)
     setGapProgress(`✓ Done — searched ${needsSearch.length} personas (${missing.length - needsSearch.length} cached)`)
     setGapRunning(false)
-    saveGapCache(gapState, newLastRun)
+    saveGapCache(gapStateRef.current, newLastRun)
   }
 
   return (
