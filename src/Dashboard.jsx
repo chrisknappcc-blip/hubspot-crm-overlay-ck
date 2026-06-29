@@ -5850,7 +5850,15 @@ function GoldCommandTab({ accounts, loading, onRefresh, safeFetch, filterBdr, se
         }),
       })
       const found = (data.found || []).find(f => f.persona === persona) || null
-      setGapState(s => ({ ...s, [key]: { status: 'done', result: found } }))
+      setGapState(s => {
+        const merged = { ...s, [key]: { status: 'done', result: found } }
+        // Save inside updater so we always have latest merged state, not stale closure
+        safeFetch('/api/hubspot/gap-cache', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ gapState: merged, gapLastRun: {} }),
+        }).catch(() => {})
+        return merged
+      })
     } catch(e) {
       setGapState(s => ({ ...s, [key]: { status: 'error', result: null, error: e.message } }))
     }
