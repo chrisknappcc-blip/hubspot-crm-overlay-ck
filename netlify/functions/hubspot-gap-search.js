@@ -633,9 +633,68 @@ Return ONLY valid JSON, no markdown, no explanation:
     });
     if (!analyzeResp.ok) throw new Error(`Analyze phase error ${analyzeResp.status}: ${(await analyzeResp.text()).slice(0,200)}`);
 
-    const data = await analyzeResp.json();
-    const textBlocks = (data.content || []).filter(b => b.type === "text");
-    const rawText    = textBlocks.map(b => b.text).join("\n").trim();
+    const analyzeData = await analyzeResp.json();
+    const analyzeText = (analyzeData.content || []).filter(b => b.type === "text").map(b => b.text).join("\n").trim();
+
+    // Extract candidate name from phase 2 before verification
+    let candidateName = null;
+    try {
+      const m = analyzeText.match(/\{[\s\S]*\}/);
+      if (m) { const p = JSON.parse(m[0]); candidateName = p.alreadyInCRM ? null : p.name; }
+    } catch {}
+
+    // ─── PHASE 3: Employment verification ────────────────────────────────────────
+    // If phase 2 found a new name (not already in CRM), verify they still work there
+    // via a targeted LinkedIn search. ZoomInfo/news sources are often stale.
+    let verificationSnippets = "";
+    if (candidateName && candidateName !== "null") {
+      const verifyResp = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01" },
+        body: JSON.stringify({
+          model:      "claude-haiku-4-5-20251001",
+          max_tokens: 1500,
+          system: "You are a search executor. Run the two search queries given. Return the results as text. Nothing else.",
+          tools: [{ type: "web_search_20250305", name: "web_search" }],
+          messages: [{ role: "user", content:
+            `Run these two verification searches for ${candidateName}:\n` +
+            `1. "${candidateName}" "${companyName}" site:linkedin.com\n` +
+            `2. "${candidateName}" site:${domain}`
+          }],
+        }),
+      });
+      if (verifyResp.ok) {
+        const vd = await verifyResp.json();
+        verificationSnippets = (vd.content || []).filter(b => b.type === "text" || b.type === "tool_result")
+          .map(b => b.type === "text" ? b.text : JSON.stringify(b.content).slice(0,600)).join("\n").slice(0, 3000);
+      }
+    }
+
+    // ─── Final pass: Re-analyze with verification data ───────────────────────────
+    const finalPrompt = verificationSnippets
+      ? analyzeText + "\n\n## EMPLOYMENT VERIFICATION RESULTS\nUse this to confirm if the candidate is CURRENTLY at " + companyName + ". If LinkedIn or org website shows them at a different organization now, downgrade confidence to low and set name to null.\n" + verificationSnippets
+      : analyzeText;
+
+    // Parse the final result — if we have verification data, re-run analysis; otherwise use phase 2
+    let rawText = analyzeText;
+    if (verificationSnippets) {
+      const finalResp = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01" },
+        body: JSON.stringify({
+          model:      "claude-haiku-4-5-20251001",
+          max_tokens: 800,
+          system: "You are a CRM data validator. Given a candidate finding and verification search results, output the final JSON. If verification shows the person now works elsewhere, set name to null and confidence to low.",
+          messages: [{ role: "user", content: finalPrompt }],
+        }),
+      });
+      if (finalResp.ok) {
+        const fd = await finalResp.json();
+        rawText = (fd.content || []).filter(b => b.type === "text").map(b => b.text).join("\n").trim() || analyzeText;
+      }
+    }
+
+    const data = { content: [{ type: "text", text: rawText }] };
 
     let result = {
       persona,
