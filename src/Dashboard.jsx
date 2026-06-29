@@ -5947,7 +5947,8 @@ function GoldCommandTab({ accounts, loading, onRefresh, safeFetch, filterBdr, se
     // Skip personas that already have a cached result with a name found
     const needsSearch = missing.filter(persona => {
       const cached = gapState[`${account.id}:${persona}`]
-      return !cached?.result?.name // only search if no name was previously found
+      // Only skip if already confirmed in CRM — re-run external finds (may be wrong person) and nulls
+      return !(cached?.result?.alreadyInCRM === true)
     })
 
     if (!needsSearch.length) {
