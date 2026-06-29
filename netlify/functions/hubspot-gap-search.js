@@ -277,29 +277,31 @@ const PERSONA_DEFINITIONS = {
 // ─── Persona Search Keywords ─────────────────────────────────────────────────
 // Short keyword(s) used to build deterministic search queries for each persona.
 // These are what a human would type into Google: "org quality director"
+// Single short keyword — used as the quoted phrase in searches.
+// Keep it to 1-2 words so quoted phrase matching isn't too restrictive.
 const PERSONA_SEARCH_KEYWORDS = {
   "Access/Patient Access":  "patient access",
-  "Ambulatory/Urgent Care": "ambulatory urgent care",
+  "Ambulatory/Urgent Care": "ambulatory",
   "Business Development":   "business development",
-  "Case Management":        "case management care coordination",
-  "Chief Clinical Officer": "chief clinical officer",
+  "Case Management":        "care management",
+  "Chief Clinical Officer": "clinical officer",
   "Clinical Operations":    "clinical operations",
-  "Emergency Department":   "emergency department",
-  "Executive/Leadership":   "executive leadership",
-  "Finance":                "finance revenue cycle",
-  "Innovation":             "innovation digital",
-  "Medical Group":          "medical group physician enterprise",
-  "Medical":                "medical informatics clinical informatics",
-  "Medical Officer":        "chief medical officer",
-  "Nursing Officer":        "nursing chief nurse",
-  "Operating Officer":      "operations chief operating",
+  "Emergency Department":   "emergency",
+  "Executive/Leadership":   "executive",
+  "Finance":                "chief financial",
+  "Innovation":             "digital innovation",
+  "Medical Group":          "physician enterprise",
+  "Medical":                "informatics",
+  "Medical Officer":        "chief medical",
+  "Nursing Officer":        "nursing",
+  "Operating Officer":      "chief operating",
   "Patient Experience":     "patient experience",
-  "Physician Executive":    "physician enterprise medical staff",
-  "Population Health":      "population health value based care",
-  "Quality Officer":        "quality patient safety",
-  "Service Line":           "service line oncology cardiology",
-  "Strategy":               "strategy planning",
-  "Value Based Care":       "value based care ACO",
+  "Physician Executive":    "physician",
+  "Population Health":      "population health",
+  "Quality Officer":        "quality",
+  "Service Line":           "service line",
+  "Strategy":               "chief strategy",
+  "Value Based Care":       "value based care",
 };
 
 // ─── CRM Contact Pre-Check ───────────────────────────────────────────────────
@@ -461,7 +463,7 @@ export default async function handler(req) {
     // vs patient portal access pages). ZoomInfo and LinkedIn are critical for director-level.
     const kw = `"${searchKeyword}"`;
     const deterministicQueries = [
-      `${companyName} site:theorg.com`,
+      `${companyName} ${kw} site:theorg.com`,
       `site:${domain} ${searchKeyword}`,
       `${companyName} ${kw}`,
       `${orgShort} ${kw} officer OR "vice president"`,
