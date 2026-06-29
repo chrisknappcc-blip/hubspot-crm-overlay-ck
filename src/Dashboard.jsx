@@ -5810,7 +5810,10 @@ function GoldCommandTab({ accounts, loading, onRefresh, safeFetch, filterBdr, se
     if (gapCacheLoaded) return
     setGapCacheLoaded(true)
     safeFetch('/api/hubspot/gap-cache').then(data => {
-      if (data?.gapState)   setGapState(data.gapState)
+      if (data?.gapState) {
+        gapStateRef.current = data.gapState  // keep ref in sync with loaded cache
+        setGapState(data.gapState)
+      }
       if (data?.gapLastRun) setGapLastRun(data.gapLastRun)
     }).catch(() => {})
   }, [])
