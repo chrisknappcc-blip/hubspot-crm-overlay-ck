@@ -1413,7 +1413,6 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
   const [goldTabTier, setGoldTabTier]     = useState('')
   const [gapResults, setGapResults]       = useState({}) // keyed by companyId
   const [gapSearching, setGapSearching]   = useState({}) // keyed by companyId
-  const gapStateRef = useRef({}) // always-current gapState for saving without stale closures
   const [gapBatchRunning, setGapBatchRunning] = useState(false)
   const [gapBatchProgress, setGapBatchProgress] = useState('')
   const [expandedGaps, setExpandedGaps]   = useState({}) // keyed by companyId
@@ -5810,10 +5809,7 @@ function GoldCommandTab({ accounts, loading, onRefresh, safeFetch, filterBdr, se
     if (gapCacheLoaded) return
     setGapCacheLoaded(true)
     safeFetch('/api/hubspot/gap-cache').then(data => {
-      if (data?.gapState) {
-        gapStateRef.current = data.gapState  // keep ref in sync with loaded cache
-        setGapState(data.gapState)
-      }
+      if (data?.gapState) setGapState(data.gapState)
       if (data?.gapLastRun) setGapLastRun(data.gapLastRun)
     }).catch(() => {})
   }, [])
@@ -5854,11 +5850,16 @@ function GoldCommandTab({ accounts, loading, onRefresh, safeFetch, filterBdr, se
         }),
       })
       const found = (data.found || []).find(f => f.persona === persona) || null
-      // Compute merged synchronously using ref (always current), update ref immediately,
-      // then set React state. This ensures gapStateRef.current is ready before saveGapCache.
-      const merged = { ...gapStateRef.current, [key]: { status: 'done', result: found } }
-      gapStateRef.current = merged
-      setGapState(merged)
+      setGapState(s => ({ ...s, [key]: { status: 'done', result: found } }))
+      // Read-modify-write: fetch current cache, merge this result, write back
+      // Sequential searches mean no race condition here
+      safeFetch('/api/hubspot/gap-cache').then(cur => {
+        const merged = { ...(cur?.gapState || {}), [key]: { status: 'done', result: found } }
+        return safeFetch('/api/hubspot/gap-cache', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ gapState: merged, gapLastRun: cur?.gapLastRun || {} }),
+        })
+      }).catch(() => {})
     } catch(e) {
       setGapState(s => ({ ...s, [key]: { status: 'error', result: null, error: e.message } }))
     }
@@ -5973,17 +5974,14 @@ function GoldCommandTab({ accounts, loading, onRefresh, safeFetch, filterBdr, se
       await searchGap(account.id, account.name, account.domain, persona, account.contacts || [])
       // Save after each result so a crash doesn't lose progress
       const newLastRun = { ...gapLastRun, [account.id]: new Date().toISOString() }
-      saveGapCache(gapStateRef.current, newLastRun)
       await new Promise(r => setTimeout(r, 1500))
     }
     const newLastRun = { ...gapLastRun, [account.id]: new Date().toISOString() }
     setGapLastRun(newLastRun)
     setGapProgress(`✓ Done — searched ${needsSearch.length} personas (${missing.length - needsSearch.length} cached)`)
     setGapRunning(false)
-    saveGapCache(gapStateRef.current, newLastRun)
-  }
-
-  return (
+    setGapRunning(false)
+(
     <div style={{ display:'flex', flexDirection:'column', gap:12 }}>
       {/* Controls */}
       <GoldControls
