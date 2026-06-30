@@ -5980,8 +5980,9 @@ function GoldCommandTab({ accounts, loading, onRefresh, safeFetch, filterBdr, se
     setGapLastRun(newLastRun)
     setGapProgress(`✓ Done — searched ${needsSearch.length} personas (${missing.length - needsSearch.length} cached)`)
     setGapRunning(false)
-    setGapRunning(false)
-(
+  }
+
+  return (
     <div style={{ display:'flex', flexDirection:'column', gap:12 }}>
       {/* Controls */}
       <GoldControls
