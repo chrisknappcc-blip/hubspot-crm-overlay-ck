@@ -274,7 +274,6 @@ function THead({ cols }) {
 }
 const TEAM_MEMBERS = [
   { name: 'Chris Knapp',  ownerId: '78304576',  group: 'bdr',      email: 'cknapp@carecontinuity.com' },
-  { name: 'Chris Knapp',  ownerId: '78304576',  group: 'bdr',      email: 'chrisknappcc@gmail.com' },
   { name: 'Chiara Pate',  ownerId: '87806380',  group: 'bdr',      email: 'cpate@carecontinuity.com'  },
   { name: 'Matt Valin',   ownerId: '76104455',  group: 'vp'       },
   { name: 'Joe Haine',    ownerId: '55217954',  group: 'vp',  hubspotName: 'Joseph Haine' },
