@@ -5598,7 +5598,7 @@ export const handler = async (event, context) => {
           }
         }
 
-        console.log(\`[sync-company-rep] contacts=${contacts.length} companies=${companyIds.length} updated=${updated} skipped=${skipped} total=${total}\`);
+        console.log(`[sync-company-rep] contacts=${contacts.length} companies=${companyIds.length} updated=${updated} skipped=${skipped} total=${total}`);
 
         return ok({
           done:    !nextAfter,
@@ -5612,7 +5612,7 @@ export const handler = async (event, context) => {
 
       } catch (err) {
         console.error("[sync-company-rep] error:", err.message);
-        return error(500, \`Sync company error: \${err.message}\`);
+        return error(500, `Sync company error: \${err.message}`);
       }
     }
 
