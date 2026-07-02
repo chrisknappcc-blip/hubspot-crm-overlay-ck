@@ -273,7 +273,7 @@ function THead({ cols }) {
   )
 }
 const TEAM_MEMBERS = [
-  { name: 'Chris Knapp',  ownerId: '78304576',  group: 'bdr',      email: 'cknapp@carecontinuity.com' },
+  { name: 'Chris Knapp',  ownerId: '78304576',  group: 'bdr',      email: 'cknapp@carecontinuity.com', emails: ['cknapp@carecontinuity.com', 'chrisknappcc@gmail.com'] },
   { name: 'Chiara Pate',  ownerId: '87806380',  group: 'bdr',      email: 'cpate@carecontinuity.com'  },
   { name: 'Matt Valin',   ownerId: '76104455',  group: 'vp'       },
   { name: 'Joe Haine',    ownerId: '55217954',  group: 'vp',  hubspotName: 'Joseph Haine' },
@@ -1081,7 +1081,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
   const _userEmail    = user?.email || user?.emailAddresses?.[0]?.emailAddress || null
   const _userFullName = user?.user_metadata?.full_name ||
     (user?.firstName && user?.lastName ? `${user.firstName} ${user.lastName}` : null) ||
-    TEAM_MEMBERS.find(m => m.email && m.email === _userEmail)?.name || null
+    TEAM_MEMBERS.find(m => (m.emails || [m.email]).filter(Boolean).includes(_userEmail))?.name || null
   const _userFirstName = _userFullName?.split(' ')[0] || _userEmail?.split('@')[0] || null
 
   // Wrap apiFetch to intercept 403 MISSING_SCOPES and trigger reconnect flow.
