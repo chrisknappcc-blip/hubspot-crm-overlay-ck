@@ -5534,6 +5534,88 @@ export const handler = async (event, context) => {
       }
     }
 
+
+    // POST /hubspot/sync-company-rep
+    // Stamps primary_outreach_rep on companies based on which contacts have assigned_bdr = repFilter.
+    // Runs in batches: each call fetches a page of contacts, collects unique company IDs,
+    // and writes primary_outreach_rep to those companies.
+    if (method === "POST" && path === "/sync-company-rep") {
+      try {
+        const body         = JSON.parse(event.body || "{}");
+        const repFilter    = body.repFilter    || null;
+        const forceRefresh = body.forceRefresh || false;
+        const after        = body.after        || null;  // contact pagination cursor
+        const batchSize    = body.batchSize    || 200;
+
+        if (!repFilter) return error(400, "repFilter required");
+
+        // Step 1: Fetch a page of contacts with assigned_bdr = repFilter
+        const contactSearch = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
+          filterGroups: [{ filters: [{ propertyName: "assigned_bdr", operator: "EQ", value: repFilter }] }],
+          properties: ["associatedcompanyid"],
+          limit: batchSize,
+          ...(after ? { after } : {}),
+        });
+
+        const contacts      = contactSearch.results || [];
+        const total         = contactSearch.total   || 0;
+        const nextAfter     = contactSearch.paging?.next?.after || null;
+
+        // Step 2: Collect unique company IDs from contacts
+        const companyIdSet = new Set();
+        for (const c of contacts) {
+          const cid = c.properties?.associatedcompanyid;
+          if (cid) companyIdSet.add(cid);
+        }
+        const companyIds = [...companyIdSet];
+
+        let updated = 0;
+        let skipped = 0;
+
+        if (companyIds.length > 0) {
+          // Step 3: Fetch current primary_outreach_rep for those companies
+          const compBatch = await hsPost(user.userId, "/crm/v3/objects/companies/batch/read", {
+            inputs:     companyIds.map(id => ({ id })),
+            properties: ["primary_outreach_rep", "name"],
+          });
+
+          const companies = compBatch.results || [];
+
+          // Step 4: Build updates — only companies that don't already have this rep set
+          const updates = companies
+            .filter(co => forceRefresh || (co.properties?.primary_outreach_rep || "") !== repFilter)
+            .map(co => ({ id: co.id, properties: { primary_outreach_rep: repFilter } }));
+
+          skipped = companies.length - updates.length;
+
+          if (updates.length > 0) {
+            for (let i = 0; i < updates.length; i += 100) {
+              await hsPost(user.userId, "/crm/v3/objects/companies/batch/update",
+                { inputs: updates.slice(i, i + 100) });
+              updated += Math.min(100, updates.length - i);
+              if (i + 100 < updates.length) await new Promise(r => setTimeout(r, 200));
+            }
+          }
+        }
+
+        console.log(\`[sync-company-rep] contacts=${contacts.length} companies=${companyIds.length} updated=${updated} skipped=${skipped} total=${total}\`);
+
+        return ok({
+          done:    !nextAfter,
+          hasMore: !!nextAfter,
+          after:   nextAfter,
+          updated,
+          skipped,
+          total,
+          companiesInBatch: companyIds.length,
+        });
+
+      } catch (err) {
+        console.error("[sync-company-rep] error:", err.message);
+        return error(500, \`Sync company error: \${err.message}\`);
+      }
+    }
+
     // ── Org Intel: lookup company contacts for Contact Intelligence panel ─────────
     if (method === "GET" && path === "/org-intel-contacts") {
       try {
