@@ -1508,7 +1508,14 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
   const addTodoItem = useCallback(async (text, extraFields = {}) => {
     if (!text?.trim()) return
     // Prevent duplicate contactId entries — check current state via ref to avoid race conditions
-    if (extraFields.contactId) {
+    if (extraFields.contactId && (extraFields.priority === 'HIGH' || extraFields.type === 'high-priority')) {
+      // For high-priority auto-tasks, block if ANY task (completed or not) exists for this contact
+      // This prevents the task from regenerating after completion on page reload
+      const alreadyTracked = todoItemsRef.current.some(
+        t => t.contactId === extraFields.contactId && (t.priority === 'HIGH' || t.type === 'high-priority')
+      )
+      if (alreadyTracked) return
+    } else if (extraFields.contactId) {
       const alreadyTracked = todoItemsRef.current.some(
         t => !t.completed && t.contactId === extraFields.contactId && !t.autoDetected
       )
@@ -2037,7 +2044,9 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
         : `Follow up — ${name} opened your email, no reply yet`
       const subtext    = [signal.contact?.company, signal.contact?.title].filter(Boolean).join(' · ')
       const existing   = todoItemsRef.current.find(t =>
-        t.contactId === signal.contactId && (t.priority === 'HIGH' || t.type === 'high-priority') && !t.completed
+        t.contactId === signal.contactId && (t.priority === 'HIGH' || t.type === 'high-priority')
+        // Intentionally includes completed tasks — prevents a completed task from regenerating
+        // on next page load when the same signal is still present in the feed
       )
       if (!existing) {
         addTodoItem(taskText, { priority:'HIGH', contactId:signal.contactId, type:'high-priority', subtext })
