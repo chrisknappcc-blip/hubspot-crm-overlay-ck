@@ -1474,6 +1474,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
   const TODO_PAGE_SIZE = 5
   const [todoLoading, setTodoLoading] = useState(false)
   const [todoInput, setTodoInput]     = useState('')
+  const [todoHighPriority, setTodoHighPriority] = useState(false)
   const [todoDueDate, setTodoDueDate] = useState('')
   const [todoSyncing, setTodoSyncing] = useState(false)
 
@@ -1508,14 +1509,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
   const addTodoItem = useCallback(async (text, extraFields = {}) => {
     if (!text?.trim()) return
     // Prevent duplicate contactId entries — check current state via ref to avoid race conditions
-    if (extraFields.contactId && (extraFields.priority === 'HIGH' || extraFields.type === 'high-priority')) {
-      // For high-priority auto-tasks, block if ANY task (completed or not) exists for this contact
-      // This prevents the task from regenerating after completion on page reload
-      const alreadyTracked = todoItemsRef.current.some(
-        t => t.contactId === extraFields.contactId && (t.priority === 'HIGH' || t.type === 'high-priority')
-      )
-      if (alreadyTracked) return
-    } else if (extraFields.contactId) {
+    if (extraFields.contactId) {
       const alreadyTracked = todoItemsRef.current.some(
         t => !t.completed && t.contactId === extraFields.contactId && !t.autoDetected
       )
@@ -1555,6 +1549,17 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
         body: JSON.stringify({ completed }),
       })
     } catch (e) { console.error('[todo/toggle]', e) }
+  }, [])
+
+  const updateTodoPriority = useCallback(async (id, priority) => {
+    setTodoItems(prev => prev.map(t => t.id === id ? { ...t, priority } : t))
+    try {
+      await safeFetch(`/api/hubspot/todo/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ priority }),
+      })
+    } catch (e) { console.error('[todo/priority]', e) }
   }, [])
 
   const deleteTodoItem = useCallback(async (id) => {
@@ -2044,9 +2049,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
         : `Follow up — ${name} opened your email, no reply yet`
       const subtext    = [signal.contact?.company, signal.contact?.title].filter(Boolean).join(' · ')
       const existing   = todoItemsRef.current.find(t =>
-        t.contactId === signal.contactId && (t.priority === 'HIGH' || t.type === 'high-priority')
-        // Intentionally includes completed tasks — prevents a completed task from regenerating
-        // on next page load when the same signal is still present in the feed
+        t.contactId === signal.contactId && (t.priority === 'HIGH' || t.type === 'high-priority') && !t.completed
       )
       if (!existing) {
         addTodoItem(taskText, { priority:'HIGH', contactId:signal.contactId, type:'high-priority', subtext })
@@ -2614,7 +2617,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                   type="text"
                   value={todoInput}
                   onChange={e => setTodoInput(e.target.value)}
-                  onKeyDown={e => e.key === 'Enter' && addTodoItem(todoInput)}
+                  onKeyDown={e => { if (e.key === 'Enter') { addTodoItem(todoInput, todoHighPriority ? { priority: 'HIGH' } : {}); setTodoHighPriority(false) } }}
                   placeholder="Add a to-do… (press Enter)"
                   style={{ flex:1, minWidth:160, padding:'7px 10px', background:'var(--bg-secondary)', border:'1px solid var(--border)', borderRadius:'var(--radius)', fontSize:12, color:'var(--text)', outline:'none' }}
                 />
@@ -2624,7 +2627,17 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                   onChange={e => setTodoDueDate(e.target.value)}
                   style={{ padding:'7px 8px', background:'var(--bg-secondary)', border:'1px solid var(--border)', borderRadius:'var(--radius)', fontSize:11, color:'var(--text)', outline:'none' }}
                 />
-                <button onClick={() => addTodoItem(todoInput)}
+                <button
+                  onClick={() => setTodoHighPriority(p => !p)}
+                  title={todoHighPriority ? 'High priority (click to clear)' : 'Set as high priority'}
+                  style={{ padding:'7px 10px', background: todoHighPriority ? '#D97706' : 'var(--bg-secondary)',
+                    color: todoHighPriority ? '#fff' : 'var(--text-tertiary)',
+                    border: `1px solid ${todoHighPriority ? '#D97706' : 'var(--border)'}`,
+                    borderRadius:'var(--radius)', fontSize:13, cursor:'pointer', lineHeight:1,
+                    fontWeight: todoHighPriority ? 700 : 400 }}>
+                  ⚑
+                </button>
+                <button onClick={() => { addTodoItem(todoInput, todoHighPriority ? { priority: 'HIGH' } : {}); setTodoHighPriority(false) }}
                   style={{ padding:'7px 14px', background:'var(--accent)', color:'#fff', border:'none', borderRadius:'var(--radius)', fontSize:12, fontWeight:500, cursor:'pointer' }}>
                   Add
                 </button>
@@ -2691,10 +2704,20 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                           <span style={{ fontSize:9, color:'var(--text-tertiary)', padding:'2px 4px' }}>↗</span>
                         )}
                         {!item.autoDetected && (
-                          <button onClick={e => { e.stopPropagation(); deleteTodoItem(item.id) }}
-                            style={{ background:'none', border:'none', cursor:'pointer', padding:'0 2px', color:'var(--text-tertiary)', fontSize:14, lineHeight:1 }}>
-                            ×
-                          </button>
+                          <>
+                            <button
+                              onClick={e => { e.stopPropagation(); updateTodoPriority(item.id, item.priority === 'HIGH' ? null : 'HIGH') }}
+                              title={item.priority === 'HIGH' ? 'Remove high priority' : 'Mark as high priority'}
+                              style={{ background:'none', border:'none', cursor:'pointer', padding:'0 2px',
+                                color: item.priority === 'HIGH' ? '#D97706' : 'var(--text-tertiary)',
+                                fontSize:13, lineHeight:1, fontWeight: item.priority === 'HIGH' ? 700 : 400 }}>
+                              ⚑
+                            </button>
+                            <button onClick={e => { e.stopPropagation(); deleteTodoItem(item.id) }}
+                              style={{ background:'none', border:'none', cursor:'pointer', padding:'0 2px', color:'var(--text-tertiary)', fontSize:14, lineHeight:1 }}>
+                              ×
+                            </button>
+                          </>
                         )}
                       </div>
                     </div>
