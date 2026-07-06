@@ -1075,10 +1075,10 @@ function ContactIntelPanel({ user, safeFetch }) {
 
 // ─── Bot Opens Log Panel ──────────────────────────────────────────────────────
 function BotLogPanel({ entries = [], onClear }) {
-  const [view, setView] = React.useState('chart') // 'chart' | 'domains' | 'list'
+  const [view, setView] = useState('chart') // 'chart' | 'domains' | 'list'
 
   // ── Weekly buckets ────────────────────────────────────────────────────────
-  const weekBuckets = React.useMemo(() => {
+  const weekBuckets = useMemo(() => {
     if (!entries.length) return []
     const buckets = {}
     entries.forEach(e => {
@@ -1098,7 +1098,7 @@ function BotLogPanel({ entries = [], onClear }) {
   }, [entries])
 
   // ── Domain frequency ──────────────────────────────────────────────────────
-  const domainCounts = React.useMemo(() => {
+  const domainCounts = useMemo(() => {
     const counts = {}
     entries.forEach(e => {
       const key = e.domain || 'unknown'
