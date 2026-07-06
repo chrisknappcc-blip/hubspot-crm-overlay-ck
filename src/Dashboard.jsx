@@ -1073,6 +1073,199 @@ function ContactIntelPanel({ user, safeFetch }) {
 }
 
 
+// ─── Bot Opens Log Panel ──────────────────────────────────────────────────────
+function BotLogPanel({ entries = [], onClear }) {
+  const [view, setView] = React.useState('chart') // 'chart' | 'domains' | 'list'
+
+  // ── Weekly buckets ────────────────────────────────────────────────────────
+  const weekBuckets = React.useMemo(() => {
+    if (!entries.length) return []
+    const buckets = {}
+    entries.forEach(e => {
+      if (!e.detectedAt) return
+      const d = new Date(e.detectedAt)
+      // Start of week (Monday)
+      const day = d.getDay()
+      const monday = new Date(d)
+      monday.setDate(d.getDate() - ((day + 6) % 7))
+      const key = monday.toISOString().slice(0, 10)
+      if (!buckets[key]) buckets[key] = { week: key, high: 0, medium: 0, total: 0 }
+      if (e.confidence === 'high')   buckets[key].high++
+      if (e.confidence === 'medium') buckets[key].medium++
+      buckets[key].total++
+    })
+    return Object.values(buckets).sort((a,b) => a.week.localeCompare(b.week)).slice(-12)
+  }, [entries])
+
+  // ── Domain frequency ──────────────────────────────────────────────────────
+  const domainCounts = React.useMemo(() => {
+    const counts = {}
+    entries.forEach(e => {
+      const key = e.domain || 'unknown'
+      if (!counts[key]) counts[key] = { domain: key, company: e.company || key, high: 0, medium: 0, total: 0, lastSeen: '' }
+      counts[key].total++
+      if (e.confidence === 'high')   counts[key].high++
+      if (e.confidence === 'medium') counts[key].medium++
+      if (!counts[key].lastSeen || e.detectedAt > counts[key].lastSeen) counts[key].lastSeen = e.detectedAt
+    })
+    return Object.values(counts).sort((a,b) => b.total - a.total).slice(0, 25)
+  }, [entries])
+
+  const maxWeekTotal = Math.max(...weekBuckets.map(b => b.total), 1)
+
+  if (!entries.length) return (
+    <div style={{ padding:'16px', background:'var(--bg-panel)', border:'1px solid var(--border)',
+      borderRadius:'var(--radius-lg)', fontSize:12, color:'var(--text-tertiary)' }}>
+      No bot opens logged yet. The log populates automatically as signals are fetched.
+    </div>
+  )
+
+  return (
+    <div style={{ background:'var(--bg-panel)', border:'1px solid var(--border)',
+      borderRadius:'var(--radius-lg)', overflow:'hidden' }}>
+      {/* Header */}
+      <div style={{ padding:'10px 14px', borderBottom:'1px solid var(--border)',
+        display:'flex', alignItems:'center', justifyContent:'space-between', flexWrap:'wrap', gap:8 }}>
+        <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+          <span style={{ fontSize:13, fontWeight:600, color:'var(--text)' }}>Bot Opens Log</span>
+          <span style={{ fontSize:11, color:'var(--text-tertiary)' }}>{entries.length} detections</span>
+          <span style={{ fontSize:10, background:'var(--red)', color:'#fff', borderRadius:4,
+            padding:'1px 6px', fontWeight:700 }}>
+            {entries.filter(e => e.confidence === 'high').length} HIGH
+          </span>
+          <span style={{ fontSize:10, background:'#D97706', color:'#fff', borderRadius:4,
+            padding:'1px 6px', fontWeight:700 }}>
+            {entries.filter(e => e.confidence === 'medium').length} MED
+          </span>
+        </div>
+        <div style={{ display:'flex', gap:6, alignItems:'center' }}>
+          {['chart','domains','list'].map(v => (
+            <button key={v} onClick={() => setView(v)}
+              style={{ padding:'3px 10px', borderRadius:4, fontSize:11, cursor:'pointer', border:'1px solid var(--border)',
+                background: view===v ? 'var(--accent)' : 'transparent',
+                color: view===v ? '#fff' : 'var(--text-secondary)' }}>
+              {v === 'chart' ? '📊 Chart' : v === 'domains' ? '🏥 Domains' : '📋 Log'}
+            </button>
+          ))}
+          <button onClick={onClear}
+            style={{ padding:'3px 10px', borderRadius:4, fontSize:11, cursor:'pointer',
+              border:'1px solid var(--red)', background:'transparent', color:'var(--red)' }}>
+            Clear
+          </button>
+        </div>
+      </div>
+
+      {/* Chart view */}
+      {view === 'chart' && (
+        <div style={{ padding:16 }}>
+          <div style={{ fontSize:11, color:'var(--text-tertiary)', marginBottom:12 }}>Bot opens detected per week (last 12 weeks)</div>
+          <div style={{ display:'flex', alignItems:'flex-end', gap:6, height:120 }}>
+            {weekBuckets.map(b => (
+              <div key={b.week} style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', gap:2 }}>
+                <div style={{ width:'100%', display:'flex', flexDirection:'column', alignItems:'center',
+                  height: Math.max(4, Math.round((b.total / maxWeekTotal) * 100)) + 'px',
+                  justifyContent:'flex-end', position:'relative' }}>
+                  <div title={`High confidence: ${b.high}`}
+                    style={{ width:'100%', height: Math.round((b.high / b.total) * 100) + '%',
+                      background:'var(--red)', borderRadius:'2px 2px 0 0', minHeight: b.high ? 4 : 0 }} />
+                  <div title={`Medium confidence: ${b.medium}`}
+                    style={{ width:'100%', height: Math.round((b.medium / b.total) * 100) + '%',
+                      background:'#D97706', minHeight: b.medium ? 4 : 0 }} />
+                </div>
+                <div style={{ fontSize:9, color:'var(--text-tertiary)', transform:'rotate(-45deg)', 
+                  transformOrigin:'top center', whiteSpace:'nowrap', marginTop:4 }}>
+                  {b.week.slice(5)}
+                </div>
+              </div>
+            ))}
+          </div>
+          <div style={{ display:'flex', gap:12, marginTop:24, fontSize:11, color:'var(--text-tertiary)' }}>
+            <span style={{ display:'flex', alignItems:'center', gap:4 }}>
+              <span style={{ width:10, height:10, background:'var(--red)', borderRadius:2, display:'inline-block' }} />
+              High confidence (&lt;60s open or HubSpot flagged)
+            </span>
+            <span style={{ display:'flex', alignItems:'center', gap:4 }}>
+              <span style={{ width:10, height:10, background:'#D97706', borderRadius:2, display:'inline-block' }} />
+              Medium confidence (burst pattern or &lt;5min open)
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* Domains view */}
+      {view === 'domains' && (
+        <div style={{ overflowX:'auto' }}>
+          <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
+            <thead>
+              <tr style={{ borderBottom:'1px solid var(--border)' }}>
+                {['Domain','Organization','Total','High','Med','Last Seen'].map(h => (
+                  <th key={h} style={{ textAlign:'left', padding:'8px 12px', fontSize:11,
+                    fontWeight:500, color:'var(--text-tertiary)', textTransform:'uppercase',
+                    letterSpacing:'.04em', whiteSpace:'nowrap' }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {domainCounts.map((d, i) => (
+                <tr key={d.domain} style={{ borderBottom:'1px solid var(--border)',
+                  background: i % 2 === 0 ? 'transparent' : 'var(--bg-secondary)' }}>
+                  <td style={{ padding:'7px 12px', color:'var(--accent)', fontFamily:'monospace', fontSize:11 }}>{d.domain}</td>
+                  <td style={{ padding:'7px 12px', color:'var(--text)' }}>{d.company}</td>
+                  <td style={{ padding:'7px 12px', fontWeight:600, color:'var(--text)' }}>{d.total}</td>
+                  <td style={{ padding:'7px 12px', color: d.high > 0 ? 'var(--red)' : 'var(--text-tertiary)', fontWeight: d.high > 0 ? 600 : 400 }}>{d.high || '—'}</td>
+                  <td style={{ padding:'7px 12px', color: d.medium > 0 ? '#D97706' : 'var(--text-tertiary)' }}>{d.medium || '—'}</td>
+                  <td style={{ padding:'7px 12px', color:'var(--text-tertiary)', fontSize:11 }}>
+                    {d.lastSeen ? new Date(d.lastSeen).toLocaleDateString() : '—'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Log view */}
+      {view === 'list' && (
+        <div style={{ maxHeight:400, overflowY:'auto' }}>
+          <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
+            <thead style={{ position:'sticky', top:0, background:'var(--bg-panel)', zIndex:1 }}>
+              <tr style={{ borderBottom:'1px solid var(--border)' }}>
+                {['Detected','Contact','Company','Domain','Confidence','Reasons'].map(h => (
+                  <th key={h} style={{ textAlign:'left', padding:'8px 12px', fontSize:11,
+                    fontWeight:500, color:'var(--text-tertiary)', textTransform:'uppercase',
+                    letterSpacing:'.04em', whiteSpace:'nowrap' }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {[...entries].reverse().map((e, i) => (
+                <tr key={e.id || i} style={{ borderBottom:'1px solid var(--border)',
+                  background: i % 2 === 0 ? 'transparent' : 'var(--bg-secondary)' }}>
+                  <td style={{ padding:'6px 12px', color:'var(--text-tertiary)', whiteSpace:'nowrap', fontSize:11 }}>
+                    {e.detectedAt ? new Date(e.detectedAt).toLocaleDateString() : '—'}
+                  </td>
+                  <td style={{ padding:'6px 12px', color:'var(--text)' }}>{e.name}</td>
+                  <td style={{ padding:'6px 12px', color:'var(--text-secondary)', fontSize:11 }}>{e.company}</td>
+                  <td style={{ padding:'6px 12px', color:'var(--accent)', fontFamily:'monospace', fontSize:11 }}>{e.domain}</td>
+                  <td style={{ padding:'6px 12px' }}>
+                    <span style={{ fontSize:10, padding:'2px 6px', borderRadius:4, fontWeight:700,
+                      background: e.confidence === 'high' ? 'var(--red)' : '#D97706', color:'#fff' }}>
+                      {(e.confidence || 'unknown').toUpperCase()}
+                    </span>
+                  </td>
+                  <td style={{ padding:'6px 12px', color:'var(--text-secondary)', fontSize:11, maxWidth:300 }}>
+                    {(e.reasons || []).join(' · ')}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeError, signOut }) {
 
   // ── User identity helpers (Netlify Identity + Clerk compatible) ──────────
@@ -1129,6 +1322,9 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
     return { running:false, done:false, updated:0, skipped:0, total:0, progress:'' }
   })
   const [adminOpen, setAdminOpen]           = useState(false)
+  const [botLogOpen, setBotLogOpen]         = useState(false)
+  const [botLogData, setBotLogData]         = useState(null)
+  const [botLogLoading, setBotLogLoading]   = useState(false)
   const [previewData, setPreviewData]       = useState(null)
   const [previewLoading, setPreviewLoading] = useState(false)
   const [hpOverrides, setHpOverrides] = useState(() => {
@@ -2286,6 +2482,38 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                       </div>
                     )}
                     </div>
+                )}
+              </div>
+            )}
+
+            {/* ── Bot Opens Log ── */}
+            {currentUserName === 'Chris Knapp' && (
+              <div style={{ marginBottom:'1.25rem' }}>
+                <button onClick={async () => {
+                  setBotLogOpen(o => !o)
+                  if (!botLogData && !botLogLoading) {
+                    setBotLogLoading(true)
+                    try {
+                      const d = await safeFetch('/api/hubspot/bot-log')
+                      setBotLogData(d?.entries || [])
+                    } catch { setBotLogData([]) }
+                    setBotLogLoading(false)
+                  }
+                }} style={{ fontSize:11, color:'var(--text-tertiary)', background:'none', border:'none',
+                  cursor:'pointer', padding:'2px 0', display:'flex', alignItems:'center', gap:5 }}>
+                  <span style={{ fontSize:10 }}>{botLogOpen ? '▼' : '▶'}</span>
+                  Bot Opens Log {botLogData ? `(${botLogData.length})` : ''}
+                </button>
+                {botLogOpen && (
+                  <div style={{ marginTop:8 }}>
+                    {botLogLoading && <div style={{ fontSize:12, color:'var(--text-tertiary)', padding:12 }}>Loading…</div>}
+                    {botLogData !== null && !botLogLoading && (
+                      <BotLogPanel entries={botLogData} onClear={async () => {
+                        await safeFetch('/api/hubspot/bot-log', { method: 'DELETE' })
+                        setBotLogData([])
+                      }} />
+                    )}
+                  </div>
                 )}
               </div>
             )}
