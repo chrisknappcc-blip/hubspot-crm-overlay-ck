@@ -7,6 +7,44 @@ function gapCacheBlobUrl() {
   const sas = (AZURE_SAS_TOKEN || "").startsWith("?") ? AZURE_SAS_TOKEN : `?${AZURE_SAS_TOKEN}`;
   return `https://${AZURE_ACCOUNT}.blob.core.windows.net/${AZURE_CONTAINER}/gap-cache.json${sas}`;
 }
+function botLogBlobUrl() {
+  const sas = (AZURE_SAS_TOKEN || "").startsWith("?") ? AZURE_SAS_TOKEN : `?${AZURE_SAS_TOKEN}`;
+  return `https://${AZURE_ACCOUNT}.blob.core.windows.net/${AZURE_CONTAINER}/bot-log.json${sas}`;
+}
+async function appendBotEntries(newBots) {
+  if (!AZURE_ACCOUNT || !AZURE_SAS_TOKEN || !newBots.length) return;
+  try {
+    let existing = { entries: [] };
+    const r = await fetch(botLogBlobUrl());
+    if (r.ok) existing = await r.json().catch(() => ({ entries: [] }));
+    const existingKeys = new Set((existing.entries || []).map(e => `${e.contactId}:${e.openedAt}`));
+    const newEntries = newBots
+      .filter(b => !existingKeys.has(`${b.contactId}:${b.openedAt}`))
+      .map(b => ({
+        id: `${b.contactId || "x"}-${Date.now()}`,
+        detectedAt: new Date().toISOString(),
+        contactId:  b.contactId || null,
+        name:       b.contact?.name || b.contact?.firstName || "Unknown",
+        email:      b.contact?.email || "",
+        domain:     (b.contact?.email || "").includes("@") ? b.contact.email.split("@")[1].toLowerCase() : "",
+        company:    b.contact?.company || b.contact?.associatedCompany || "",
+        confidence: b.botCheck?.confidence || "unknown",
+        reasons:    b.botCheck?.reasons   || [],
+        numOpens:   b.numOpens || 1,
+        openedAt:   b.openedAt || null,
+        sentAt:     b.sentAt   || null,
+        repName:    b.contact?.assignedBdr || b.contact?.ownerName || null,
+      }));
+    if (!newEntries.length) return;
+    const merged  = { entries: [...(existing.entries || []), ...newEntries].slice(-2000) };
+    const payload = JSON.stringify(merged);
+    await fetch(botLogBlobUrl(), {
+      method:  "PUT",
+      headers: { "Content-Type": "application/json", "x-ms-blob-type": "BlockBlob", "Content-Length": String(Buffer.byteLength(payload)) },
+      body:    payload,
+    });
+  } catch { /* fail silently */ }
+}
 // netlify/functions/hubspot.js
 // Routes:
 //   GET  /hubspot/auth/connect            -> redirect to HubSpot OAuth
@@ -2916,6 +2954,10 @@ export const handler = async (event, context) => {
       if (qp.showBots === "true") {
         response.suspectedBotSignals = finalBots.slice(0, 50);
       }
+      // Fire-and-forget: persist any new bot detections to Azure Blob log
+      if (finalBots.length > 0) {
+        appendBotEntries(finalBots).catch(() => {});
+      }
       return ok(response);
       } catch (err) {
         console.error("[signals] Error:", err.message, err.stack);
@@ -5794,6 +5836,33 @@ export const handler = async (event, context) => {
         }
       } catch (err) {
         return ok({ gapState: {}, gapLastRun: {}, error: err.message });
+      }
+    }
+
+    // GET  /hubspot/bot-log  — read bot detection log from Azure Blob
+    // DELETE /hubspot/bot-log — clear the log
+    if (path === "/bot-log") {
+      try {
+        if (method === "GET") {
+          if (!AZURE_ACCOUNT || !AZURE_SAS_TOKEN) return ok({ entries: [] });
+          const res = await fetch(botLogBlobUrl());
+          if (res.status === 404) return ok({ entries: [] });
+          if (!res.ok) return ok({ entries: [] });
+          const data = await res.json().catch(() => ({ entries: [] }));
+          return ok(data);
+        }
+        if (method === "DELETE") {
+          if (!AZURE_ACCOUNT || !AZURE_SAS_TOKEN) return ok({ cleared: false });
+          const payload = JSON.stringify({ entries: [] });
+          const res = await fetch(botLogBlobUrl(), {
+            method: "PUT",
+            headers: { "Content-Type": "application/json", "x-ms-blob-type": "BlockBlob", "Content-Length": String(Buffer.byteLength(payload)) },
+            body:   payload,
+          });
+          return ok({ cleared: res.ok });
+        }
+      } catch (err) {
+        return ok({ entries: [], error: err.message });
       }
     }
 
