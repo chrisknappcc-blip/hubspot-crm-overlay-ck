@@ -731,6 +731,25 @@ async function fetchMarketingEmailRecipientEvents(userId, since) {
 //   4+ opens, 0 clicks    = burst scan pattern (MEDIUM confidence)
 //   Off-hours open        = soft signal (LOW confidence alone)
 
+// ── OOO Detection ────────────────────────────────────────────────────────────
+const OOO_SUBJECT_RE = /^(automatic reply|auto.?reply|autoreply|out of (the )?office|ooo\s*:|away from (the )?office|on vacation|on (annual |extended )?(leave|holiday)|not in (the )?office)/i;
+const OOO_BODY_RE    = /(i('m| am) (currently )?(out|away|on vacation|on leave)|i('ll| will) (be )?(back|return)|out of (the )?office (until|on|from)|automatic(ally)? (reply|response)|will (return|be back) (on|by)|currently (unavailable|traveling|on leave)|on (maternity|paternity|medical|parental|bereavement) leave)/i;
+
+function isOooReply(subject, body) {
+  if (OOO_SUBJECT_RE.test(subject || "")) return true;
+  if (OOO_BODY_RE.test((body || "").slice(0, 1500))) return true;
+  return false;
+}
+
+// Try to extract a return date phrase from OOO body (best-effort)
+function parseOooReturnDate(body) {
+  if (!body) return null;
+  const text = body.slice(0, 1500);
+  // Patterns like "I'll be back on July 15", "returning on Monday", "back in the office on X"
+  const m = text.match(/(?:back|return(?:ing)?|available|in (?:the )?office)\s+(?:on|by|from)?\s*([A-Z][a-z]+ \d{1,2}(?:,?\s*\d{4})?|(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\w*(?:,?\s*[A-Z][a-z]+ \d{1,2}(?:,?\s*\d{4})?)?|\d{1,2}[\/\-]\d{1,2}(?:[\/\-]\d{2,4})?)/i);
+  return m ? m[1].trim() : null;
+}
+
 function detectBot(item) {
   const reasons = [];
 
@@ -2358,7 +2377,11 @@ export const handler = async (event, context) => {
 
             const eventType = ev.type;
             let score = 0, label = "";
-            if (eventType === "REPLY")  { score = 100; label = "Replied"; }
+            if (eventType === "REPLY") {
+              const ooo = isOooReply(ev.subject || null, null);
+              if (ooo) { score = 5; label = "OOO Reply"; }
+              else     { score = 100; label = "Replied"; }
+            }
             else if (eventType === "CLICK") { score = 70;  label = "Clicked link"; }
             else if (eventType === "OPEN")  { score = 40;  label = "Opened"; }
 
