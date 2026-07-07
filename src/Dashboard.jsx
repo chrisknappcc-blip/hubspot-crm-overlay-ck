@@ -2032,12 +2032,41 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
   }, [user?.id])
 
   // ── Auto-create High Priority To-Dos from Gold Target signals ────────────────
+  // ── OOO detection ─────────────────────────────────────────────────────────
+  const OOO_PATTERNS = [/automatic reply/i,/auto.?reply/i,/out of (the )?office/i,/\booo\b.*:/i,/away from.*office/i,/on vacation/i,/i('m| am) (out|away)/i,/will (return|be back)/i]
+  const isOooSignal = (signal) => {
+    if (signal.isOoo) return true
+    const txt = signal.subject || ''
+    return OOO_PATTERNS.some(p => p.test(txt))
+  }
+  const oooProcessed = useRef(new Set())
   const hpProcessed = useRef(new Set())
   useEffect(() => {
     if (!signals.length) return
     if (ownRepName.current && filterBdr && filterBdr !== ownRepName.current) return
     signals.forEach(signal => {
       if (!signal.contactId || !isHighPriority(signal)) return
+
+      // Route OOO replies to the OOO tab instead of HP tasks
+      if (signal.score >= 100 && isOooSignal(signal)) {
+        if (oooProcessed.current.has(signal.contactId)) return
+        oooProcessed.current.add(signal.contactId)
+        const existingOoo = todoItemsRef.current.find(t =>
+          t.contactId === signal.contactId && t.type === 'ooo'
+        )
+        if (!existingOoo) {
+          const name    = signal.contact?.name || signal.recipientEmail || 'Contact'
+          const subtext = [signal.contact?.company, signal.contact?.title].filter(Boolean).join(' · ')
+          addTodoItem(`OOO — ${name}`, {
+            type: 'ooo', contactId: signal.contactId, subtext,
+            oooSubject:    signal.subject || null,
+            oooReturnDate: signal.oooReturnDate || null,
+            priority: null,
+          })
+        }
+        return
+      }
+
       if (hpProcessed.current.has(signal.contactId)) return
       hpProcessed.current.add(signal.contactId)
       const signalType = signal.score >= 100 ? 'replied' : signal.score >= 60 ? 'clicked' : 'opened'
@@ -2585,6 +2614,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                     {[
                       { key:'high-priority', label:'High Priority', count:hpCount,  color:'#D97706' },
                       { key:'all',           label:'All',           count:allCount, color:'var(--accent)' },
+                      { key:'ooo',           label:'OOO 📅',        count:todoItems.filter(t=>t.type==='ooo'&&!t.completed).length, color:'#22c55e' },
                     ].map(tab => (
                       <button key={tab.key} onClick={() => { setTodoTab(tab.key); setTodoPage(0) }}
                         style={{ padding:'6px 14px', fontSize:12, fontWeight:todoTab===tab.key?600:400,
@@ -2654,8 +2684,15 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
               {!todoLoading && todoItems.length > 0 && (() => {
                 const allActive = todoItems.filter(t => !t.completed)
                 const active    = todoTab === 'high-priority'
-                  ? allActive.filter(t => t.priority === 'HIGH' || t.type === 'high-priority').sort((a,b) => new Date(a.createdAt||0) - new Date(b.createdAt||0))
-                  : allActive
+                  ? allActive.filter(t => (t.priority === 'HIGH' || t.type === 'high-priority') && t.type !== 'ooo').sort((a,b) => new Date(a.createdAt||0) - new Date(b.createdAt||0))
+                  : todoTab === 'ooo'
+                  ? allActive.filter(t => t.type === 'ooo').sort((a,b) => {
+                      // Sort by return date soonest first, undated at bottom
+                      const da = a.oooReturnDate ? new Date(a.oooReturnDate) : new Date('2099-01-01')
+                      const db = b.oooReturnDate ? new Date(b.oooReturnDate) : new Date('2099-01-01')
+                      return da - db
+                    })
+                  : allActive.filter(t => t.type !== 'ooo')
                 const done      = todoItems.filter(t => t.completed)
                 const pageActive = active.slice(todoPage * TODO_PAGE_SIZE, (todoPage + 1) * TODO_PAGE_SIZE)
                 return (
@@ -2677,6 +2714,16 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                         {item.subtext && (
                           <div style={{ fontSize:11, color:'var(--text-tertiary)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
                             {item.subtext}
+                          </div>
+                        )}
+                        {item.type === 'ooo' && item.oooReturnDate && (
+                          <div style={{ fontSize:11, color:'#22c55e', fontWeight:500, marginTop:1 }}>
+                            Returns: {item.oooReturnDate}
+                          </div>
+                        )}
+                        {item.type === 'ooo' && item.oooSubject && (
+                          <div style={{ fontSize:10, color:'var(--text-tertiary)', fontStyle:'italic', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', marginTop:1 }}>
+                            "{item.oooSubject}"
                           </div>
                         )}
                         <div style={{ display:'flex', gap:8, marginTop:2, flexWrap:'wrap' }}>
@@ -2705,6 +2752,14 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                         )}
                         {!item.autoDetected && (
                           <>
+                            {(item.priority === 'HIGH' || item.type === 'high-priority') && !item.autoDetected && (
+                              <button
+                                onClick={e => { e.stopPropagation(); updateTodoPriority(item.id, null); safeFetch(`/api/hubspot/todo/${item.id}`, { method:'PATCH', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ type:'ooo', priority:null }) }).catch(()=>{}) }}
+                                title="This is an OOO reply — move to OOO tab"
+                                style={{ background:'none', border:'none', cursor:'pointer', padding:'0 2px', color:'var(--text-tertiary)', fontSize:11, lineHeight:1 }}>
+                                📅
+                              </button>
+                            )}
                             <button
                               onClick={e => { e.stopPropagation(); updateTodoPriority(item.id, item.priority === 'HIGH' ? null : 'HIGH') }}
                               title={item.priority === 'HIGH' ? 'Remove high priority' : 'Mark as high priority'}
