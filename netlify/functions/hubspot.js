@@ -1243,6 +1243,7 @@ export const handler = async (event, context) => {
         // so we can filter out OOO without N+1 queries
         const replyContactIds = (repliesData.results || []).map(c => c.id);
         let oooContactIds = new Set();
+        let oooContactEmailDataFinal = {};
         if (replyContactIds.length > 0) {
           try {
             // Search for INCOMING_EMAIL engagements for these contacts with OOO-like subjects
@@ -1254,7 +1255,7 @@ export const handler = async (event, context) => {
                   { propertyName: "hs_timestamp", operator: "GTE", value: sinceISO },
                 ]
               }],
-              properties: ["hs_email_subject", "hs_timestamp"],
+              properties: ["hs_email_subject", "hs_email_text", "hs_timestamp"],
               sorts: [{ propertyName: "hs_timestamp", direction: "DESCENDING" }],
               limit: 200,
             }).catch(() => ({ results: [] }));
@@ -1264,12 +1265,20 @@ export const handler = async (event, context) => {
             // and cross-referencing with the reply contacts
             // Since we can't join easily, check subjects from results
             // and fetch associated contacts
+            const oooEmailMap = {};
             const oooEmailIds = (incomingEmails.results || [])
               .filter(e => {
                 const subj = (e.properties?.hs_email_subject || "").toLowerCase();
                 return OOO_PATTERNS.some(p => subj.startsWith(p) || subj.includes(p));
               })
-              .map(e => e.id);
+              .map(e => {
+                oooEmailMap[e.id] = {
+                  subject:   e.properties?.hs_email_subject || null,
+                  body:      e.properties?.hs_email_text    || null,
+                  timestamp: e.properties?.hs_timestamp     || null,
+                };
+                return e.id;
+              });
 
             if (oooEmailIds.length > 0) {
               // Get contact associations for OOO emails
@@ -1279,9 +1288,15 @@ export const handler = async (event, context) => {
 
               // Build set of contact IDs that have OOO emails
               const oooContactsWithOOO = new Set();
+              const oooContactEmailData = {};
               for (const r of (assocData.results || [])) {
+                const emailData = oooEmailMap[r.from?.id] || {};
                 for (const assoc of (r.to || [])) {
-                  oooContactsWithOOO.add(String(assoc.toObjectId));
+                  const cid = String(assoc.toObjectId);
+                  oooContactsWithOOO.add(cid);
+                  if (!oooContactEmailData[cid] || (emailData.timestamp > (oooContactEmailData[cid].timestamp||""))) {
+                    oooContactEmailData[cid] = emailData;
+                  }
                 }
               }
 
@@ -1317,12 +1332,30 @@ export const handler = async (event, context) => {
                 }
               }
 
-              oooContactIds = oooContactsWithOOO;
+              oooContactIds         = oooContactsWithOOO;
+              oooContactEmailDataFinal = oooContactEmailData;
             }
           } catch (e) {
             console.error("[tasks] OOO filter error:", e.message);
           }
         }
+
+        // OOO replies — contacts that only sent OOO auto-replies
+        const oooReplies = [...oooContactIds].map(cid => {
+          const c = (repliesData.results || []).find(r => String(r.id) === cid);
+          if (!c) return null;
+          const p    = c.properties || {};
+          const info = normalizeContact(c);
+          const ed   = oooContactEmailDataFinal[cid] || {};
+          const replyDate  = p.hs_sales_email_last_replied || p.hs_email_last_reply_date || null;
+          const waitingHours = replyDate ? Math.round((Date.now() - new Date(replyDate).getTime()) / 3600000) : 0;
+          return {
+            contactId:    cid, contact: info, replyDate, waitingHours,
+            subject:      ed.subject || null,
+            oooReturnDate: parseOooReturnDate(ed.body || ed.subject || ""),
+            replySource:  p.hs_sales_email_last_replied ? "sales" : "marketing",
+          };
+        }).filter(Boolean);
 
         const repliesAwaitingResponse = (repliesData.results || [])
           .map(c => {
@@ -1495,6 +1528,7 @@ export const handler = async (event, context) => {
 
         return ok({
           repliesAwaitingResponse,
+          oooReplies,
           upcomingSequences,
           dueTasks,
           meta: {
