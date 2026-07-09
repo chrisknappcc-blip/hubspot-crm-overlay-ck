@@ -2413,8 +2413,8 @@ export const handler = async (event, context) => {
             let score = 0, label = "";
             if (eventType === "REPLY") {
               const ooo = isOooReply(ev.subject || null, null);
-              if (ooo) { score = 5; label = "OOO Reply"; }
-              else     { score = 100; label = "Replied"; }
+              if (ooo) continue; // OOO — skip from live signals, handled via tasks endpoint
+              score = 100; label = "Replied";
             }
             else if (eventType === "CLICK") { score = 70;  label = "Clicked link"; }
             else if (eventType === "OPEN")  { score = 40;  label = "Opened"; }
@@ -2620,6 +2620,11 @@ export const handler = async (event, context) => {
         let score = 0, label = "", primaryTs = null, eventType = "OPEN", emailSource = null;
 
         if (replyTs > 0 && replyTs >= since) {
+          // Instant reply (<90s after send) is almost always an OOO auto-reply.
+          // We don't have the email subject here, so use timing as the heuristic.
+          // These surface properly via the tasks/oooReplies path instead.
+          const lastSentTs = p.hs_email_last_send_date ? new Date(p.hs_email_last_send_date).getTime() : 0;
+          if (lastSentTs > 0 && (replyTs - lastSentTs) < 90000) return null; // skip — likely OOO
           score = 100; label = "Replied"; eventType = "REPLY"; emailSource = replySource;
           primaryTs = replySource === "sales" ? p.hs_sales_email_last_replied : p.hs_email_last_reply_date;
         } else if (clickTs > 0 && clickTs >= since) {
