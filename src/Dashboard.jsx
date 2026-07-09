@@ -1159,38 +1159,39 @@ function BotLogPanel({ entries = [], onClear }) {
       {view === 'chart' && (
         <div style={{ padding:16 }}>
           <div style={{ fontSize:11, color:'var(--text-tertiary)', marginBottom:12 }}>Bot opens detected per week (last 12 weeks)</div>
-          <div style={{ display:'flex', alignItems:'flex-end', gap:6, height:120 }}>
-            {weekBuckets.map(b => (
-              <div key={b.week} style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', gap:2 }}>
-                <div style={{ width:'100%', display:'flex', flexDirection:'column', alignItems:'center',
-                  height: Math.max(4, Math.round((b.total / maxWeekTotal) * 100)) + 'px',
-                  justifyContent:'flex-end', position:'relative' }}>
-                  <div title={`High confidence: ${b.high}`}
-                    style={{ width:'100%', height: Math.round((b.high / b.total) * 100) + '%',
-                      background:'var(--red)', borderRadius:'2px 2px 0 0', minHeight: b.high ? 4 : 0 }} />
-                  <div title={`Medium confidence: ${b.medium}`}
-                    style={{ width:'100%', height: Math.round((b.medium / b.total) * 100) + '%',
-                      background:'#D97706', minHeight: b.medium ? 4 : 0 }} />
+          {weekBuckets.length === 0
+            ? <div style={{ fontSize:12, color:'var(--text-tertiary)', textAlign:'center', padding:'24px 0' }}>No data yet — populates as signals are fetched.</div>
+            : <>
+                <div style={{ overflowX:'auto' }}>
+                  <svg width={Math.max(300, weekBuckets.length * 36)} height={160} style={{ display:'block' }}>
+                    {weekBuckets.map((b, i) => {
+                      const CH = 120, BW = 24, CW = 36
+                      const x     = i * CW + (CW - BW) / 2
+                      const barH  = Math.max(4, Math.round((b.total / maxWeekTotal) * CH))
+                      const highH = b.total > 0 ? Math.round((b.high / b.total) * barH) : 0
+                      const medH  = barH - highH
+                      const top   = CH - barH
+                      return (
+                        <g key={b.week}>
+                          {medH  > 0 && <rect x={x} y={top + highH} width={BW} height={medH}  fill="#D97706" opacity={0.85}><title>{`${b.week} · Med: ${b.medium}`}</title></rect>}
+                          {highH > 0 && <rect x={x} y={top}          width={BW} height={highH} fill="#ef4444" rx={2}><title>{`${b.week} · High: ${b.high}`}</title></rect>}
+                          {b.total > 0 && <text x={x + BW/2} y={top - 3} textAnchor="middle" fontSize={9} fill="var(--text-tertiary)">{b.total}</text>}
+                          <text x={x + BW/2} y={CH + 14} textAnchor="middle" fontSize={9} fill="var(--text-tertiary)"
+                            transform={`rotate(-40,${x + BW/2},${CH + 14})`}>{b.week.slice(5)}</text>
+                        </g>
+                      )
+                    })}
+                    <line x1={0} y1={120} x2={weekBuckets.length * 36} y2={120} stroke="var(--border)" strokeWidth={1} />
+                  </svg>
                 </div>
-                <div style={{ fontSize:9, color:'var(--text-tertiary)', transform:'rotate(-45deg)', 
-                  transformOrigin:'top center', whiteSpace:'nowrap', marginTop:4 }}>
-                  {b.week.slice(5)}
+                <div style={{ display:'flex', gap:16, marginTop:16, fontSize:11, color:'var(--text-tertiary)' }}>
+                  <span style={{ display:'flex', alignItems:'center', gap:4 }}><span style={{ width:10, height:10, background:'#ef4444', borderRadius:2, display:'inline-block' }} />High (&lt;60s open or HubSpot flagged)</span>
+                  <span style={{ display:'flex', alignItems:'center', gap:4 }}><span style={{ width:10, height:10, background:'#D97706', borderRadius:2, display:'inline-block' }} />Medium (burst or &lt;5min)</span>
                 </div>
-              </div>
-            ))}
-          </div>
-          <div style={{ display:'flex', gap:12, marginTop:24, fontSize:11, color:'var(--text-tertiary)' }}>
-            <span style={{ display:'flex', alignItems:'center', gap:4 }}>
-              <span style={{ width:10, height:10, background:'var(--red)', borderRadius:2, display:'inline-block' }} />
-              High confidence (&lt;60s open or HubSpot flagged)
-            </span>
-            <span style={{ display:'flex', alignItems:'center', gap:4 }}>
-              <span style={{ width:10, height:10, background:'#D97706', borderRadius:2, display:'inline-block' }} />
-              Medium confidence (burst pattern or &lt;5min open)
-            </span>
-          </div>
+              </>
+          }
         </div>
-      )}
+      )}}
 
       {/* Domains view */}
       {view === 'domains' && (
@@ -1461,7 +1462,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
   const [loadingMore, setLoadingMore] = useState(false)
 
   // Task queue data (three sections)
-  const [taskData, setTaskData]       = useState({ repliesAwaitingResponse:[], upcomingSequences:[], dueTasks:[], meta:{} })
+  const [taskData, setTaskData]       = useState({ repliesAwaitingResponse:[], oooReplies:[], upcomingSequences:[], dueTasks:[], meta:{} })
 
   // ── To-Do list state ────────────────────────────────────────────────────────
   const [todoItems, setTodoItems]     = useState([])
@@ -1881,6 +1882,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
       const data = await safeFetch(`/api/hubspot/tasks?${params}`)
       setTaskData({
         repliesAwaitingResponse: data.repliesAwaitingResponse || [],
+        oooReplies:              data.oooReplies              || [],
         upcomingSequences:       data.upcomingSequences       || [],
         dueTasks:                data.dueTasks                || [],
         meta:                    data.meta                    || {},
@@ -2614,7 +2616,12 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                     {[
                       { key:'high-priority', label:'High Priority', count:hpCount,  color:'#D97706' },
                       { key:'all',           label:'All',           count:allCount, color:'var(--accent)' },
-                      { key:'ooo',           label:'OOO 📅',        count:todoItems.filter(t=>t.type==='ooo'&&!t.completed).length, color:'#22c55e' },
+                      { key:'ooo', label:'OOO 📅',
+                      count: (() => {
+                        const todoCids = new Set(todoItems.filter(t=>t.type==='ooo'&&!t.completed).map(t=>t.contactId).filter(Boolean))
+                        const extraOoo = (taskData.oooReplies||[]).filter(r=>!todoCids.has(r.contactId))
+                        return todoItems.filter(t=>t.type==='ooo'&&!t.completed).length + extraOoo.length
+                      })(), color:'#22c55e' },
                     ].map(tab => (
                       <button key={tab.key} onClick={() => { setTodoTab(tab.key); setTodoPage(0) }}
                         style={{ padding:'6px 14px', fontSize:12, fontWeight:todoTab===tab.key?600:400,
@@ -2686,12 +2693,27 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                 const active    = todoTab === 'high-priority'
                   ? allActive.filter(t => (t.priority === 'HIGH' || t.type === 'high-priority') && t.type !== 'ooo').sort((a,b) => new Date(a.createdAt||0) - new Date(b.createdAt||0))
                   : todoTab === 'ooo'
-                  ? allActive.filter(t => t.type === 'ooo').sort((a,b) => {
-                      // Sort by return date soonest first, undated at bottom
-                      const da = a.oooReturnDate ? new Date(a.oooReturnDate) : new Date('2099-01-01')
-                      const db = b.oooReturnDate ? new Date(b.oooReturnDate) : new Date('2099-01-01')
-                      return da - db
-                    })
+                  ? (() => {
+                      // Merge signal-based OOO todos + reply-based OOO from tasks endpoint
+                      const todoOoo = allActive.filter(t => t.type === 'ooo')
+                      const todoCids = new Set(todoOoo.map(t=>t.contactId).filter(Boolean))
+                      // Convert reply-based OOO into display-compatible shape
+                      const replyOoo = (taskData.oooReplies||[])
+                        .filter(r => !todoCids.has(r.contactId))
+                        .map(r => ({
+                          id: `ooo-reply-${r.contactId}`, text: `OOO — ${r.contact?.name || 'Contact'}`,
+                          subtext: [r.contact?.title, r.contact?.company].filter(Boolean).join(' · '),
+                          type:'ooo', contactId: r.contactId,
+                          oooReturnDate: r.oooReturnDate, oooSubject: r.subject,
+                          createdAt: r.replyDate, _fromReplies: true,
+                          waitingHours: r.waitingHours, contact: r.contact,
+                        }))
+                      return [...todoOoo, ...replyOoo].sort((a,b) => {
+                        const da = a.oooReturnDate ? new Date(a.oooReturnDate) : new Date('2099-01-01')
+                        const db = b.oooReturnDate ? new Date(b.oooReturnDate) : new Date('2099-01-01')
+                        return da - db
+                      })
+                    })()
                   : allActive.filter(t => t.type !== 'ooo')
                 const done      = todoItems.filter(t => t.completed)
                 const pageActive = active.slice(todoPage * TODO_PAGE_SIZE, (todoPage + 1) * TODO_PAGE_SIZE)
@@ -2719,6 +2741,11 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                         {item.type === 'ooo' && item.oooReturnDate && (
                           <div style={{ fontSize:11, color:'#22c55e', fontWeight:500, marginTop:1 }}>
                             Returns: {item.oooReturnDate}
+                          </div>
+                        )}
+                        {item.type === 'ooo' && !item.oooReturnDate && item.waitingHours > 0 && (
+                          <div style={{ fontSize:11, color:'var(--text-tertiary)', marginTop:1 }}>
+                            OOO reply {item.waitingHours < 24 ? `${item.waitingHours}h ago` : `${Math.floor(item.waitingHours/24)}d ago`}
                           </div>
                         )}
                         {item.type === 'ooo' && item.oooSubject && (
@@ -2851,8 +2878,9 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                 {/* Section tabs */}
                 <div style={{ display:'flex', gap:0, marginBottom:12, background:'var(--bg-secondary)', borderRadius:'var(--radius)', padding:3 }}>
                   {[
-                    { key:'high-priority', label:'High Priority', count: todoItems.filter(t=>(t.priority==='HIGH'||t.type==='high-priority')&&!t.completed).length, amber:true },
+                    { key:'high-priority', label:'High Priority', count: todoItems.filter(t=>(t.priority==='HIGH'||t.type==='high-priority')&&!t.completed&&t.type!=='ooo').length, amber:true },
                     { key:'replies',       label:'Replies',       count: taskData.repliesAwaitingResponse.length },
+                    { key:'ooo-replies',   label:'OOO 📅',        count: (taskData.oooReplies||[]).length,         ooo:true },
                     { key:'sequences',     label:'Sequences',     count: taskData.upcomingSequences.length },
                     { key:'tasks',         label:'Due tasks',     count: taskData.dueTasks.length },
                   ].map(({ key, label, count, amber }) => (
@@ -2865,8 +2893,8 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                       {label}
                       {count > 0 && (
                         <span style={{ fontSize:10, fontWeight:600,
-                          background: taskSection===key ? (amber?'rgba(217,119,6,.15)':key==='replies'?'var(--red-light)':'var(--accent-light)') : 'var(--border)',
-                          color: taskSection===key ? (amber?'#D97706':key==='replies'?'var(--red)':'var(--accent-text)') : 'var(--text-tertiary)',
+                          background: taskSection===key ? (amber?'rgba(217,119,6,.15)':key==='ooo-replies'?'rgba(34,197,94,.15)':key==='replies'?'var(--red-light)':'var(--accent-light)') : 'var(--border)',
+                          color: taskSection===key ? (amber?'#D97706':key==='ooo-replies'?'#22c55e':key==='replies'?'var(--red)':'var(--accent-text)') : 'var(--text-tertiary)',
                           borderRadius:10, padding:'0 5px', minWidth:16, textAlign:'center' }}>
                           {count}
                         </span>
@@ -2962,6 +2990,61 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                       </div>
                     ))}
                     <Pager page={taskPage} total={taskData.repliesAwaitingResponse.length} pageSize={PAGE_SIZE} onChange={setTaskPage} />
+                  </>
+                )}
+
+                {/* Section: OOO Replies */}
+                {!taskLoading && taskSection === 'ooo-replies' && (
+                  <>
+                    {(taskData.oooReplies||[]).length === 0 && (
+                      <div style={{ color:'var(--text-tertiary)', fontSize:13, textAlign:'center', padding:'20px 0' }}>
+                        No OOO replies detected in this window.<br/>
+                        <span style={{ fontSize:11 }}>OOO replies are filtered from the Replies tab and collected here automatically.</span>
+                      </div>
+                    )}
+                    {(taskData.oooReplies||[]).slice(taskPage * PAGE_SIZE, (taskPage+1) * PAGE_SIZE).map((r, i, arr) => (
+                      <div key={i} style={{ padding:'12px 0', borderBottom: i < arr.length - 1 ? '1px solid var(--border)' : 'none' }}>
+                        <div style={{ display:'flex', gap:10 }}>
+                          <div style={{ width:8, height:8, borderRadius:'50%', background:'#22c55e', flexShrink:0, marginTop:5 }} />
+                          <div style={{ flex:1, minWidth:0 }}>
+                            <div style={{ display:'flex', alignItems:'center', gap:6, marginBottom:2, flexWrap:'wrap' }}>
+                              <span onClick={() => openHubSpotContact(r.contactId)}
+                                style={{ fontWeight:500, fontSize:13, color:'var(--accent)', cursor:'pointer', textDecoration:'underline', textDecorationColor:'var(--border-strong)' }}>
+                                {r.contact?.name || 'Unknown'}
+                              </span>
+                              <button onClick={e => openHubSpotContact(r.contactId, e)} title="Open in HubSpot"
+                                style={{ flexShrink:0, background:'none', border:'none', cursor:'pointer', padding:0, color:'var(--text-tertiary)', lineHeight:1 }}>
+                                <HsIcon />
+                              </button>
+                              <span style={{ fontSize:10, fontWeight:700, padding:'2px 6px', borderRadius:4, background:'rgba(34,197,94,.15)', color:'#22c55e' }}>OOO</span>
+                              {r.oooReturnDate && (
+                                <span style={{ fontSize:11, color:'#22c55e', fontWeight:500 }}>Returns: {r.oooReturnDate}</span>
+                              )}
+                              <span style={{ marginLeft:'auto', fontSize:11, color:'var(--text-tertiary)' }}>
+                                {r.waitingHours < 24 ? `${r.waitingHours}h ago` : `${Math.floor(r.waitingHours/24)}d ago`}
+                              </span>
+                              <button
+                                onClick={() => addTodoItem(`Follow up — ${r.contact?.name || 'contact'} is back from OOO`, {
+                                  type:'reply', subtext:[r.contact?.title, r.contact?.company].filter(Boolean).join(' · '),
+                                  contactId: r.contactId,
+                                })}
+                                style={{ flexShrink:0, background:'none', border:'1px solid #22c55e', borderRadius:4, cursor:'pointer', padding:'1px 6px', fontSize:11, color:'#22c55e', lineHeight:1.4 }}>
+                                + Follow Up
+                              </button>
+                            </div>
+                            <div style={{ fontSize:12, color:'var(--text-secondary)', marginBottom:3 }}>
+                              {r.contact?.title}{r.contact?.company ? ` · ${r.contact.company}` : ''}
+                            </div>
+                            {r.subject && (
+                              <div style={{ fontSize:11, color:'var(--text-tertiary)', fontStyle:'italic' }}>
+                                "{r.subject}"
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                    <Pager page={taskPage} total={(taskData.oooReplies||[]).length} pageSize={PAGE_SIZE} onChange={setTaskPage} />
                   </>
                 )}
 
