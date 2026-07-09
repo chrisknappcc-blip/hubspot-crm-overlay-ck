@@ -2129,6 +2129,18 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
   // ── Derived data ──────────────────────────────────────────────────────────
   const sortedSignals  = useMemo(() => {
     let s = sortSignals(signals, signalSort)
+    // Filter OOO auto-replies from live signals feed.
+    // Checks backend-flagged (isOoo) AND timing heuristic (<90s reply = auto-reply).
+    s = s.filter(sig => {
+      if (sig.isOoo) return false
+      const sType = sig.eventType || sig.type
+      if (sType !== 'REPLY') return true
+      const getChainTs = (type) => (sig.eventChain || []).find(e => e.type === type)?.timestamp || null
+      const sentAt    = sig.sentAt    || getChainTs('SENT')    || null
+      const repliedAt = sig.repliedAt || getChainTs('REPLIED') || null
+      if (!sentAt || !repliedAt) return true  // can't verify timing, keep
+      return (new Date(repliedAt).getTime() - new Date(sentAt).getTime()) > 90000
+    })
     if (signalSearch.trim()) {
       const q = signalSearch.trim().toLowerCase()
       s = s.filter(sig =>
