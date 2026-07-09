@@ -2413,7 +2413,7 @@ export const handler = async (event, context) => {
             let score = 0, label = "";
             if (eventType === "REPLY") {
               const ooo = isOooReply(ev.subject || null, null);
-              if (ooo) continue; // OOO — skip from live signals, handled via tasks endpoint
+              if (ooo) return null; // OOO — skip from live signals, handled via tasks endpoint
               score = 100; label = "Replied";
             }
             else if (eventType === "CLICK") { score = 70;  label = "Clicked link"; }
