@@ -2001,6 +2001,11 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
           const fresh = incoming.filter(s => !existingIds.has(s.id))
           if (fresh.length === 0) return prev
           setNewSignalCount(c => c + fresh.length)
+          // If any fresh signals are REPLY type, refresh tasks so oooReplies stays current
+          const hasNewReply = fresh.some(s => (s.type || s.eventType) === 'REPLY')
+          if (hasNewReply) {
+            setTimeout(() => fetchTasks(), 2000) // slight delay to let HubSpot index the reply
+          }
           return [...fresh, ...prev] // prepend so newest is first
         })
       }
