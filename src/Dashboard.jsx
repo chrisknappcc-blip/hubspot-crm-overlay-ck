@@ -2127,19 +2127,21 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
   }, [selectedContact, loadContactFeed])
 
   // ── Derived data ──────────────────────────────────────────────────────────
+  const oooContactIdSet = useMemo(() =>
+    new Set((taskData.oooReplies || []).map(r => String(r.contactId)).filter(Boolean))
+  , [taskData.oooReplies])
+
   const sortedSignals  = useMemo(() => {
     let s = sortSignals(signals, signalSort)
     // Filter OOO auto-replies from live signals feed.
-    // Checks backend-flagged (isOoo) AND timing heuristic (<90s reply = auto-reply).
+    // Primary: cross-reference against taskData.oooReplies (contacts identified via email subject scan).
+    // Fallback: backend isOoo flag for realtime events where subject was available.
     s = s.filter(sig => {
       if (sig.isOoo) return false
       const sType = sig.eventType || sig.type
       if (sType !== 'REPLY') return true
-      const getChainTs = (type) => (sig.eventChain || []).find(e => e.type === type)?.timestamp || null
-      const sentAt    = sig.sentAt    || getChainTs('SENT')    || null
-      const repliedAt = sig.repliedAt || getChainTs('REPLIED') || null
-      if (!sentAt || !repliedAt) return true  // can't verify timing, keep
-      return (new Date(repliedAt).getTime() - new Date(sentAt).getTime()) > 90000
+      if (sig.contactId && oooContactIdSet.has(String(sig.contactId))) return false
+      return true
     })
     if (signalSearch.trim()) {
       const q = signalSearch.trim().toLowerCase()
@@ -2151,7 +2153,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
       )
     }
     return s
-  }, [signals, signalSort, signalSearch])
+  }, [signals, signalSort, signalSearch, oooContactIdSet])
   const sortedContacts = sortContacts(contacts, contactSort)
   const hotCount       = signals.filter(s => s.score >= 100).length
   const warmCount      = signals.filter(s => s.score >= 30 && s.score < 100).length
