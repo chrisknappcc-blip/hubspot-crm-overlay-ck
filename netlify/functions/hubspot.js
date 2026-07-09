@@ -2620,11 +2620,6 @@ export const handler = async (event, context) => {
         let score = 0, label = "", primaryTs = null, eventType = "OPEN", emailSource = null;
 
         if (replyTs > 0 && replyTs >= since) {
-          // Instant reply (<90s after send) is almost always an OOO auto-reply.
-          // We don't have the email subject here, so use timing as the heuristic.
-          // These surface properly via the tasks/oooReplies path instead.
-          const lastSentTs = p.hs_email_last_send_date ? new Date(p.hs_email_last_send_date).getTime() : 0;
-          if (lastSentTs > 0 && (replyTs - lastSentTs) < 90000) return null; // skip — likely OOO
           score = 100; label = "Replied"; eventType = "REPLY"; emailSource = replySource;
           primaryTs = replySource === "sales" ? p.hs_sales_email_last_replied : p.hs_email_last_reply_date;
         } else if (clickTs > 0 && clickTs >= since) {
@@ -2972,6 +2967,19 @@ export const handler = async (event, context) => {
       });
 
       const finalBots = [...allBots, ...orgBots];
+
+      // Post-enrichment OOO filter: replies that arrived < 90s after send are almost
+      // certainly auto-replies (OOO). sentAt/repliedAt are set during enrichment above.
+      // These surface via the tasks/oooReplies path instead.
+      const oooFiltered = finalReal.filter(s => {
+        if ((s.eventType || s.type) !== "REPLY") return true;
+        if (!s.sentAt || !s.repliedAt) return true;
+        const gap = new Date(s.repliedAt).getTime() - new Date(s.sentAt).getTime();
+        return gap > 90000; // keep only replies that took more than 90 seconds
+      });
+      // Replace finalReal with OOO-filtered version
+      finalReal.length = 0;
+      oooFiltered.forEach(s => finalReal.push(s));
 
       // hasMore: true if any of the per-prop searches returned a full page,
       // meaning there are likely more contacts beyond this offset.
