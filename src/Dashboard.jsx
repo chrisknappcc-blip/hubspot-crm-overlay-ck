@@ -2052,7 +2052,10 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
     if (!signals.length) return
     if (ownRepName.current && filterBdr && filterBdr !== ownRepName.current) return
     signals.forEach(signal => {
-      if (!signal.contactId || !isHighPriority(signal)) return
+      // Also treat as HP: repeated genuine opens (numOpens >= 3) and deal-associated contacts
+      const isRepeatOpener = (signal.numOpens || 0) >= 3 && (signal.eventType || signal.type) === 'OPEN'
+      const isDealSig      = !!signal.isDealContact
+      if (!signal.contactId || (!isHighPriority(signal) && !isRepeatOpener && !isDealSig)) return
 
       // Route OOO replies to the OOO tab instead of HP tasks
       if (signal.score >= 100 && isOooSignal(signal)) {
@@ -3308,6 +3311,22 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                             display:'flex', alignItems:'center', justifyContent:'space-between' }}>
                             <span>
                               {actionLabel}
+                              {(s.numOpens || 0) >= 2 && (
+                                <span title={`Opened ${s.numOpens} times`} style={{
+                                  fontSize:10, padding:'1px 5px', borderRadius:8, fontWeight:700, marginLeft:5,
+                                  background:'rgba(239,68,68,.15)', color:'#ef4444' }}>
+                                  {s.numOpens}×
+                                </span>
+                              )}
+                              {s.isDealContact && s.dealContext?.dealName && (
+                                <span title={`Deal: ${s.dealContext.dealName}`} style={{
+                                  fontSize:10, padding:'1px 5px', borderRadius:8, fontWeight:700, marginLeft:5,
+                                  background:'rgba(34,197,94,.15)', color:'#22c55e',
+                                  maxWidth:120, overflow:'hidden', textOverflow:'ellipsis', display:'inline-block',
+                                  verticalAlign:'middle' }}>
+                                  🤝 Deal
+                                </span>
+                              )}
                               <span style={{ fontSize:10, fontWeight:500, marginLeft:6, textTransform:'none',
                                 letterSpacing:0, color: s.emailSource === 'sales' ? 'var(--blue)' : 'var(--text-tertiary)' }}>
                                 {s.emailSource === 'sales' ? '1:1' : 'Sequence'}
