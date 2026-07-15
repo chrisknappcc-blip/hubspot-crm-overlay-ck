@@ -786,10 +786,11 @@ function detectBot(item) {
     reasons.push("Opened with no clicks or reply");
   }
 
-  // 4. Burst pattern: 4+ opens, zero clicks
-  if (item.numOpens >= 4 && item.numClicks === 0 && !item.replied) {
-    reasons.push(`${item.numOpens} opens, 0 clicks -- burst scan pattern`);
-  }
+  // 4. Burst pattern: only flag if opens came with suspicious TTO (scanner behavior)
+  // numOpens > 1 on an engagement signal = accumulated genuine opens over time, NOT a bot
+  // Realtime events always have numOpens === 1, so numOpens >= 4 only triggers on engagements
+  // We intentionally skip this check — TTO checks above already catch true scanners
+  // if (item.numOpens >= 4 && ...) { /* removed — false positives on repeated genuine openers */ }
 
   // 5. Off-hours open with no follow-on (weak signal)
   if (openedMs) {
@@ -837,8 +838,15 @@ function scoreAllSignals(feedItems, includeBots = false) {
         label = `Clicked link${item.numClicks > 1 ? ` ${item.numClicks}x` : ""}`;
       }
       else if (item.numOpens > 0)  {
-        score = 40 + item.numOpens * 5;
-        label = `Opened${item.numOpens > 1 ? ` ${item.numOpens}x` : ""}`;
+        // Tiered scoring for repeated opens — accumulated engagement opens are a strong signal
+        if (item.numOpens >= 5) {
+          score = 100 + Math.min((item.numOpens - 5) * 2, 20); // 5 opens = 100 (HP), caps at 120
+        } else if (item.numOpens >= 3) {
+          score = 80 + (item.numOpens - 3) * 5; // 3 = 80, 4 = 85
+        } else {
+          score = 40 + item.numOpens * 5; // 1 = 45, 2 = 50
+        }
+        label = `Opened${item.numOpens > 1 ? ` ${item.numOpens}×` : ""}`;
       }
       else continue;
 
@@ -2965,6 +2973,60 @@ export const handler = async (event, context) => {
           finalReal.push(s);
         }
       });
+
+      // ── Deal-contact detection ──────────────────────────────────────────────
+      // Fetch active deals closing soon or recently updated, tag contacts as deal-associated
+      let dealContactMap = {};
+      try {
+        const now = Date.now();
+        const in90Days = new Date(now + 90 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+        const ago30Days = new Date(now - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+        const dealRes = await hsPost(user.userId, "/crm/v3/objects/deals/search", {
+          filterGroups: [
+            { filters: [
+              { propertyName: "closedate", operator: "LTE", value: in90Days },
+              { propertyName: "closedate", operator: "GTE", value: ago30Days },
+              { propertyName: "hs_is_closed", operator: "NEQ", value: "true" },
+            ]},
+          ],
+          properties: ["dealname", "dealstage", "pipeline", "amount", "closedate"],
+          limit: 100,
+        }).catch(() => null);
+        const dealIds = (dealRes?.results || []).map(d => d.id);
+        if (dealIds.length) {
+          // Batch-fetch contact associations for all deals
+          const assocRes = await hsPost(user.userId, `/crm/v3/associations/deals/contacts/batch/read`, {
+            inputs: dealIds.map(id => ({ id })),
+          }).catch(() => null);
+          const dealById = {};
+          (dealRes?.results || []).forEach(d => { dealById[d.id] = d.properties; });
+          for (const row of (assocRes?.results || [])) {
+            const dp = dealById[row.from?.id] || {};
+            for (const assoc of (row.to || [])) {
+              const cid = String(assoc.toObjectId);
+              if (!dealContactMap[cid] || new Date(dp.closedate) < new Date(dealContactMap[cid].closedate)) {
+                dealContactMap[cid] = {
+                  dealName:   dp.dealname  || null,
+                  dealStage:  dp.dealstage || null,
+                  closeDate:  dp.closedate || null,
+                  amount:     dp.amount    || null,
+                };
+              }
+            }
+          }
+        }
+      } catch { /* fail silently — deal context is additive */ }
+
+      // Tag finalReal signals that belong to a deal contact
+      for (const sig of finalReal) {
+        const dc = sig.contactId ? dealContactMap[String(sig.contactId)] : null;
+        if (dc) {
+          sig.isDealContact = true;
+          sig.dealContext   = dc;
+          // Boost score to at least HP threshold for deal contacts
+          if (sig.score < 100) sig.score = 100;
+        }
+      }
 
       const finalBots = [...allBots, ...orgBots];
 
