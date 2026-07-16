@@ -2812,6 +2812,35 @@ export const handler = async (event, context) => {
       // (e.g. calls, meetings, notes which don't affect hs_last_sales_activity_timestamp)
       const existingIds = new Set(contactSignals.map(s => s.contactId));
 
+      // Back-fill open counts from engagement records into contact-based signals.
+      // Contact-based signals have numOpens: 0 by default. If an engagement record
+      // for the same contact has numOpens > 0 (e.g. 14 accumulated opens), we want
+      // that count reflected so the signal scores and routes correctly.
+      for (const eng of (engData.results || [])) {
+        const cid      = String(eng.associations?.contactIds?.[0] ?? "");
+        const engOpens = eng.metadata?.numOpens || 0;
+        if (!cid || !existingIds.has(cid) || engOpens <= 0) continue;
+        // Find the matching contact signal and update its numOpens if higher
+        const existing = contactSignals.find(s => String(s.contactId) === cid);
+        if (existing && engOpens > existing.numOpens) {
+          existing.numOpens  = engOpens;
+          existing.numClicks = existing.numClicks || eng.metadata?.numClicks || 0;
+          existing.sentAt    = existing.sentAt    || eng.metadata?.sentAt    || null;
+          existing.openedAt  = existing.openedAt  || eng.metadata?.openedAt  || null;
+          // Re-score based on actual open count
+          if (engOpens >= 5) {
+            existing.score = 100 + Math.min((engOpens - 5) * 2, 20);
+            existing.label = `Opened ${engOpens}×`;
+          } else if (engOpens >= 3) {
+            existing.score = 80 + (engOpens - 3) * 5;
+            existing.label = `Opened ${engOpens}×`;
+          }
+          // Re-check bot status — many accumulated opens ≠ scanner behavior
+          existing.isBot = false;
+          existing.botCheck = { isBot: false, confidence: "none", reasons: ["Open count from engagement metadata — genuine repeated interest"] };
+        }
+      }
+
       const engItems = (engData.results || [])
         .filter(eng => {
           const cid  = String(eng.associations?.contactIds?.[0] ?? "");
