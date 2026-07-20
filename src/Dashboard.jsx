@@ -1609,6 +1609,32 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
   }, [todoItems])
   const [taskDays, setTaskDays]       = useState('14')
   const [taskSection, setTaskSection] = useState('replies')
+  const [dismissedTaskItems, setDismissedTaskItems] = useState(() => {
+    try { return new Set(JSON.parse(localStorage.getItem('cipher_dismissed_tasks') || '[]')) }
+    catch { return new Set() }
+  })
+  const [showDismissed, setShowDismissed] = useState(false)
+
+  const dismissTaskItem = (key) => {
+    setDismissedTaskItems(prev => {
+      const next = new Set(prev)
+      next.add(key)
+      try { localStorage.setItem('cipher_dismissed_tasks', JSON.stringify([...next])) } catch {}
+      return next
+    })
+  }
+  const restoreTaskItem = (key) => {
+    setDismissedTaskItems(prev => {
+      const next = new Set(prev)
+      next.delete(key)
+      try { localStorage.setItem('cipher_dismissed_tasks', JSON.stringify([...next])) } catch {}
+      return next
+    })
+  }
+  const clearAllDismissed = () => {
+    setDismissedTaskItems(new Set())
+    try { localStorage.removeItem('cipher_dismissed_tasks') } catch {}
+  }
   const [taskLoading, setTaskLoading] = useState(false)
 
   // Gold accounts
@@ -2901,10 +2927,10 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                 <div style={{ display:'flex', gap:0, marginBottom:12, background:'var(--bg-secondary)', borderRadius:'var(--radius)', padding:3 }}>
                   {[
                     { key:'high-priority', label:'High Priority', count: todoItems.filter(t=>(t.priority==='HIGH'||t.type==='high-priority')&&!t.completed&&t.type!=='ooo').length, amber:true },
-                    { key:'replies',       label:'Replies',       count: taskData.repliesAwaitingResponse.length },
-                    { key:'ooo-replies',   label:'OOO 📅',        count: (taskData.oooReplies||[]).length,         ooo:true },
-                    { key:'sequences',     label:'Sequences',     count: taskData.upcomingSequences.length },
-                    { key:'tasks',         label:'Due tasks',     count: taskData.dueTasks.length },
+                    { key:'replies',       label:'Replies',       count: taskData.repliesAwaitingResponse.filter(r => !dismissedTaskItems.has(`reply-${r.contactId}`)).length },
+                    { key:'ooo-replies',   label:'OOO 📅',        count: (taskData.oooReplies||[]).filter(r => !dismissedTaskItems.has(`ooo-${r.contactId}`)).length, ooo:true },
+                    { key:'sequences',     label:'Sequences',     count: taskData.upcomingSequences.filter(s => !dismissedTaskItems.has(`seq-${s.contactId}`)).length },
+                    { key:'tasks',         label:'Due tasks',     count: taskData.dueTasks.filter(t => !dismissedTaskItems.has(`task-${t.taskId||t.id}`)).length },
                   ].map(({ key, label, count, amber }) => (
                     <button key={key} onClick={() => { setTaskSection(key); setTaskPage(0) }}
                       style={{ flex:1, fontSize:12, fontWeight: taskSection===key ? 500 : 400,
@@ -2962,11 +2988,19 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                 {/* Section: Replies awaiting response */}
                 {!taskLoading && taskSection === 'replies' && (
                   <>
-                    {taskData.repliesAwaitingResponse.length === 0 && (
-                      <div style={{ color:'var(--text-tertiary)', fontSize:13 }}>No unanswered replies in this window.</div>
-                    )}
-                    {taskData.repliesAwaitingResponse.slice(taskPage * PAGE_SIZE, (taskPage+1) * PAGE_SIZE).map((r, i) => (
-                      <div key={i} style={{ padding:'12px 0', borderBottom: i < Math.min(taskData.repliesAwaitingResponse.length, PAGE_SIZE)-1 ? '1px solid var(--border)' : 'none' }}>
+                    {(() => {
+                      const active    = taskData.repliesAwaitingResponse.filter(r => !dismissedTaskItems.has(`reply-${r.contactId}`))
+                      const dismissed = taskData.repliesAwaitingResponse.filter(r =>  dismissedTaskItems.has(`reply-${r.contactId}`))
+                      const visible   = showDismissed ? [...active, ...dismissed] : active
+                      return (<>
+                        {active.length === 0 && !showDismissed && (
+                          <div style={{ color:'var(--text-tertiary)', fontSize:13 }}>No unanswered replies in this window.</div>
+                        )}
+                        {visible.slice(taskPage * PAGE_SIZE, (taskPage+1) * PAGE_SIZE).map((r, i) => {
+                          const key = `reply-${r.contactId}`
+                          const isDismissed = dismissedTaskItems.has(key)
+                          return (
+                          <div key={i} style={{ padding:'12px 0', borderBottom: i < Math.min(visible.length, PAGE_SIZE)-1 ? '1px solid var(--border)' : 'none', opacity: isDismissed ? 0.45 : 1 }}>
                         <div style={{ display:'flex', gap:10 }}>
                           <PriorityDot level="hot" />
                           <div style={{ flex:1, minWidth:0 }}>
@@ -2992,6 +3026,14 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                                 style={{ flexShrink:0, background:'none', border:'1px solid var(--border)', borderRadius:4, cursor:'pointer', padding:'1px 6px', fontSize:11, color:'var(--accent)', lineHeight:1.4 }}>
                                 + To-Do
                               </button>
+                              <button
+                                onClick={() => isDismissed ? restoreTaskItem(key) : dismissTaskItem(key)}
+                                title={isDismissed ? 'Restore' : 'Mark done — remove from view'}
+                                style={{ flexShrink:0, background:'none', border:`1px solid ${isDismissed ? 'var(--border)' : 'var(--border)'}`,
+                                  borderRadius:4, cursor:'pointer', padding:'1px 6px', fontSize:11,
+                                  color: isDismissed ? 'var(--text-tertiary)' : 'var(--text-tertiary)', lineHeight:1.4 }}>
+                                {isDismissed ? '↩ Restore' : '✓ Done'}
+                              </button>
                             </div>
                             <div style={{ fontSize:12, color:'var(--text-secondary)', marginBottom:4 }}>
                               {r.contact?.title}{r.contact?.company ? ` · ${r.contact.company}` : ''}
@@ -3010,8 +3052,28 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                           </div>
                         </div>
                       </div>
-                    ))}
-                    <Pager page={taskPage} total={taskData.repliesAwaitingResponse.length} pageSize={PAGE_SIZE} onChange={setTaskPage} />
+                          )})
+                        }
+                        <Pager page={taskPage} total={visible.length} pageSize={PAGE_SIZE} onChange={setTaskPage} />
+                        {dismissed.length > 0 && (
+                          <div style={{ display:'flex', alignItems:'center', gap:8, marginTop:8, paddingTop:8, borderTop:'1px solid var(--border)' }}>
+                            <span style={{ fontSize:11, color:'var(--text-tertiary)' }}>
+                              {dismissed.length} item{dismissed.length!==1?'s':''} marked done
+                            </span>
+                            <button onClick={() => setShowDismissed(p => !p)}
+                              style={{ fontSize:11, color:'var(--accent)', background:'none', border:'none', cursor:'pointer', padding:0 }}>
+                              {showDismissed ? 'Hide' : 'Show'}
+                            </button>
+                            {showDismissed && (
+                              <button onClick={clearAllDismissed}
+                                style={{ fontSize:11, color:'var(--text-tertiary)', background:'none', border:'none', cursor:'pointer', padding:0 }}>
+                                Clear all
+                              </button>
+                            )}
+                          </div>
+                        )}
+                      </>)
+                    })()}
                   </>
                 )}
 
@@ -3024,7 +3086,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                         <span style={{ fontSize:11 }}>OOO replies are filtered from the Replies tab and collected here automatically.</span>
                       </div>
                     )}
-                    {(taskData.oooReplies||[]).slice(taskPage * PAGE_SIZE, (taskPage+1) * PAGE_SIZE).map((r, i, arr) => (
+                    {(taskData.oooReplies||[]).filter(r => !dismissedTaskItems.has(`ooo-${r.contactId}`)).slice(taskPage * PAGE_SIZE, (taskPage+1) * PAGE_SIZE).map((r, i, arr) => (
                       <div key={i} style={{ padding:'12px 0', borderBottom: i < arr.length - 1 ? '1px solid var(--border)' : 'none' }}>
                         <div style={{ display:'flex', gap:10 }}>
                           <div style={{ width:8, height:8, borderRadius:'50%', background:'#22c55e', flexShrink:0, marginTop:5 }} />
@@ -3053,6 +3115,12 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                                 style={{ flexShrink:0, background:'none', border:'1px solid #22c55e', borderRadius:4, cursor:'pointer', padding:'1px 6px', fontSize:11, color:'#22c55e', lineHeight:1.4 }}>
                                 + Follow Up
                               </button>
+                              <button
+                                onClick={() => dismissedTaskItems.has(`ooo-${r.contactId}`) ? restoreTaskItem(`ooo-${r.contactId}`) : dismissTaskItem(`ooo-${r.contactId}`)}
+                                title="Mark done — remove from OOO view"
+                                style={{ flexShrink:0, background:'none', border:'1px solid var(--border)', borderRadius:4, cursor:'pointer', padding:'1px 6px', fontSize:11, color:'var(--text-tertiary)', lineHeight:1.4 }}>
+                                {dismissedTaskItems.has(`ooo-${r.contactId}`) ? '↩ Restore' : '✓ Done'}
+                              </button>
                             </div>
                             <div style={{ fontSize:12, color:'var(--text-secondary)', marginBottom:3 }}>
                               {r.contact?.title}{r.contact?.company ? ` · ${r.contact.company}` : ''}
@@ -3066,7 +3134,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                         </div>
                       </div>
                     ))}
-                    <Pager page={taskPage} total={(taskData.oooReplies||[]).length} pageSize={PAGE_SIZE} onChange={setTaskPage} />
+                    <Pager page={taskPage} total={(taskData.oooReplies||[]).filter(r => !dismissedTaskItems.has(`ooo-${r.contactId}`)).length} pageSize={PAGE_SIZE} onChange={setTaskPage} />
                   </>
                 )}
 
@@ -3076,7 +3144,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                     {taskData.upcomingSequences.length === 0 && (
                       <div style={{ color:'var(--text-tertiary)', fontSize:13 }}>No contacts currently enrolled in sequences.</div>
                     )}
-                    {taskData.upcomingSequences.slice(taskPage * PAGE_SIZE, (taskPage+1) * PAGE_SIZE).map((s, i) => (
+                    {taskData.upcomingSequences.filter(s => !dismissedTaskItems.has(`seq-${s.contactId}`)).slice(taskPage * PAGE_SIZE, (taskPage+1) * PAGE_SIZE).map((s, i) => (
                       <div key={i} style={{ padding:'12px 0', borderBottom: i < Math.min(taskData.upcomingSequences.length, PAGE_SIZE)-1 ? '1px solid var(--border)' : 'none' }}>
                         <div style={{ display:'flex', gap:10 }}>
                           <PriorityDot level="normal" />
@@ -3099,6 +3167,12 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                                 title="Add to To-Do"
                                 style={{ marginLeft:'auto', flexShrink:0, background:'none', border:'1px solid var(--border)', borderRadius:4, cursor:'pointer', padding:'1px 6px', fontSize:11, color:'var(--accent)', lineHeight:1.4 }}>
                                 + To-Do
+                              </button>
+                              <button
+                                onClick={() => dismissedTaskItems.has(`seq-${s.contactId}`) ? restoreTaskItem(`seq-${s.contactId}`) : dismissTaskItem(`seq-${s.contactId}`)}
+                                title="Mark done — remove from view"
+                                style={{ flexShrink:0, background:'none', border:'1px solid var(--border)', borderRadius:4, cursor:'pointer', padding:'1px 6px', fontSize:11, color:'var(--text-tertiary)', lineHeight:1.4 }}>
+                                {dismissedTaskItems.has(`seq-${s.contactId}`) ? '↩ Restore' : '✓ Done'}
                               </button>
                             </div>
                             <div style={{ fontSize:12, color:'var(--text-secondary)', marginBottom:4 }}>
@@ -3126,7 +3200,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                         </div>
                       </div>
                     ))}
-                    <Pager page={taskPage} total={taskData.upcomingSequences.length} pageSize={PAGE_SIZE} onChange={setTaskPage} />
+                    <Pager page={taskPage} total={taskData.upcomingSequences.filter(s => !dismissedTaskItems.has(`seq-${s.contactId}`)).length} pageSize={PAGE_SIZE} onChange={setTaskPage} />
                   </>
                 )}
 
@@ -3136,7 +3210,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                     {taskData.dueTasks.length === 0 && (
                       <div style={{ color:'var(--text-tertiary)', fontSize:13 }}>No tasks due in this window.</div>
                     )}
-                    {taskData.dueTasks.slice(taskPage * PAGE_SIZE, (taskPage+1) * PAGE_SIZE).map((t, i) => (
+                    {taskData.dueTasks.filter(t => !dismissedTaskItems.has(`task-${t.taskId||t.id}`)).slice(taskPage * PAGE_SIZE, (taskPage+1) * PAGE_SIZE).map((t, i) => (
                       <div key={i} style={{ padding:'12px 0', borderBottom: i < Math.min(taskData.dueTasks.length, PAGE_SIZE)-1 ? '1px solid var(--border)' : 'none' }}>
                         <div style={{ display:'flex', gap:10 }}>
                           <PriorityDot level={t.priority === 'HIGH' ? 'hot' : 'normal'} />
@@ -3154,6 +3228,12 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                                 style={{ marginLeft:'auto', flexShrink:0, background:'none', border:'1px solid var(--border)', borderRadius:4, cursor:'pointer', padding:'1px 6px', fontSize:11, color:'var(--accent)', lineHeight:1.4 }}>
                                 + To-Do
                               </button>
+                              <button
+                                onClick={() => dismissedTaskItems.has(`task-${t.taskId||t.id}`) ? restoreTaskItem(`task-${t.taskId||t.id}`) : dismissTaskItem(`task-${t.taskId||t.id}`)}
+                                title="Mark done — remove from view"
+                                style={{ flexShrink:0, background:'none', border:'1px solid var(--border)', borderRadius:4, cursor:'pointer', padding:'1px 6px', fontSize:11, color:'var(--text-tertiary)', lineHeight:1.4 }}>
+                                {dismissedTaskItems.has(`task-${t.taskId||t.id}`) ? '↩ Restore' : '✓ Done'}
+                              </button>
                             </div>
                             {t.body && <div style={{ fontSize:12, color:'var(--text-secondary)', marginBottom:4 }}>{t.body}</div>}
                             <div style={{ display:'flex', alignItems:'center', gap:8 }}>
@@ -3169,7 +3249,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
                         </div>
                       </div>
                     ))}
-                    <Pager page={taskPage} total={taskData.dueTasks.length} pageSize={PAGE_SIZE} onChange={setTaskPage} />
+                    <Pager page={taskPage} total={taskData.dueTasks.filter(t => !dismissedTaskItems.has(`task-${t.taskId||t.id}`)).length} pageSize={PAGE_SIZE} onChange={setTaskPage} />
                   </>
                 )}
               </Panel>
